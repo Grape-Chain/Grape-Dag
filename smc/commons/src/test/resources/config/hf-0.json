@@ -1,0 +1,9 @@
+{
+  "name": "init",
+  "timestamp": "2023-01-01T00:00:00",
+  "chainConfig": {
+    "vm": {
+      "maxCodeSize": 30000
+    }
+  }
+}

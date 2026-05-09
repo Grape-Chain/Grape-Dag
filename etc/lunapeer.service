@@ -1,0 +1,21 @@
+# Sample systemd unit for the Luna peer daemon.
+# Copy to /etc/systemd/system/ on the host and adjust User, paths, and the
+# command-line flags for your deployment.
+[Unit]
+Description=Luna peer daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luna
+Group=luna
+WorkingDirectory=/var/lib/luna
+ExecStart=/usr/local/bin/lunapeer-start.sh
+PIDFile=/run/luna/lunapeer.pid
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

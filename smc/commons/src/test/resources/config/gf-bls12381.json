@@ -1,0 +1,17 @@
+{
+  "name": "BLS12 381",
+  "config": {
+    "blsDiscount": {
+      "d": "Discount gas costs",
+      "intValues": [
+        -1,
+        1200,
+        888,
+        764,
+        175,
+        175,
+        174
+      ]
+    }
+  }
+}

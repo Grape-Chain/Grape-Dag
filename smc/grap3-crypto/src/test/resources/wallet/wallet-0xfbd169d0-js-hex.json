@@ -1,0 +1,16 @@
+{
+  "version": "1",
+  "address": "0xfbd169d0655631351412dcccdee909f774d9cb25",
+  "Crypto": {
+    "ciphertext": "0762aa635abccf8dbdae7e19bfab996e033de0499dafa276b471e95918545a41034a3e2e6a4a41eeefe63963d3cdc9cc10520c83d11495b57c758a086b6f4f0a6baf9b4b5ccd7b8f9eee4a192bde0b26",
+    "cipherparams": {
+      "iv": "35cdfebc467afe4d60768e5f"
+    },
+    "cipher": "aes-256-gcm",
+    "kdf": "scrypt",
+    "kdfparams": {
+      "salt": "4bd9e769549026d4389b5749b1a0a0679155dd124a2cbbeeb064fb5ecb7ba003"
+    },
+    "mac": "9bb4dd73dadb3cea03978ea39d18954df568feeb70d5a066af0d5f8aab393521"
+  }
+}

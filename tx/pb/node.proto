@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package pb;
+
+import "google/protobuf/timestamp.proto";
+import "txvX.proto";
+
+option go_package = "/pb";
+
+
+message Node {
+
+    message NodeId {
+        bytes id = 1;
+        string address = 2;
+        uint64 idMajor = 3;
+        uint32 idMinor = 4;
+    }
+    
+    message Height {
+        uint64 minheight = 1;
+        uint64 maxheight = 2;
+    }
+    
+    NodeId id = 1;
+	float cumWeight = 2;
+	float txWeight = 3;
+	google.protobuf.Timestamp time = 4;
+	bool valid = 5;
+	Height height = 6;
+	Txv1 tx = 7;
+    map<string, bool> missingTargets = 8;
+}

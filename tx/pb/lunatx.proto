@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package pb;
+
+import "ids.proto";
+import "txvX.proto";
+
+option go_package = "/pb";
+
+message LunaTxRecord {
+
+    message AddressInfo {
+        bytes multiaddr = 1;
+    }
+
+    bytes peer_id = 1;
+
+    uint64 seq = 2;
+
+    bytes tx = 3;
+
+    repeated AddressInfo addresses = 4;
+
+    VersionType version = 5;
+
+    Ids ids = 6;
+
+    reserved 7 to 9;
+
+    oneof transaction {
+        Txv1 txv1 = 10;
+        Txv2 txv2 = 11;
+    }
+
+    uint64 txidmajor = 12;
+
+    uint32 txidminor = 13;
+
+    bytes txidid = 14;
+}

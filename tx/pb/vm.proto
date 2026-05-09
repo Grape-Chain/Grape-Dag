@@ -1,0 +1,160 @@
+syntax = "proto3";
+
+package pb;
+
+import "txvX.proto";
+import "google/protobuf/timestamp.proto";
+    
+
+option go_package = "/pb";
+
+message PinTxHeader {
+    Address coinbaseAccountAddress =1;
+    int64 timestamp = 2;
+    int32 txNumber = 3;
+}
+
+message WriteContractRequest {
+    Txv1 tx = 1;
+    PinTxHeader header = 2;
+}
+
+message ReadContractRequest {
+    Address contractAddress = 1;
+    string methodSignature = 2;
+    string methodParameters = 3;
+    string sender = 4;
+    PinTxHeader header = 5;
+    reserved 6 to 10;
+}
+
+message CallResponse {
+    int32 status = 1;
+    string error = 2;
+    string msg = 3;
+    string gasUsed = 4;
+    reserved 5 to 10;
+}
+
+message Account {
+    Address address = 1;
+    string balance  = 2;
+    int64 nonce = 3;
+    string codeHash = 4;
+}
+
+message Address {
+    bytes addBytes = 1;
+}
+
+message OpResult {
+    int32 status = 1;
+    string message = 2;
+}
+message ContractCode {
+    bytes bytecode = 1;
+}
+
+message Key {
+    bytes content = 1;
+}
+message Value {
+    bytes content = 1;
+}
+
+message PutContractCodeRequest {
+    Address contractAddress = 1;
+    ContractCode contractCode = 2;
+}
+
+message AddBalanceRequest {
+    Address accountAddress = 1;
+    string amount = 2;
+}
+
+message SubBalanceRequest {
+    Address accountAddress = 1;
+    string amount = 2;
+}
+
+message GetFromStorageByKeyRequest {
+    Address contractAddress = 1;
+    Key keyToQuery = 2;
+}
+
+message PutIntoStorageRequest {
+    Address contractAddress = 1;
+    Key keyToPut = 2;
+    Value valueToPut = 3;
+}
+message TransactionalRequest {
+
+}
+
+message SetNonceRequest {
+    Address contractAddress = 1;
+    int64 nonce = 2;
+    reserved 3 to 5;
+}
+
+message Topic {
+    bytes hash = 1;
+}
+message Log {
+    Address contractAddress = 1;
+    repeated Topic topics = 2;
+    bytes data = 3;
+    int64 block = 4;
+    int64 pinFrom = 5;
+    int64 pinTo = 6;
+}
+
+message SaveLogsRequest {
+    repeated Log logs = 1;
+}
+
+message DumpStateRequest {}
+
+message DumpStateResponse {}
+
+message CallMessage {
+    optional Address from = 1;
+    Address to = 2;
+    bytes amount = 3;
+    bytes data = 4;
+    Address coinbaseAccountAddress = 5;
+    google.protobuf.Timestamp timestamp = 6;
+    bytes fixingTx = 7;
+}
+
+message EstimateGasRequest {
+    oneof txOrMessage {
+        Txv1 tx = 1;
+        CallMessage message = 2;
+    }
+    PinTxHeader header = 5;
+}
+
+service SCVmService {
+    rpc runCall   (WriteContractRequest) returns (CallResponse);
+    rpc runCode   (ReadContractRequest) returns (CallResponse);
+    rpc estimateGas(EstimateGasRequest) returns (CallResponse);
+}
+
+service NodeStorageService {
+    rpc getAccount(Address) returns (Account);
+    rpc createAccount(Address) returns (OpResult);
+    rpc putContractCode(PutContractCodeRequest) returns (OpResult);
+    rpc addBalance(AddBalanceRequest) returns(OpResult);
+    rpc subBalance(SubBalanceRequest) returns (OpResult);
+    rpc getContractCode(Address) returns (ContractCode);
+    rpc getContractCodeStorage(GetFromStorageByKeyRequest) returns (Value);
+    rpc putContractStorage(PutIntoStorageRequest) returns (OpResult);
+    rpc stateCheckpoint(TransactionalRequest) returns (OpResult);
+    rpc stateCommit(TransactionalRequest) returns (OpResult);
+    rpc stateRevert(TransactionalRequest) returns (OpResult);
+    rpc setNonce(SetNonceRequest) returns (OpResult);
+    rpc saveLogs(SaveLogsRequest) returns (OpResult);
+    rpc dumpState(DumpStateRequest) returns (DumpStateResponse);
+}
+

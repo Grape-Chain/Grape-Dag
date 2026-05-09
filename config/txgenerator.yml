@@ -1,0 +1,14 @@
+tx:
+  maxfuellimit: 10000000
+  maxfuelprice: 10000000
+  neutrino: 0.00000001
+
+generator:
+  txrate: 60
+  txmax: 0
+  txalgo: "default"
+  txinitdelay: 3
+  txtypes: "commission,smart,service"
+  nodeip: "localhost"
+  nodeport: 50333
+  network: 0

@@ -1,0 +1,37 @@
+{
+  "gasConfig": {
+    "minGasLimit": 21000,
+    "gasLimitBoundDivisor": 1024,
+    "maxRefundQuotient": 2
+  },
+  "vm": {
+    "callCreateDepth": 1024,
+    "maxCodeSize": 24000
+  },
+  "gasPrice": {
+    "base": {
+      "v": 2,
+      "d": "Gas base cost"
+    },
+    "stop": {
+      "v": 0,
+      "d": "Base fee of the STOP opcode"
+    },
+    "add": {
+      "v": 3,
+      "d": "Base fee of the ADD opcode"
+    },
+    "mul": {
+      "v": 5,
+      "d": "Base fee of the MUL opcode"
+    },
+    "sub": {
+      "v": 3,
+      "d": "Base fee of the SUB opcode"
+    },
+    "div": {
+      "v": 5,
+      "d": "Base fee of the DIV opcode"
+    }
+  }
+}

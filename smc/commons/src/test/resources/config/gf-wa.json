@@ -1,0 +1,15 @@
+{
+  "name": "Warmed addresses",
+  "config": {
+    "prop1": {
+      "value": "2",
+      "d": "Some property"
+    }
+  },
+  "gasPrice": {
+    "coldaccountaccess": {
+      "v": 2600,
+      "d": "Gas cost of the first read of a given address (per transaction)"
+    }
+  }
+}

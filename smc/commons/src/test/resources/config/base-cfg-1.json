@@ -1,0 +1,18 @@
+{
+  "gasConfig": {
+    "maxRefundQuotient": 4
+  },
+  "vm": {
+    "maxCodeSize": 24000
+  },
+  "gasPrice": {
+    "base": {
+      "v": 20,
+      "d": "Gas base cost"
+    },
+    "stop": {
+      "v": 10,
+      "d": "Base fee of the STOP opcode"
+    }
+  }
+}

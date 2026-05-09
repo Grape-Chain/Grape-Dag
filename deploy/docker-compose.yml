@@ -1,0 +1,313 @@
+# Multi-node local development stack: 2 bootstrap peers, 1 leader, 5 peers,
+# 1 smart-contract VM, 1 MongoDB, and transaction generators.
+# Peers discover each other via mDNS on the shared vpcbs bridge network.
+#
+# Bring the stack up with:
+#
+#   cp deploy/.env.example deploy/.env   # then edit the values
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# The leader's REST API is at http://localhost:8010 and
+# the SMC VM's gRPC endpoint at localhost:29299.
+
+name: luna
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Bootstrap peers – seed the DHT; other nodes connect to them first via mDNS.
+  # ---------------------------------------------------------------------------
+
+  bootstrap1:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: bootstrap1
+    hostname: bootstrap1
+    command: ["lunapeer", "-id", "bspeer1", "-bootstrap", "-purge", "-node_type", "1"]
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+    networks:
+      - vpcbs
+    volumes:
+      - bootstrap1-data:/home/luna/.grap3/data
+      - ./bootstrap-compose.json:/home/luna/.grap3/bootstrap.json:ro
+    restart: unless-stopped
+
+  bootstrap2:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: bootstrap2
+    hostname: bootstrap2
+    command: ["lunapeer", "-id", "bspeer2", "-bootstrap", "-purge", "-node_type", "1"]
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+    networks:
+      - vpcbs
+    volumes:
+      - bootstrap2-data:/home/luna/.grap3/data
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Leader – genesis node, serves the REST API, writes stats to MongoDB.
+  # ---------------------------------------------------------------------------
+
+  leader:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: ${LUNA_VERSION:-dev}
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: leader
+    hostname: leader
+    command:
+      - lunapeer
+      - -id
+      - ${LUNA_PEER_ID:-leader}
+      - -leader
+      - -genesis
+      - -purge
+      - -node_type
+      - "0"
+      - -grpc
+      - -grpc_port
+      - "50333"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      smc:
+        condition: service_started
+      bootstrap1:
+        condition: service_started
+      bootstrap2:
+        condition: service_started
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      LUNA_MONGODB_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-luna}:${MONGO_INITDB_ROOT_PASSWORD:?set in deploy/.env}@mongo:27017/
+    ports:
+      - "8010:8010"     # REST API
+      - "33331:33331"   # libp2p
+    networks:
+      - vpcbs
+    volumes:
+      - leader-data:/home/luna/.grap3/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sfk -u $$LUNA_REST_API_USERNAME:$$LUNA_REST_API_PASSWORD https://localhost:8010/heartbeat"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Regular peers (node_type 1) – start after genesis txs are seeded.
+  # ---------------------------------------------------------------------------
+
+  peer1:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: peer1
+    hostname: peer1
+    command: ["lunapeer", "-id", "peer1", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
+    depends_on:
+      txspammer-l:
+        condition: service_completed_successfully
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+    networks:
+      - vpcbs
+    volumes:
+      - peer1-data:/home/luna/.grap3/data
+    restart: unless-stopped
+
+  peer2:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: peer2
+    hostname: peer2
+    command: ["lunapeer", "-id", "peer2", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
+    depends_on:
+      txspammer-l:
+        condition: service_completed_successfully
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+    networks:
+      - vpcbs
+    volumes:
+      - peer2-data:/home/luna/.grap3/data
+    restart: unless-stopped
+
+  peer4:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: peer4
+    hostname: peer4
+    command: ["lunapeer", "-id", "peer4", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
+    depends_on:
+      txspammer-l:
+        condition: service_completed_successfully
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+    networks:
+      - vpcbs
+    volumes:
+      - peer4-data:/home/luna/.grap3/data
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # VM-enabled peers (node_type 0) – connect to the SMC for smart contracts.
+  # ---------------------------------------------------------------------------
+
+  peer3:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: peer3
+    hostname: peer3
+    command: ["lunapeer", "-id", "peer3", "-node_type", "0", "-grpc", "-grpc_port", "50333", "-vmserver_port", "29299"]
+    depends_on:
+      txspammer-l:
+        condition: service_completed_successfully
+      smc:
+        condition: service_started
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+    networks:
+      - vpcbs
+    volumes:
+      - peer3-data:/home/luna/.grap3/data
+    restart: unless-stopped
+
+  peer5:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: peer5
+    hostname: peer5
+    command: ["lunapeer", "-id", "peer5", "-node_type", "0", "-grpc", "-grpc_port", "50333", "-vmserver_port", "29299"]
+    depends_on:
+      txspammer-l:
+        condition: service_completed_successfully
+      smc:
+        condition: service_started
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+    networks:
+      - vpcbs
+    volumes:
+      - peer5-data:/home/luna/.grap3/data
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Smart-contract VM and database.
+  # ---------------------------------------------------------------------------
+
+  smc:
+    build:
+      context: ../smc
+      dockerfile: Dockerfile
+    image: ghcr.io/vg-grape/luna-smc:${LUNA_SMC_TAG:-latest}
+    ports:
+      - "29299:29299"   # gRPC: peer -> VM
+      - "39399:39399"   # state server
+    networks:
+      - vpcbs
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-luna}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?set in deploy/.env}
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE:-lunadb}
+    ports:
+      - "47329:27017"
+    networks:
+      - vpcbs
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Transaction generators.
+  # txspammer-l seeds genesis transactions; peers wait for it to finish.
+  # txspammer runs continuously after all peers are up.
+  # init-wallets funds preset addresses once.
+  # ---------------------------------------------------------------------------
+
+  txspammer-l:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: txspammer-l
+    command: ["txgen", "-mode", "genesis", "-grpc_port", "50333"]
+    depends_on:
+      leader:
+        condition: service_healthy
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GENERATOR_NETWORK: "0"
+    volumes:
+      - ./txgenerator-genesis.yml:/home/luna/.grap3/txgenerator.yml:ro
+    networks:
+      - vpcbs
+
+  txspammer:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: txspammer
+    command: ["txgen", "-mode", "trader", "-grpc_port", "50333"]
+    depends_on:
+      - peer1
+      - peer2
+      - peer3
+      - peer4
+      - peer5
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GENERATOR_NETWORK: "0"
+    volumes:
+      - ./txgenerator-compose.yml:/home/luna/.grap3/txgenerator.yml:ro
+    networks:
+      - vpcbs
+
+  init-wallets:
+    image: luna-peer:${LUNA_VERSION:-dev}
+    container_name: init-wallets
+    command:
+      - txgen
+      - -mode
+      - payment
+      - -to
+      - "0xd7023dce93f477853427e1a46a65aea8b8847dd4,0xadcc2f255d41a1bb045d5607659916087dfc18c5,0x946b03b589916c78ce1c1b034c64ced7d73bd56d,0xdbbc6383e5d1d5cfd622ed92fb864f37153be86d,0x55cc507940875997d741920664c12be3c56ce7e4"
+      - -amount
+      - "10000000000000000000000"
+      - -grpc_port
+      - "50333"
+    depends_on:
+      - leader
+    environment:
+      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
+      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GENERATOR_NETWORK: "0"
+    volumes:
+      - ./txgenerator-compose.yml:/home/luna/.grap3/txgenerator.yml:ro
+    networks:
+      - vpcbs
+
+networks:
+  vpcbs:
+    driver: bridge
+
+volumes:
+  bootstrap1-data:
+  bootstrap2-data:
+  leader-data:
+  peer1-data:
+  peer2-data:
+  peer3-data:
+  peer4-data:
+  peer5-data:
+  mongo-data:
