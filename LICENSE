@@ -1,24 +1,29 @@
-BSD 2-Clause License
-
-Copyright (c) 2026, Grape Chain
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+Proprietary Software License
+Copyright © 2026 Grape DLT Inc. All rights reserved.
+This software and associated documentation files, including but not limited to source code, object code, scripts, interfaces, designs, architecture, databases, documentation, and related materials (the “Software”), are the exclusive property of Grape DLT Inc.
+1. Ownership
+All rights, title, and interest in and to the Software are owned exclusively by Grape DLT Inc. No ownership rights are transferred to any person or entity by access to, possession of, or use of the Software.
+2. Restrictions
+No person or entity may, without the prior written permission of Grape DLT Inc.:
+use the Software;
+copy, reproduce, or duplicate the Software;
+modify, adapt, alter, translate, or create derivative works from the Software;
+merge the Software with any other software or materials;
+publish, disclose, transmit, distribute, sublicense, lease, sell, resell, assign, transfer, or otherwise make available the Software;
+reverse engineer, decompile, disassemble, or attempt to derive the source code, structure, sequence, organization, or underlying ideas of the Software;
+remove, alter, or obscure any proprietary notices, copyright notices, trademarks, or other ownership markings contained in the Software;
+use the Software for commercial, competitive, or unauthorized purposes.
+Any unauthorized use of the Software is strictly prohibited.
+3. No License Granted
+Except where expressly authorized in a separate written agreement signed by Grape DLT Inc., no license, right, or permission is granted under this notice, whether by implication, estoppel, or otherwise.
+Access to or possession of the Software does not grant any right to use, modify, distribute, or exploit the Software in any manner.
+4. Confidentiality
+The Software may contain confidential, proprietary, and trade secret information of Grape DLT Inc. Any person or entity with access to the Software must maintain its confidentiality and must not disclose it to any third party without prior written authorization from Grape DLT Inc.
+5. No Warranty
+The Software is provided, if at all, “as is,” without warranty of any kind, whether express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, title, or non-infringement.
+6. Limitation of Liability
+To the maximum extent permitted by law, Grape DLT Inc. shall not be liable for any direct, indirect, incidental, special, consequential, exemplary, or punitive damages arising out of or relating to the Software, including any unauthorized use, access, modification, distribution, or reliance upon the Software.
+7. Enforcement
+Any unauthorized use, copying, modification, distribution, disclosure, or exploitation of the Software may result in civil and/or criminal liability. Grape DLT Inc. reserves all rights and remedies available under applicable law, including injunctive relief, damages, attorney’s fees, and any other remedies permitted by law.
+8. Reservation of Rights
+All rights not expressly granted in writing by Grape DLT Inc. are reserved.
