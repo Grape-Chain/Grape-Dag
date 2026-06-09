@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package pb;
+
+option go_package = "/pb";
+
+message Ids {
+    repeated UuidSlice ids = 1;
+    map<string, bytes> signatures = 2;
+}
+
+message UuidSlice {
+    bool is_empty = 1;
+    bytes uuid = 2;
+}

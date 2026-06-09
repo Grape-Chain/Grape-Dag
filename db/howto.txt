@@ -1,0 +1,86 @@
+
+MongoDB command line configuration parameters (most frequently used)
+Option Name
+	
+Type
+	
+Default Value
+	
+Description
+connectTimeoutMS
+	
+integer
+	
+30000
+	
+Specifies the number of milliseconds to wait before timeout on a TCP connection.
+maxPoolSize
+	
+integer
+	
+100
+	
+Specifies the maximum number of connections that a connection pool may have at a given time.
+replicaSet
+	
+string
+	
+null
+	
+Specifies the replica set name for the cluster. All nodes in the replica set must have the same replica set name, or the Client will not consider them as part of the set.
+maxIdleTimeMS
+	
+integer
+	
+0
+	
+Specifies the maximum amount of time a connection can remain idle in the connection pool before being removed and closed. The default is 0, meaning a connection can remain unused indefinitely.
+minPoolSize
+	
+integer
+	
+0
+	
+Specifies the minimum number of connections that the driver maintains in a single connection pool.
+socketTimeoutMS
+	
+integer
+	
+0
+	
+Specifies the number of milliseconds to wait for a socket read or write to return before returning a network error. The 0 default value indicates that there is no timeout.
+serverSelectionTimeoutMS
+	
+integer
+	
+30000
+	
+Specifies the number of milliseconds to wait to find an available, suitable server to execute an operation.
+heartbeatFrequencyMS
+	
+integer
+	
+10000
+	
+Specifies the number of milliseconds to wait between periodic background server checks.
+tls
+	
+boolean
+	
+false
+	
+Specifies whether to establish a Transport Layer Security (TLS) connection with the instance. This is automatically set to true when using a DNS seedlist (SRV) in the connection string. You can override this behavior by setting the value to false.
+w
+	
+string or integer
+	
+null
+	
+Specifies the write concern. To learn more about values, see the server documentation on Write Concern options.
+directConnection
+	
+boolean
+	
+false
+	
+Specifies whether to force dispatch all operations to the host specified in the connection URI.

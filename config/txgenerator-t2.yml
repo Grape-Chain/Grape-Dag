@@ -1,0 +1,21 @@
+tx:
+  maxfuellimit: 10000000
+  maxfuelprice: 10000000
+  neutrino: 0.00000001
+
+generator:
+  ico: 10000000000000000000000000000000 # initial coin offering
+  txrate: 10  # tx per seccon
+  txmax: 100  # max num of tx t generate
+  txalgo: "default" # algorithm to use for time cycle deviation
+  txinitdelay: 3 # initial delay before we start generating tx
+  txtypes: "payment" # types of tx 
+  nodeip: "localhost" # grpc server ip address
+  nodeport: 50333 # grpc server port
+  network: 2 # network type 0 public net - 0, public test - 1, private test - 2
+  corrupt: false # if we want to generate currapted tx
+  trader: true # act as a trader
+  width: 5 # initial  widht of DAG
+  publickey: 940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3
+  privatekey: 6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af
+  wallet: 0xd09ec4a81cde61b57de012d3fe80beae3f28fb68

@@ -1,0 +1,45 @@
+# Binaries
+/bin/
+/dist/
+/build/
+*.exe
+*.test
+*.out
+
+# Coverage
+coverage.txt
+coverage.html
+*.cov
+
+# Go workspace files (we use a single module)
+go.work.sum
+
+# Vendor (we don't vendor)
+vendor/
+
+# Env files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Local config overrides
+*.local.yml
+*.local.yaml
+config.local.*

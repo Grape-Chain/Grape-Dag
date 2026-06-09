@@ -1,0 +1,170 @@
+services:
+  bootstrap1:
+    container_name: bootstrap1
+    image: ghcr.io/vg-grape/grape-dev/peer:develop_build_latest
+    volumes:
+      - /opt/bootstrap/tmp:/tmp
+    command: /home/grape/start-peer.sh -id bspeer1-tn -bootstrap -node_type 1 -verbose 1 -port 43431 -purge -f /home/grape/.grap3/grapepeer-mdns0.yml 
+    hostname: bootstrap1
+    networks:
+      vpcbs:
+        ipv4_address: 10.8.0.2
+
+  bootstrap2:
+    container_name: bootstrap2
+    image: ghcr.io/vg-grape/grape-dev/peer:develop_build_latest
+    volumes:
+      - /opt/bootstrap/tmp:/tmp
+    command: /home/grape/start-peer.sh -id bspeer2-tn -bootstrap -node_type 1 -verbose 1 -port 43431 -purge -f /home/grape/.grap3/grapepeer-mdns0.yml 
+    hostname: bootstrap2
+    networks:
+      vpcbs:
+        ipv4_address: 10.8.0.3
+
+  peer1:
+    container_name: peer1
+    image: ghcr.io/vg-grape/grape-dev/peer:develop_build_latest
+    volumes:
+      - /opt/peer/tmp:/tmp
+    command: /home/grape/start-peer.sh --print-hosts --watchdog --timeout 120 --retries 20 -id peer1-tn -node_type 1 -grpc -grpc_port 50333 -port 43431 -f /home/grape/.grap3/grapepeer-mdns0.yml -bootstrap_nodes /dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1,/dns4/bootstrap2/udp/43431/quic-v1/p2p/12D3KooWQYaGFAHo5zSsJR4Sgdpv9AoCWU9y6aTdAvmVjg6rcmzf
+    #don't change IP address, it bound to api2.test.grap3.com
+    hostname: peer1
+    networks:
+      vpcbs:
+        ipv4_address: 10.8.0.21  
+    # depends_on:
+    #   txspammer-l:
+    #       condition: service_completed_successfully
+
+  peer2:
+    container_name: peer2
+    image: ghcr.io/vg-grape/grape-dev/peer:develop_build_latest
+    volumes:
+      - /opt/peer/tmp:/tmp
+    command: /home/grape/start-peer.sh --print-hosts --watchdog --timeout 120 --retries 20 -id peer2-tn -node_type 1 -grpc -grpc_port 50333 -port 43431 -f /home/grape/.grap3/grapepeer-mdns0.yml -bootstrap_nodes /dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1,/dns4/bootstrap2/udp/43431/quic-v1/p2p/12D3KooWQYaGFAHo5zSsJR4Sgdpv9AoCWU9y6aTdAvmVjg6rcmzf
+    networks:
+      - vpcbs
+    depends_on:
+      txspammer-l:
+          condition: service_completed_successfully
+
+  peer3:
+    container_name: peer3
+    image: ghcr.io/vg-grape/grape-dev/peer-vm:develop_build_latest
+    volumes:
+      - /opt/peer/tmp:/tmp
+    command: /home/grape/start-peer.sh --vm --print-hosts --watchdog --timeout 120 --retries 20 -id peer3-tn -node_type 0 -grpc -grpc_port 50333 -port 43431 -f /home/grape/.grap3/grapepeer-mdns0.yml -bootstrap_nodes /dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1,/dns4/bootstrap2/udp/43431/quic-v1/p2p/12D3KooWQYaGFAHo5zSsJR4Sgdpv9AoCWU9y6aTdAvmVjg6rcmzf
+    networks:
+      vpcbs:
+        ipv4_address: 10.8.0.23
+    depends_on:
+      txspammer-l:
+          condition: service_completed_successfully
+
+  peer4:
+    container_name: peer4
+    image: ghcr.io/vg-grape/grape-dev/peer:develop_build_latest
+    volumes:
+      - /opt/peer/tmp:/tmp
+    command: /home/grape/start-peer.sh --print-hosts --watchdog --timeout 120 --retries 20 -id peer4-tn -node_type 1 -grpc -grpc_port 50333 -port 43431 -f /home/grape/.grap3/grapepeer-mdns0.yml -bootstrap_nodes /dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1,/dns4/bootstrap2/udp/43431/quic-v1/p2p/12D3KooWQYaGFAHo5zSsJR4Sgdpv9AoCWU9y6aTdAvmVjg6rcmzf
+    networks:
+      - vpcbs        
+    depends_on:
+      txspammer-l:
+          condition: service_completed_successfully
+
+  peer5:
+    container_name: peer5
+    image: ghcr.io/vg-grape/grape-dev/peer-vm:develop_build_latest
+    volumes:
+      - /opt/peer/tmp:/tmp
+    command: /home/grape/start-peer.sh --vm --print-hosts --watchdog --timeout 120 --retries 20 -id peer5-tn -node_type 0 -grpc -grpc_port 50333 -port 43431 -f /home/grape/.grap3/grapepeer-mdns0.yml -bootstrap_nodes /dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1,/dns4/bootstrap2/udp/43431/quic-v1/p2p/12D3KooWQYaGFAHo5zSsJR4Sgdpv9AoCWU9y6aTdAvmVjg6rcmzf
+    networks:
+      - vpcbs        
+    depends_on:
+      txspammer-l:
+          condition: service_completed_successfully
+
+  leader:
+    container_name: leader
+    image: ghcr.io/vg-grape/grape-dev/peer-vm:develop_build_latest
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS http://localhost:8010/heartbeat -H 'Authorization: Basic bHVuYWRldjpiSFZ1WVdSbGRnbz0=' || echo 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 3    
+    ports:
+     - "33333:8010/tcp"    
+    volumes:
+      - /opt/leader/tmp:/tmp            
+    command: /home/grape/start-peer.sh --vm -id leader-tn -leader -node_type 0 -genesis -grpc -grpc_port 50333 -port 43431 -f /home/grape/.grap3/grapepeer-mdns0.yml -bootstrap_nodes /dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1,/dns4/bootstrap2/udp/43431/quic-v1/p2p/12D3KooWQYaGFAHo5zSsJR4Sgdpv9AoCWU9y6aTdAvmVjg6rcmzf
+    #don't change IP address, it bound to api.test.grap3.com
+    hostname: leader
+    networks:
+      vpcbs:
+        ipv4_address: 10.8.0.5
+    depends_on:
+      - bootstrap1
+      - bootstrap2        
+
+  txspammer:
+    container_name: txspammer
+    image: ghcr.io/vg-grape/grape-dev/peer:develop_build_latest
+    entrypoint: /home/grape/spammer.sh leader 5 100 -mode trader
+    environment:      
+      - WAITING_TIMEOUT=120
+    restart: unless-stopped
+    networks:
+      - vpcbs        
+    depends_on:
+      - peer1
+      - peer2
+      - peer3
+      - peer4
+      - peer5
+
+  txspammer-l:
+    container_name: txspammer-l
+    image: ghcr.io/vg-grape/grape-dev/peer:develop_build_latest
+    entrypoint: /home/grape/spammer.sh leader 5 5 -mode genesis
+    environment:      
+      - WAITING_TIMEOUT=60
+    networks:
+      - vpcbs        
+    depends_on:
+      leader:
+          condition: service_healthy
+
+  init-wallets:
+    container_name: init-wallets
+    image: ghcr.io/vg-grape/grape-dev/peer:develop_build_latest
+    entrypoint: /home/grape/spammer.sh leader 5 5 -mode payment -to 0xd7023dce93f477853427e1a46a65aea8b8847dd4,0xadcc2f255d41a1bb045d5607659916087dfc18c5,0x946b03b589916c78ce1c1b034c64ced7d73bd56d,0xdbbc6383e5d1d5cfd622ed92fb864f37153be86d,0x55cc507940875997d741920664c12be3c56ce7e4 -amount 10000000000000000000000
+    environment:      
+      - WAITING_TIMEOUT=30
+    networks:
+      - vpcbs        
+    depends_on:
+      - txspammer
+      - leader
+  
+  # uniswap-test:
+  #   container_name: uniswap-test
+  #   image: registry.gitlab.com/apollo-fintech-master/grape1/smartcontracts-examples/uniswap:dev_latest
+  #   environment:
+  #       - NODE_API_SCHEMA=https
+  #       - NODE_API_PORT=8010
+  #       - NODE_IP=10.8.0.5  
+  #   #restart: unless-stopped
+  #   networks:
+  #      - vpcbs        
+  #   depends_on:
+  #     init-wallets:
+  #         condition: service_completed_successfully
+
+networks:
+  vpcbs:
+    driver: bridge
+    ipam:
+     config:
+       - subnet: 10.8.0.0/16
+         gateway: 10.8.0.255

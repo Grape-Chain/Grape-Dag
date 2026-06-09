@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package pb;
+
+option go_package = "/pb";
+
+enum TransactionType {
+    PAYMENT = 0;
+    PUBLISH_CONTRACT = 1;
+    CALL_CONTRACT = 2;
+    SERVICE_GENESIS = 3;
+    SERVICE = 4;
+    SERVICE_PIN = 5;
+    reserved 6 to 15;
+}
+
+enum ChainType {
+    MAINNET = 0;
+    PUBLIC_TESTNET = 1;
+    PRIVATE_TESTNET = 2;
+    reserved 3 to 15;
+}
+
+enum VersionType {
+    TXV0 = 0;
+    TXV1 = 1;
+    reserved 2 to 15;
+}
+
+message Txv1 {
+    TransactionType tx_type = 1;
+    ChainType chain_type = 2;
+    reserved 3;
+    bytes sender_pubk = 4; // sender's public key: secp256k1
+    bytes sender = 5; // sender's wallet address
+    bytes recepient = 6; // recipient’s wallet address
+    bytes amount = 7;
+    uint64 nonce = 8;
+    google.protobuf.Timestamp timestamp = 9;
+    bytes fuel_limit = 10;
+    bytes fuel_price = 11;
+    optional bytes data = 12; // optional for payments; mandatory for contracts
+    bytes signature = 13; // Signature of the serialized transaction bytes signed by user’s private key
+    bytes rlpEthTx = 14; // original bytes of the eth rlp tx
+    reserved 15 to 15;
+}
+
+message Txv2 {
+    reserved 1 to 15;
+}

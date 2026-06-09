@@ -1,0 +1,1291 @@
+openapi: 3.1.0
+servers:
+  - url: 'https://localhost:8010/api/rest'
+    description: Local GrapeOne full node's API sever with TLS
+  - url: 'https://testnet1.grapeone.com'
+    description: Testnet 1 API sever to test features waiting for release
+info:
+  description: >-
+    Provides REST API endpoints to work with GrapeOne node by sending/viewing
+    transactions, accounts, contracts and node state
+  version: 1.0.0
+  title: GrapeOne full node API
+  termsOfService: 'https://to.be.defined'
+  contact:
+    email: support@aplfintech.com
+  license:
+    name: Apache 2.0
+    url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
+tags:
+  - name: transactions
+    description: Operations related to sending/viewing/filtering transactions
+  - name: contracts
+    description: Calling READ smart contract's methods
+  - name: accounts
+    description: Accounts of the user to send transactions and holding native coins
+  - name: peers
+    description: Information about connected nodes
+  - name: system
+    description: Full node general information about the software running
+paths:
+  /transactions/{txHash}:
+    get:
+      security: 
+        - basic: []
+      summary: Get confirmed transaction by its hash
+      description: >-
+        Fetch the confirmed transaction by its hexadecimal hash. Unconfirmed
+        transaction will not be returned here
+      parameters:
+        - name: txHash
+          in: path
+          required: true
+          schema:
+            type: string
+          description: >-
+            Hash of the confirmed transaction to fetch in hexadecimal format
+            prefixed with '0x'
+      operationId: getTransactionByHash
+      responses:
+        '200':
+          description: Found confirmed transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedTransaction'
+        '404':
+          description: Confirmed tx not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - transactions
+  /transactions:
+    post:
+      security: 
+        - basic: []
+      summary: Send signed transaction
+      description: >-
+        Send raw signed transaction encoded in hexadecimal format to be accepted
+        in mempool of the full node and then distributed withing the GrapeOne
+        network and confirmed by validators
+      parameters: []
+      operationId: sendRawTransaction
+      responses:
+        '200':
+          description: >-
+            Transaction successfully parsed, validated and accepted into a
+            mempool
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TxReceipt'
+        '400':
+          description: >-
+            Transaction validation error: bad signature, transaction cannot be
+            parsed, transaction version is outdated, incorrect chain id
+            specified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: >-
+            Needed entity for sending tx doesn't exist: sender's account,
+            contract to be called
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: >-
+            Conflict between node's state and client's state, required state
+            repeated fetch by client or additional synchronization: bad nonce
+            for transaction, not enough balance on account to pay fees+amount 
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - transactions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RawTransaction'
+        description: >-
+          Signed transaction encoded in hexadecimal format and prefixed with
+          '0x'. Tx structure and encoding rules are defined in a separate
+          documents
+
+    get:
+      security: 
+        - basic: []
+      summary: Get confirmed and unconfirmed transactions with filter
+      description: >-
+        Return list of confirmed or/and unconfirmed transactions using pagination and optinal filter by account, 
+        sender/recipient with an optional sort by timestamp/nonce DESC/ASC
+      parameters:
+        - in: query
+          name: accounts
+          schema:
+            type: array
+            items:
+              type: string
+              format: address
+          style: form
+          explode: false
+          example: ["0xd09ec4a81cde61b57de012d3fe80beae3f28fb68"]
+          description: List of accounts that must be used for filtering transactions, when empty - then all transactions will be returned
+        - in: query
+          name: block
+          description: Number of the block to see for transactions (optional)
+          schema: 
+            type: integer
+            minimum: 0
+          examples: 
+            genesis:
+              value: 0
+              summary: Transactions from the genesis block (typically genesis has no transactions)
+            arbitrary_block:
+              value: 1250
+              summary: Get transaction from block with number 1250 (1250th block after genesis)
+        - in: query
+          name: direction
+          schema:
+            type: string
+            enum: 
+            - SENT
+            - RECEIVED
+            - BOTH
+            default: BOTH
+          examples: 
+            all:
+              value: BOTH
+              summary: Don't filter out transaction by SENT/RECEIVED criteria, keep both types, default
+            sent:
+              value: SENT
+              summary: Return only SENT transactions, skipping all received
+            received: 
+              value: RECEIVED
+              summary: Return only RECEIVED transactons, skipping all sent
+        - in: query
+          name: sortOrder
+          schema: 
+            type: string
+            enum: 
+            - ASC
+            - DESC
+            default: DESC
+          description: Sort fetched transactions in ascending or descending order by 'sortCriteria'
+          example: ASC
+        - in: query
+          name: sortCriteria
+          schema: 
+            type: string
+            enum: 
+            - TIMESTAMP
+            - NONCE
+            default: NONCE
+          examples:
+            nonceSort:
+              value: NONCE
+              summary: Sort transactions by their order - nonce
+            timestampSort: 
+              value: TIMESTAMP
+              summary: Sort transactions by the time of their creation historical order
+          description: Criteria to sort transactions by, NONCE is suited for one account transactions ordering, TIMESTAMP for many accounts ordering
+        - in: query
+          name: txType
+          schema:
+            type: integer
+            enum:
+              - -1
+              - 0
+              - 1
+              - 2
+            default: -1
+          description: Filter transactions by type, leave empty or -1 to not apply this filter
+          examples:
+              paymentType:
+                value: 0
+                summary: Fetch only payment txs
+              publishType:
+                value: 1
+                summary: Fetch only PublishContract txs
+              callType:
+                value: 2
+                summary: Fetch only CallContract txs
+        - in: query
+          name: confirmationStatus
+          description: Select transactions with statuses - Confirmed, Unconfirmed or Both
+          schema:
+            type: string
+            enum: 
+            - CONFIRMED
+            - UNCONFIRMED
+            - BOTH
+            default: BOTH
+          examples: 
+            all:
+              value: BOTH
+              summary: Select both unconfirmed and confirmed transactions
+            sent:
+              value: UNCONFIRMED
+              summary: Select only unconfirmed transactions
+            received: 
+              value: CONFIRMED
+              summary: Select only confirmed transactions
+        - $ref: '#/components/parameters/pageParam'
+        - $ref: '#/components/parameters/pageSizeParam'
+      operationId: getFilteredTransactions
+      responses:
+        '200':
+          description: Filtered, sorted, paginated transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedTransactions'
+        '400':
+          description: Incorrect sorting/filtering/paginating parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - transactions
+        
+  /transactions/estimate:      
+    post:
+      security: 
+        - basic: []
+      summary: Estimate fuel limit for tx
+      description: >-
+        Estimate fuel limit for transaction execution by executing this mocked tx against current
+        state on VM of the p2p node and then reverting back to initial state (no state changes)
+        Two inputs are possible: RawTransaction (unsigned), CallMessage (sender, recipient, amount, data)
+      parameters: []
+      operationId: estimateTxFuel
+      responses:
+        '200':
+          description: >-
+            Transaction estimation result (via executing mocked tx). Can display validation errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FuelEstimationResult'
+        '400':
+          description: >-
+            Transaction cannot be parsed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - transactions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/CallMessage'
+                - $ref: '#/components/schemas/RawTransaction'
+        description: >-
+          Unsigned transaction encoded in hexadecimal format and prefixed with
+          '0x'. Tx structure and encoding rules are defined in a separate
+          documents
+  /logs:  
+    get:
+      security: 
+        - basic: []
+      summary: Get SMC logs by filter
+      description: >-
+        Return paginated list of logs for a given contract by filter using DESC sort
+      parameters:
+        - in: query
+          name: address
+          required: true
+          schema: 
+            type: string
+          description: Address of the smart contract to get events from 
+          example: "0xd09ec4a81cde61b57de012d3fe80beae3f28fb68"
+        - in: query
+          name: pinFrom
+          required: false
+          schema: 
+            type: integer
+            minimum: 0
+          description: Pinning transaction number for filtering logs from pinTx 
+        - in: query
+          name: pinTo
+          required: false
+          schema: 
+            type: integer
+            minimum: 0
+          description: Pinning transaction number for filtering logs to pinTx 
+        - in: query
+          name: topics
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+              format: hexadecimal
+          style: form
+          explode: false
+          examples:
+            searchByThreeTopics:
+              value : ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                    "0x0000000000000000000000009b03af67c150566b98f6da508e3aa38db3229715",
+                    "0x00000000000000000000000088ac9b5ba363eda36266e9045e3b1b08dd2a3aac"]
+              summary: Search for logs matching exactly 3 specified topics
+            searchAll:
+              value: ["null"]
+              summary: Search for any existing topics
+            skipFirstTopic:
+              value: ["null",
+                    "0x0000000000000000000000009b03af67c150566b98f6da508e3aa38db3229715"]
+              summary: Search for logs matching any topic for first 'null' topic and matching to second topic specified
+              
+        - $ref: '#/components/parameters/pageParam'
+        - $ref: '#/components/parameters/pageSizeParam'
+      operationId: getLogs
+      responses:
+        '200':
+          description: Filtered, sorted, paginated logs for contract
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogsResponse'
+        '400':
+          description: Incorrect sorting/filtering/paginating parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - logs        
+  /contracts/{contractId}/methods/{methodId}:
+    get:
+      security: 
+        - basic: []
+      summary: Call read method of the contract
+      description: >-
+        Call read method of the given contract with a list of optional parameters (all in hex format)
+      parameters:
+        - in: path
+          name: contractId
+          schema:
+            type: string
+            format: address
+          example: '0x617025aFf484Fc0bC14Cb424a1270c13FAf1B039'
+          required: true
+        - in: path
+          name: methodId
+          schema:
+            type: string
+          example: '0x12fbb2a1'
+          required: true
+        - in: query
+          name: params
+          schema: 
+            type: array
+            items: 
+              type: string
+          style: form
+          explode: false
+          examples: 
+            noParameters: 
+              value: ['0x']
+              summary: no prameters
+              description: Call read contract method witout parameters
+            threeParameters:
+              value: ["0x617025aFf484Fc0bC14Cb424a1270c13FAf1B039", "0x64", "0xf14044d46B9E29446966797B98597F4Bcb00dFe6"]
+              summary: three parameters
+              description: Call read contract method with first address parameter, second integer parameter = 100 and third address parameter. All parameters are hex-encoded with 0x prefix
+        - in: query
+          name: sender
+          schema:
+            type: string
+            format: address
+          example: '0xf14044d46B9E29446966797B98597F4Bcb00dFe6'
+      responses:
+        '200':
+          description: Called method result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractMethodCallResult'
+                
+        '400':
+          description: Bad parameters specified, unable to parse or call with them method or method call failed for these parameters (contract error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: No such contract or method in contract
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags: 
+        - contracts     
+        
+  /contracts/{contractId}:
+    get:
+      security: 
+        - basic: []
+      summary: Call read method of the contract
+      description: >-
+        Call read method of the given contract with parameter,
+        parameter format: 0x<functionhash><firstparam><secondparam>...
+      parameters:
+        - in: path
+          name: contractId
+          schema:
+            type: string
+            format: address
+          example: '0x617025aFf484Fc0bC14Cb424a1270c13FAf1B039'
+          required: true
+        - in: query
+          name: params
+          schema: 
+            type: string         
+          examples: 
+            noParameters: 
+              value: ['0x62af540a']
+              summary: no prameters
+              description: Call read contract method witout parameters
+            threeParameters:
+              value: ["0xabff2301000000000000000000000000617025aFf484Fc0bC14Cb424a1270c13FAf1B0390000000000000000000000000000000000000000000000000000000000000064000000000000000000000000f14044d46B9E29446966797B98597F4Bcb00dFe6"]
+              summary: three parameters
+              description: Call read contract method with hash abff2301 and parameters- first address parameter, second integer parameter = 100, third address parameter.
+        - in: query
+          name: sender
+          schema:
+            type: string
+            format: address
+          example: '0xf14044d46B9E29446966797B98597F4Bcb00dFe6'
+      responses:
+        '200':
+          description: Called method result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractMethodCallResult'
+                
+        '400':
+          description: Bad parameters specified, unable to parse or call with them method or method call failed for these parameters (contract error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: No such contract
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags: 
+        - contracts
+  /contracts/{contractId}/abi:
+    put:
+      security: 
+        - basic: []
+      summary: Save ABI for the contract
+      description: >-
+        Save ABI for the given contract into store for future usage for displaying possible methods to call
+      parameters:
+        - in: path
+          name: contractId
+          schema:
+            type: string
+            format: address
+          example: '0x617025aFf484Fc0bC14Cb424a1270c13FAf1B039'
+          required: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ABI'
+        description: >-
+          Request to save ABI for the specified contract
+      responses:
+        '200':
+          description: ABI saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ABISaveResponse'
+        '400':
+          description: Bad parameters specified, unable to parse ABI
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: No such contract found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags: 
+        - contracts
+    get:
+      security: 
+        - basic: []
+      summary: Get ABI for the contract
+      description: >-
+        Get ABI for the given contract from the store
+      parameters:
+        - in: path
+          name: contractId
+          schema:
+            type: string
+            format: address
+          example: '0x617025aFf484Fc0bC14Cb424a1270c13FAf1B039'
+          required: true
+      responses:
+        '200':
+          description: ABI retrieved for a given contract
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ABI'
+        '404':
+          description: No such contract found or ABI doesn't exist for it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags: 
+        - contracts
+  
+  /contracts/{contractId}/code:
+    get:
+      security: 
+        - basic: []
+      summary: Get code hash and contract code
+      description: Return code hash and contract code if contract by given address exist. If not exist - return c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
+      parameters:
+        - in: path
+          name: contractId
+          schema:
+            type: string
+            format: address
+          example: '0x617025aFf484Fc0bC14Cb424a1270c13FAf1B039'
+          required: true
+      responses:
+        '200':
+          description: Return codeHash and codeContract by given address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Code'
+      tags: 
+        - contracts
+        
+        
+  /accounts/{accountId}:
+    get:   
+      security: 
+        - basic: []
+      summary: Get user's account by id
+      description: >-
+        Get account for user in GrapeOne network with public key, balance and nonce
+      parameters:
+        - in: path
+          name: accountId
+          schema:
+            type: string
+            format: address
+          example: '0xf14044d46B9E29446966797B98597F4Bcb00dFe6'
+          required: true
+      responses:
+        '200':
+          description: Found existing user's account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '404':
+          description: Account with specified id was not found, id is incorrect or account has no confirmed transactions yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags: 
+        - accounts
+        
+        
+  /accounts:
+    get:
+      security: 
+        - basic: []
+      summary: Get all user accounts
+      description: >-
+        Get a list of user's accounts sorted by balance
+      parameters:
+        - in: query
+          name: sortOrder
+          schema: 
+            type: string
+            enum: 
+            - ASC
+            - DESC
+            default: DESC
+          description: Sort accounts in ascending or descending order by 'sortCriteria'
+          example: ASC
+        - in: query
+          name: sortCriteria
+          schema: 
+            type: string
+            enum: 
+            - CREATION_DATE
+            - BALANCE
+            default: BALANCE
+          examples:
+            timeSort:
+              value: CREATION_DATE
+              summary: Sort accounts by their creation order
+            timestampSort: 
+              value: BALANCE
+              summary: Sort account by the balance of native coins held
+          description: Criteria to sort accounts by
+        - $ref: '#/components/parameters/pageParam'
+        - $ref: '#/components/parameters/pageSizeParam'
+      responses:
+        '200':
+          description: Sorted and paginated list of existing account in GrapeOne network
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Accounts'
+        '400':
+          description: Sort/paging parameters are invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags: 
+        - accounts
+        
+        
+  /peers:
+    get:
+      security: 
+        - basic: []
+      summary: Get all peers for this node
+      description: >-
+        Get a list of connected/disconnected nodes communicating with this node via P2P protocol over GrapeOne network. Peers are sorted by reputation (higher are first)
+      parameters:
+        - in: query
+          name: status
+          schema:
+            enum: 
+            - CONNECTED
+            - NOT_CONNECTED
+            - CANDIDATE
+            default: CONNECTED
+            description: Filter out peers to get only with status specified, otherwise will get all
+        - $ref: '#/components/parameters/pageParam'
+        - $ref: '#/components/parameters/pageSizeParam'
+      responses:
+        '200':
+          description: Filtered and paginated list of the nodes connected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  peers: 
+                    type: array
+                    items: 
+                      $ref: '#/components/schemas/Peer'
+        '400':
+          description: Filter/paging parameters are invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags: 
+        - peers
+
+  /pin-number:
+    get:
+      security:
+        - basic: []
+      summary: Get information about pin transaction
+      description: Returns number of latest pinned transaction 
+      responses:
+        '200':
+          description: Return number of latest pinning transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PinNumber'
+        '400':
+          description: Cannot find latest pinning transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /network-info:
+    get:
+      security: 
+        - basic: []
+      summary: Get general information about GrapeOne network
+      description: "Return a information related to network charasteristics: blockchain height, chain id, consensus"
+      responses:
+        '200':
+          description: Return chain id
+          content:
+            application/json:
+              schema:
+                 $ref: '#/components/schemas/NetworkInfo'
+        '400':
+          description: Problems with getting current number of blocks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /system:
+    get:
+      security:
+        - adminAuth: []
+      summary: Get node's diagnosis stats
+      description: "Full node's software running stats: components versions, thread and db stats"
+      responses:
+        '200':
+          description: Current diagnosis information about full node's process running
+          content:
+            application/json:
+              schema:
+                 $ref: '#/components/schemas/SystemInfo'
+      tags: 
+        - system
+
+  /pubsub:
+    get:
+      security:
+        - basic: []
+      summary: Get node's pubsub readiness status
+      description: "This node's pubsub system readiness"
+      responses:
+        '200':
+          description: Current pubsub status which determines the node's ability to receive tx
+          content:
+            application/json:
+              schema:
+                 $ref: '#/components/schemas/PubsubReady'
+      tags: 
+        - system
+
+    
+externalDocs:
+  description: ''
+  url: 'https://some.docs.here'
+components:
+  parameters: 
+    pageParam:
+      in: query
+      name: page
+      schema: 
+        type: integer
+        minimum: 0
+        default: 0
+      description: Number of the page to be returned, default is 0 (first page)
+      examples: 
+        first_page:
+          value: 0
+          summary: "First page number, when is not set, then first page will be used by default"
+        10th_page:
+          value: 9
+          summary: "10th page, starting from 9 * pageSize element up to 10 * pageSize (exlusive)"
+    pageSizeParam:
+      in: query
+      name: pageSize
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 15
+      description: Size of the page returned. Typically mustn't be changed on paging through because it will be required to recalculate position of the first element = page * size
+      examples: 
+        min_size:
+          value: 1
+          summary: The smallest page to return consist of the only one element
+        typical_size:
+          value: 25
+          summary: Return page containing 25 elements
+  schemas:
+    ABISaveResponse: 
+      type: object
+      description: Indicates result of ABI save operation
+      properties:
+        success: 
+          type: boolean
+          example: true
+    UnifiedTransaction:
+      type: object
+      description: Transaction object, containing results of execution, used fuel, actual fee and prettified date, chainId, amount fields. Most of tx execution fields are absent for UnconfirmedTx
+      properties:
+        version: 
+          type: integer
+          minimum: 1
+          maximum: 1
+          description: Version of the transaction structure
+          example: 1
+        type: 
+          type: integer
+          minimum: 0
+          maximum: 2
+          description: Type of the transaction (0 - Payment transaction, 1 - Publish contract transaction, 2 - Call contract transaction)
+          example: 0
+        sender: 
+          type: string
+          format: address
+          description: Address of the sender's account, Ethereum-like
+          example: "0xf14044d46B9E29446966797B98597F4Bcb00dFe6"
+        recipient: 
+          type: string
+          format: address
+          description: Address of the recipient's account, Ethereum-like P2PKH
+          example: "0xA5C1c22e3Ee3482D5b4eb1022f9cd8ACbAc2fe3e"
+        amount: 
+          type: string
+          format: number
+          description: Amount of transferred tokens in minimal units (neutrinos)
+          example: "100000000000"
+        nonce: 
+          type: integer
+          minimum: 0
+          description: Number of the transaction sent from the sender's account (forming an increment-only sequence of unique nonces where transactions are get confirmed from lower numbers to higher without gaps), should be always zero for Payments
+          example: 1
+        timestamp: 
+          type: string
+          description: Timestamp (UTC) when transaction is formed in format 'YYYY-MM-ddTHH:mm:ss'
+          example: '2022-08-10T12:00:00'
+        fuelLimit: 
+          type: string
+          format: number
+          description: Amount of the fuel allowed by sender's to be used at max to confirm the transaction
+          example: "100000"
+        fuelPrice: 
+          type: string
+          format: number
+          description: Price of the every single unit of fuel used for transaction which was payed as tx fee
+          example: "100000000000"
+        fuelUsed: 
+          type: string
+          format: number
+          description: Amount of fuel actually used to confirm transaction (in both failed or executed cases). For Payments the whole amount of fuel limit will be used, for contract's trasaction used amount will <=fuelLimit
+          example: "90000"
+        fee: 
+          type: string
+          format: number
+          description: Actual fee payed for the transaction in neutrinos
+          example: "15040000"
+        status: 
+          type: string
+          description: Status of the transaction execution, for Payment only SUCCESSFULLY_EXECUTED allowed, for contract transactions - both SUCCESSFULLY_EXECUTED/FAILED possible
+          enum:
+          - SUCCESSFULLY_EXECUTED
+          - FAILED
+          - NOT_EXECUTED
+          example: SUCCESSFULLY_EXECUTED
+        statusMessage:
+          type: string
+          description: Details of the current transaction status, typically containing error message for smart contracts
+          example: Ownable() account is not an owner
+        data: 
+          type: string
+          minLength: 0
+          format: hexadecimal
+          description: Additional data bytes storing user-defined messages or smart contract's code, method call parameters. Every additional byte charges a fee
+          example: "0x19fabca2"
+        signature: 
+          type: string
+          format: hexadecimal
+          minLength: 66
+          description: Sender's signature done by their private key on the entire transaction
+          example: "0x1122ffaaccbbdd"
+        txHash: 
+          type: string
+          format: hexadecimal
+          minLength: 66
+          maxLength: 66
+          description: Hash of the signed transaction (Keccak-256)
+          example: "0x86534463d83a923e20558bfbf152480e92813443b84d7bb3e713a9e895d893e0"
+        chainId: 
+          type: string
+          enum: 
+          - MAINNET
+          - TESTNET1
+          - TESTNET2
+          description: Id of the network whereto transaction is sent
+          example: MAINNET
+        pinTxNumber:
+          type: integer
+          description: Pin tx number in always increasing sequence specifying that transaction was confirmed by a certain pinning tx. For unconfirmed transactions this field is empty (no associated pinning tx)
+          minimum: 0
+          example: 1250
+    UnifiedTransactions:
+      type: object
+      description: List of transactions sorted by certain criteria
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnifiedTransaction'
+    ContractMethodCallResult:
+      type: object
+      properties:
+        result: 
+          type: string
+          format: hexadecimal
+          description: Result of the method invocation, can be empty when method return nothing. Result is a serialized output of the received value/values from called method. Result serialization rules are defined by future implementation
+          example: "0x182840930243274923742394723102932037897489234783274632642340"
+    Code:
+      type: object
+      description: Result of the method invocation, can not be empty, if contract address does not exist return c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470. Result is a code hash and a contract code.
+      properties:
+        codeHash:
+          type: string
+          format: hexadecimal
+          description: Return  codeHash if contract by given address exist, if contract address does not exist return c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470. 
+        codeContract:
+          type: string
+          format: hexadecimal
+          description: Result is a contract code encoded in hex, if contract address does not exist return empty string.
+          example: "0x08022220940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e32a14d09ec4a81cde61b57de012d3fe80beae3f28fb68321470207524f48df8de24bfa557c5c1d27831d36afb40014a060880a2f09b0652032dc6c05a0102622440d097c3000000000000000000000000959cc0177d3cf38cb04104f40b1d66d05beb6edb6a4059b441587d464d8d6ebd6ac8c133d0f3f95aae93809095a6be410d62e7bfb3b268a4d55fec034681d9564ce268e09ac124d989d18362639c3828aafee52b7207"
+    PinNumber:
+      type: object
+      description: Return current number of pinning transaction
+      properties:
+        pinNumber: 
+          type: integer
+          description: Latest pinning transaction number
+          example: 1234
+    ApiError:
+      type: object
+      description: General API error returned when any error occurred during performing API call
+      properties:
+        error:
+          type: string
+          description: Reason of the occurred error or its content
+          example: 'API error occurred, reason: Bad request'
+    RawTransaction:
+      type: object
+      description: New signed transaction to be sent to the GrapeOne network
+      properties:
+        encodedTx: 
+          type: string
+          format: hexadecimal
+          description: Signed and encoded into a the hexadecimal format transaction that must be sent into the GrapeOne network and get confirmed
+          example: "0x12321fcbdaaadd12977a7a802000002371232"
+      required:
+        - encodedTx
+    TxReceipt:
+      type: object
+      description: Transaction execution receipt object
+      properties:
+        txHash: 
+          type: string
+          format: hexadecimal
+          minLength: 66
+          maxLength: 66
+          description: Hash of the transaction (Keccak-256) prefixed with '0x'
+          example: "0xdf12984738297358323203203743643242389dacbdf23"
+        executionStatus:
+          type: string
+          description: Status of transaction execution denoting either successful execution ('SUCCESS') or failed (with possible error cause) - any other output
+          example: 'Nonce is too low'
+        fuelUsed:
+          type: integer
+          format: int64
+          description: Amount of fuel used for transaction execution out of specified fuel limit
+          example: 120545    
+    ABI:
+      type: object
+      description: ABI for contract (List of contract functions/constructors to read/write state)
+      properties:
+        content: 
+          type: string
+          description: Content of the contract ABI, json scheme for inputs of constructor, input/outputs for read and write functions
+          example: >- 
+            [{"inputs": [],"name": "retrieve","outputs": [{"internalType": "uint256","name": "","type": "uint256"}],"stateMutability":"view","type": "function"},{"inputs": [{"internalType": "uint256","name": "num","type": "uint256"}],"name": "store","outputs": [],"stateMutability": "nonpayable","type": "function"}]
+    Account:
+      type: object
+      description: User's account identified by id and public key to hold native coins on balance, sign and send transactions
+      properties:
+        id: 
+          type: string
+          format: address
+          description: Unique identifier of the account derived from its public key encoded hex format (Ethereum-like)
+          example: "0xA5C1c22e3Ee3482D5b4eb1022f9cd8ACbAc2fe3e"
+        publicKey:
+          type: string
+          format: hexadecimal
+          description: Public key for EC (elliptic curve Ed25519) cryptography operations (verify the signature of the transaction, signed by this account's private key). Key is encoded in hexadecimal format (Ed25519 compressed format with only X point). Public key is getting published into the GrapeOne network via first outgoing transaction
+          example: "0x897938b42aa41961ff960ea2aafedfe11dbe1628a73506322ffd3819e601bee5"
+        balance:
+          type: string
+          format: number
+          minimum: 0
+          description: Amount of the native coins held by the acount in float format
+          example: 2923.23000192
+        nonce: 
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of transactions sent by account and confirmed in GrapeOne network. This number is used to order transactions in mempool and confirm them from lesser nonce to higher without allowing gaps. (tx1-nonce-1, tx2-nonce-3 - only tx1 will be confirmed until the tx3-nonc-2 will be sent to allow the confirmation of tx3)
+          example: 1
+        created:
+          type: string
+          format: date-time
+          description: Time of the account creation UTC (first outgoing transaction confirmation)
+          example: '2022-08-10T12:00:00'
+    Accounts:
+      type: object
+      description: "List of sorted user accounts"
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Account'
+    Peer:
+      type: object
+      description: Information about node connected to the GrapeOne network which is responsible for transaction propagation, validation and confirmation
+      properties:
+        id:
+          type: string
+          format: address
+          description: Cryptographically generated id of the node from its public key. Format may be changed
+          example: '112BT73LkhZEe4dZms6Y47aXnadnZvqrsf'
+        publicKey:
+          type: string
+          format: hexadecimal
+          description: EC public key of the node to verify signed messages from this node (SECP256K1) encoded via DER from ASN1
+        hostname: 
+          type: string
+          format: hostname
+          description: Domain name or IP (v4/v6) with optional port value appended whereto the P2P requests can be sent and properly responded by this node
+          example: 'https://my.grapeone.node.com:4555/p2p'
+        status:
+          type: string
+          description: Status of the node's connection to the network
+          enum: 
+          - CONNECTED
+          - NOT_CONNECTED
+          - CANDIDATE
+          example: CONNECTED
+        lastUpdated:
+          type: string
+          format: date-time
+          description: Time of the last communication with the node UTC
+          example: '2022-08-10T12:00:22'
+        enrolledAt:
+          type: string
+          format: date-time
+          description: Time when the node was firstly accepted into the network to validate/confirm transactions (UTC)
+          example: '2022-08-09T10:00:00'
+        reputation:
+          type: string
+          format: number
+          description: Reliability of the node showing a percent of successfully completed job in the network
+          example: "88.239"
+          maximum: 100
+          minimum: 0
+        trustLevel:
+          type: string
+          enum:
+          - SYSTEM
+          - ORDINARY
+          - UNTRUSTED
+          description: "Level of the trust showing how are the results received from node can be trusted. SYSTEM node's responses are trusted the most, ORDINARY node's results can be verified with other ORDINARY nodes, UNTRUSTED are better to be verified against SYSTEM nodes or better off not actually request data from UNTRUSTED nodes"
+          example: SYSTEM
+        version:
+          type: string
+          description: 'Version of the GrapeOne client launched'
+          example: '1.0.0-PRE_RELEASE'
+    NetworkInfo:
+      type: object
+      description: General network information the node is connected to
+      properties:
+        chainId: 
+          type: string
+          enum: 
+          - MAINNET
+          - TESTNET1
+          - TESTNET2
+          description: Id of the network whereto transaction is sent and was confirmed
+          example: MAINNET
+        consensus:
+          type: string
+          enum:
+          - POS
+          - POA
+          - dPOS
+          description: Type of the consensus (generator/validator choosing strategy) chosen for the GrapeOne network
+          example: POS
+        height:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Current number of the blocks on top of genesis block
+    PubsubReady:
+      type: object
+      description: Check this node's pubsub readiness status
+      properties:
+        ready:
+          type: boolean
+    SystemInfo:
+      type: object
+      description: Diagnosis information about the full node software running including versions, threads, connectivity activities
+      properties:
+        version: 
+          type: string
+          description: Version of the full node software package
+          example: '1.2.0-RELEASE'
+        p2pVersion:
+          type: string
+          description: Version of the P2P protocol used to interact with other nodes over GrapeOne network
+          example: '1.0.0'
+        apiVersion:
+          type: string
+          description: Version of the REST API provided by the node
+          example: '1.0.1'
+        activeThreads:
+          type: integer
+          minimum: 0
+          description: Number of nonblocked backgroung threads performing some work
+          example: 122
+        totalThreads:
+          type: integer
+          minimum: 1
+          description: Number of total thread currently alive under full node's process
+        dbActiveConnections:
+          type: integer
+          minimum: 0
+          description: Number of active db connections performing work
+          example: 4
+        dbTotalConnections:
+          type: integer
+          minimum: 1
+          description: Number of total db connections in a pool ready to query db
+    CallMessage: 
+      type: object
+      description: Object composed of sender/recipient addresses, transferred amount and call_data (method+params, contract_code+contructor_params) intended for smart contract execution with no formed transaction
+      properties: 
+        sender: 
+          type: string
+          description: Ethereum-based address of the sending account (optional)
+          example: "0xd09ec4a81cde61b57de012d3fe80beae3f28fb68"
+        recipient:
+          type: string
+          description: Ethereum-based address of the contract to call (required)
+          example: "0x6c553e0d10f2719edd0c979b831f232a2fc81098"
+        amount: 
+          type: string
+          description: Amount of neutrino (minimal value unit) transferred via this call from sender to recipient. Can be zero
+          example: 10000
+        data:
+          type: string
+          description: smart contract code + constructor parameters for contract publishing transaction or call_data (smart contract method's signature to call with encoded paramaters)
+          example: '0x40d097c3000000000000000000000000959cc0177d3cf38cb04104f40b1d66d05beb6edb'
+    FuelEstimationResult: 
+      type: object
+      description: Result of the transaction fuel consumption estimation, indicate
+      properties:
+        txHash: 
+          type: string
+          format: hexadecimal
+          minLength: 66
+          maxLength: 66
+          description: Hash of the transaction (Keccak-256) prefixed with '0x'
+          example: "0xdf12984738297358323203203743643242389dacbdf23"
+        executionStatus:
+          type: string
+          description: Status of mocked transaction execution (for estimation) denoting either successful execution ('SUCCESS') or failed (with possible error cause) - any other output
+          example: 'Only owner can call mint() operation'
+        fuelEstimate:
+          type: integer
+          format: int64
+          description: Approximate amount of fuel units to be used for transaction execution (depends on current node's state). Recommended to add at least 5% bonus to it before signing and broadcasting transaction
+          example: 120545
+    LogsResponse: 
+      type: object
+      description: List of logs from smart contract
+      properties:
+        logs: 
+          type: array
+          items: 
+            $ref: '#/components/schemas/Log'
+          description: Array of sorted logs
+    Log: 
+      type: object
+      description: Smart contract event log
+      properties:
+        address: 
+          type: string
+          format: hexadecimal
+          minLength: 42
+          maxLength: 42
+          description: Address of the contract for which this event log was created
+          example: "0xd09ec4a81cde61b57de012d3fe80beae3f28fb68"
+        transactionHash:
+          type: string
+          format: hexadecimal
+          minLength: 66
+          maxLength: 66
+          description: Hash of the transaction that created this log
+          example: "0x7a991040a4d2c00ab45be98c06e510c04bddc03f736a7e43892b91e672622110"
+        pinTxNumber:
+          type: string
+          format: integer
+          description: Number of the pinning transaction where this log appearerd during contract execution
+          example: "210"
+        topics:
+          type: array
+          items:
+            type: string
+            format: hexadecimal
+          description: Topics for this logged event (indexed evet fields, first is event signature KECCAK_256 of string event name)
+          example: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                    "0x00000000000000000000000011b815efb8f581194ae79006d24e0d814b7697f6",
+                    "0x000000000000000000000000c538e77cb4e701bb621514749b9c37375f36b8e1"]
+        data: 
+          type: string
+          format: hexadecimal
+          description: Actual data content of the log corresponding to all non-indexed fields of event (all fields excluding topics combined together)
+          example: "0x00000000000000000000000000000000000000000000000000000000f336b9d0"
+
+  securitySchemes:
+    adminAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: ADMIN authrorization scheme to get access to system admin endpoints
+    basic:
+      type: http
+      scheme: basic
+      
+  requestBodies:
+    SendRawTransactionRequest:
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RawTransaction'
+      description: Raw signed transaction that must be sent to the GrapeOne network and get confirmed
+      required: true
+  links: {}
+  callbacks: {}
+security: []

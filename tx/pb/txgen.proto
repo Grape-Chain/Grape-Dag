@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package pb;
+
+import "txvX.proto";
+
+option go_package = "/pb";
+
+
+message TxGenerateRequest {
+    uint32 txrate = 1;
+    uint32 duration = 2;
+    uint32 txmax = 3;
+    string wallet = 4;
+    string privatekey = 5;
+    string publickey = 6;
+    uint32 network = 7;
+}
+
+message TxGenerateResponse {
+    float duration = 1;
+    int32 txcount = 2;
+}
+
+message TxPublishRequest {
+    Txv1 tx = 1;
+}
+
+message TxPublishResponse {
+    int32 status = 1;
+    string msg = 2;
+}
+
+message WalletsRequest {
+
+}
+
+message WalletsResponse {
+    repeated bytes wallets = 1;
+}
+
+message BalanceRequest {
+    repeated bytes wallets = 1;
+}
+
+message BalanceResponse {
+    repeated bytes balances = 1;
+}
+
+message TxCountRequest {
+
+}
+
+message TxCountResponse {
+    int64 count = 1;
+    float tps = 2;
+    int64 avgdelay = 3;
+}
+
+message WatchDogRequest {
+    int64 timeout = 1;
+    int32 retries = 2;
+}
+
+message WatchDogResponse {
+    enum PEER_STATUS {
+        RUNNING = 0;
+        KILLED = 1;
+     }
+    PEER_STATUS status = 1;
+}
+
+service RoboTrader {
+    rpc GenerateTx(TxGenerateRequest) returns (TxGenerateResponse);
+    rpc PublishTx(TxPublishRequest) returns (TxPublishResponse);
+    rpc GetBalances(BalanceRequest) returns (BalanceResponse);
+    rpc GetWallets(WalletsRequest) returns (WalletsResponse);
+    rpc GetTxCount(TxCountRequest) returns (TxCountResponse);
+    rpc WatchDog(WatchDogRequest) returns (WatchDogResponse);
+}

@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package pb;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/any.proto";
+
+
+option go_package = "/pb";
+
+enum SyncType {
+    INITIAL = 0; // Initial sync - when a new node starts up and wants to sync with the current state
+    CURRENT = 1; // Current sync - a response to either Initial or Current which is out of date
+    GENESIS = 2; // Generis sync - all transaction in the genesis slice
+    LATEST = 3; // Transition from CURRENT to LATEST when a new pinning transaction is approved by many
+    ALL = 4; // Request all pinning transactions
+    reserved 5 to 15;
+}
+
+enum SyncVersionType {
+    STXV0 = 0;
+    STXV1 = 1;
+    reserved 2 to 15;
+}
+
+enum SyncMsgType {
+    STX_REQUEST = 0;
+    STX_RESPONSE = 1;
+    STX_VOTE_REQUEST = 2;
+    STX_VOTE_RESPONSE = 3;
+    STX_ANNOUNCE = 4;
+    STX_UPDATE = 5;
+    reserved 6 to 15;
+}
+
+message Syncv1 {
+    SyncVersionType ver = 1;
+    SyncType sync_type = 2;
+    SyncMsgType msg_type = 3;
+    bytes tracking_id = 4; // track multistate transactions in request response sequences
+    bytes sender_pubk = 5; // sender's public key: secp256k1
+    google.protobuf.Timestamp timestamp = 6;
+    optional bytes data = 7; // optional for payments; mandatory for contracts
+    repeated google.protobuf.Any details = 8;
+    bytes sync_hash = 9; // Merkel hashing identifier to be used to quickly compare pin tx
+    bytes signature = 10; // Signature of the serialized transaction bytes by user’s private key
+    reserved 11 to 15;
+}

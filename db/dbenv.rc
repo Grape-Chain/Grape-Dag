@@ -1,0 +1,7 @@
+# Default development settings for the local MongoDB container.
+# Override these in a sibling .env (gitignored) for any non-trivial setup.
+export MONGO_INITDB_ROOT_USERNAME=grape
+export MONGO_INITDB_ROOT_PASSWORD=changeme
+export MONGO_INITDB_DATABASE=grapedb
+export MONGO_INITDB_IP=localhost
+export MONGO_INITDB_PORT=47329

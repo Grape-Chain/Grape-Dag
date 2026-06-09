@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "node.proto";
+
+import "txvX.proto";
+
+package pb;
+
+option go_package = "/pb";
+
+// SiteID - an identifier that uniquely identifies each site in dag
+message SiteID {
+	bytes  id      = 1; // uuid as bytes
+	string address = 2; // hex encoded site's tx signature 
+	uint64 idMajor = 3; // in dag major id position
+	uint32 idMinor = 4; // in dag minor id position (when there are collisions)
+}
+
+message Balance {
+    map<string, bytes> balance = 1; // a map of wallet - balance (big.Int as []byte)
+}
+
+message LogTopic {
+    bytes hash = 1;
+}
+message TxExecLog {
+    bytes contractAddress = 1;
+    repeated LogTopic topics = 2;
+    bytes data = 3;
+    int64 pinTxNumber = 4;
+}
+
+message TxReceipt {
+    enum TxStatus {
+        SUCCESSFUL = 0;
+        FAILED     = 1;
+    }
+    int32 fuelUsed          = 1; // used fuel for execution
+    TxStatus status         = 2; // tx failed or successful
+    string statusMessage    = 3; // details about tx status 
+    repeated TxExecLog logs = 4; // logs generated during tx execution
+}
+
+message AccountData {
+    bytes address   = 1;
+	bytes balance   = 3;
+    int64 nonce     = 4;
+	bytes codehash  = 5;
+    bytes code      = 6;
+}
+
+message AccountDiff {
+    AccountData newValue = 1;
+    reserved 2 to 5;
+}
+
+message Mapping {
+    bytes address = 1;
+    bytes key     = 2;
+    bytes value   = 3;
+}
+
+message Diff {
+    oneof mappingOrAccount {
+        Mapping mappingDiff = 1;
+        AccountDiff accountDiff = 2;
+    }
+}
+
+message ExecutedSmcTx {
+    Txv1 tx = 1;
+    TxReceipt receipt = 3;
+}
+
+// TxPin - pinning transaction definition
+message TxPin {
+    bytes prev                    = 1; // prev pin tx id
+    google.protobuf.Timestamp ts  = 2; // timestamp when the tx was created
+    repeated SiteID sites         = 3; // a collection of site ids (a list of fully confirmed sites in the current slice)
+    repeated Node nodes           = 4; // sites included in this pin tx
+    Balance balance               = 5; // all balances for all the tx in teh current pinning tx
+    bytes pk                      = 6; // public key to verify this pin tx signature
+    bytes sign                    = 7; // this pin tx signature
+    repeated ExecutedSmcTx smcTxs = 8; // executed smart contract transactions within this pin tx
+    repeated Diff          diffs  = 9; // diffs on smart contract state store appeared after executing smart contract transactions
+    int64   pinNumber             = 10;
+}

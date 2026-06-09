@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package pb;
+
+option go_package = "/pb";
+
+message Edge {
+
+    bytes tx = 1; // tx id
+
+    repeated bytes edges = 2; // its edges to the previous tx
+
+    reserved 3 to 15;
+}
