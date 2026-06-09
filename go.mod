@@ -9,7 +9,7 @@ require (
 	github.com/enescakir/emoji v1.0.0
 	github.com/ethereum/go-ethereum v1.12.0
 	github.com/go-chi/chi/v5 v5.0.8
-	github.com/go-chi/cors v1.2.1
+	github.com/go-chi/cors v1.2.2
 	github.com/golang-collections/collections v0.0.0-20130729185459-604e922904d3
 	github.com/google/martian v2.1.0+incompatible
 	github.com/google/uuid v1.6.0
