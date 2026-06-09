@@ -5,23 +5,23 @@ import (
 	"math/big"
 	"regexp"
 
-	utils "github.com/VG-Grape/luna/utils"
-	luna_wallet "github.com/VG-Grape/luna/crypto"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 )
 
 type Transaction struct {
-	senderPrivateKey *luna_wallet.PrivateKey
-	senderPublicKey  *luna_wallet.PublicKey
+	senderPrivateKey *grape_wallet.PrivateKey
+	senderPublicKey  *grape_wallet.PublicKey
 	senderAddress    string
 	receiverAddress  string
 	amount           *big.Int
 }
 
-func (t *Transaction) GetSenderPrivK() *luna_wallet.PrivateKey {
+func (t *Transaction) GetSenderPrivK() *grape_wallet.PrivateKey {
 	return t.senderPrivateKey
 }
 
-func (t *Transaction) GetSenderPubK() *luna_wallet.PublicKey {
+func (t *Transaction) GetSenderPubK() *grape_wallet.PublicKey {
 	return t.senderPublicKey
 }
 
@@ -37,7 +37,7 @@ func (t *Transaction) GetAmount() *big.Int {
 	return t.amount
 }
 
-func NewTransaction(privateKey *luna_wallet.PrivateKey, publicKey *luna_wallet.PublicKey,
+func NewTransaction(privateKey *grape_wallet.PrivateKey, publicKey *grape_wallet.PublicKey,
 	sender string, recipient string, amount *big.Int) *Transaction {
 	return &Transaction{privateKey, publicKey, sender, recipient, amount}
 }
@@ -74,8 +74,8 @@ func (tr *TransactionRequest) Validate() bool {
 }
 
 func GenRanWallet() *Transaction {
-	sender_wallet := luna_wallet.NewWallet()
-	receiver_wallet := luna_wallet.NewWallet()
+	sender_wallet := grape_wallet.NewWallet()
+	receiver_wallet := grape_wallet.NewWallet()
 	tx := NewTransaction(
 		sender_wallet.PrivateKey(),
 		sender_wallet.PublicKey(),
@@ -86,7 +86,7 @@ func GenRanWallet() *Transaction {
 	return tx
 }
 
-func GenServiceTransaction(w *luna_wallet.Wallet) *Transaction {
+func GenServiceTransaction(w *grape_wallet.Wallet) *Transaction {
 	tx := NewTransaction(
 		w.PrivateKey(),
 		w.PublicKey(),
@@ -97,7 +97,7 @@ func GenServiceTransaction(w *luna_wallet.Wallet) *Transaction {
 	return tx
 }
 
-func GenPaymentTransaction(ws *luna_wallet.Wallet, wr *luna_wallet.Wallet, amount *big.Int) *Transaction {
+func GenPaymentTransaction(ws *grape_wallet.Wallet, wr *grape_wallet.Wallet, amount *big.Int) *Transaction {
 	tx := NewTransaction(
 		ws.PrivateKey(),
 		ws.PublicKey(),
@@ -108,7 +108,7 @@ func GenPaymentTransaction(ws *luna_wallet.Wallet, wr *luna_wallet.Wallet, amoun
 	return tx
 }
 
-func GenPaymentEx(ws *luna_wallet.Wallet, wr string, amount *big.Int) *Transaction {
+func GenPaymentEx(ws *grape_wallet.Wallet, wr string, amount *big.Int) *Transaction {
 	tx := NewTransaction(
 		ws.PrivateKey(),
 		ws.PublicKey(),

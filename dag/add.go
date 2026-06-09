@@ -3,7 +3,7 @@ package dag
 import (
 	"math/rand"
 
-	"github.com/VG-Grape/luna/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/google/uuid"
 	"github.com/ledongthuc/goterators"
 )

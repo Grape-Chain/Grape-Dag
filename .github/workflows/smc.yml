@@ -19,7 +19,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/luna-smc
+  IMAGE_NAME: ${{ github.repository_owner }}/grape-smc
 
 jobs:
   test:

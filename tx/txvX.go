@@ -15,12 +15,12 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/types"
-	"github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/wallet"
-	"github.com/VG-Grape/luna/crypto"
-	luna_wallet "github.com/VG-Grape/luna/crypto"
+	pb "github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/types"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/wallet"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	eth "github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -72,7 +72,7 @@ func ParseTransaction(txBytes []byte) (Transaction, error) {
 		pbTxo := pb.Txv1{}
 		err := proto.Unmarshal(txBytes, &pbTxo)
 		if err != nil {
-			return nil, fmt.Errorf("failed to unmarshal luna raw transaction: %s", err.Error())
+			return nil, fmt.Errorf("failed to unmarshal grape raw transaction: %s", err.Error())
 		}
 		transaction := Txv1{}
 		transaction.UnmarshalBinary(&pbTxo)
@@ -487,37 +487,37 @@ func NewTxv1(ct ChainType) *Txv1 {
 	}
 }
 
-func NewServiceTxv1(ct ChainType, payload string, w *luna_wallet.Wallet) Txv1 {
+func NewServiceTxv1(ct ChainType, payload string, w *grape_wallet.Wallet) Txv1 {
 	t := Txv1{
 		Tx_Type:    SERVICE,
 		Chain_Type: ct,
 		Data:       []byte(payload),
 	}
 	t.Sender_Pubk = *w.PublicKey()
-	t.Sender = luna1crypto.AddressToBytes(w.WalletAddress())
-	t.Recepient = luna1crypto.AddressToBytes(w.WalletAddress())
+	t.Sender = grape1crypto.AddressToBytes(w.WalletAddress())
+	t.Recepient = grape1crypto.AddressToBytes(w.WalletAddress())
 	return t
 }
 
-func NewGenesisTxv1(ct ChainType, w *luna_wallet.Wallet) Txv1 {
+func NewGenesisTxv1(ct ChainType, w *grape_wallet.Wallet) Txv1 {
 	t := Txv1{
 		Tx_Type:    SERVICE_GENESIS,
 		Chain_Type: ct,
 	}
 	t.Sender_Pubk = *w.PublicKey()
-	t.Sender = luna1crypto.AddressToBytes(w.WalletAddress())
-	t.Recepient = luna1crypto.AddressToBytes(w.WalletAddress())
+	t.Sender = grape1crypto.AddressToBytes(w.WalletAddress())
+	t.Recepient = grape1crypto.AddressToBytes(w.WalletAddress())
 	return t
 }
 
-func NewPinTxv1(ct ChainType, w *luna_wallet.Wallet) Txv1 {
+func NewPinTxv1(ct ChainType, w *grape_wallet.Wallet) Txv1 {
 	t := Txv1{
 		Tx_Type:    SERVICE_PIN,
 		Chain_Type: ct,
 	}
 	t.Sender_Pubk = *w.PublicKey()
-	t.Sender = luna1crypto.AddressToBytes(w.WalletAddress())
-	t.Recepient = luna1crypto.AddressToBytes(w.WalletAddress())
+	t.Sender = grape1crypto.AddressToBytes(w.WalletAddress())
+	t.Recepient = grape1crypto.AddressToBytes(w.WalletAddress())
 	return t
 }
 
@@ -611,8 +611,8 @@ func (t *Txv1) GeneratePayment(tx *wallet.Transaction, chaintype uint8) {
 	t.Sender_Pubk = *tx.GetSenderPubK()
 	// Public Key - END
 	t.Nonce = utils.RandomUint64() % 200000
-	t.Sender = luna1crypto.AddressToBytes(tx.GetSenderAddress())
-	t.Recepient = luna1crypto.AddressToBytes(tx.GetReceiverAddress())
+	t.Sender = grape1crypto.AddressToBytes(tx.GetSenderAddress())
+	t.Recepient = grape1crypto.AddressToBytes(tx.GetReceiverAddress())
 	t.Timestamp = time.Now()
 	t.Tx_Type = PAYMENT
 	t.Signature = []byte{}
@@ -632,8 +632,8 @@ func (t *Txv1) GenerateRandom(maxFuelLimit, maxFuelPrice uint64, tx *wallet.Tran
 	t.Sender_Pubk = *tx.GetSenderPubK()
 	// Public Key - END
 	t.Nonce = utils.RandomUint64() % 200000
-	t.Sender = luna1crypto.AddressToBytes(tx.GetSenderAddress())
-	t.Recepient = luna1crypto.AddressToBytes(tx.GetReceiverAddress())
+	t.Sender = grape1crypto.AddressToBytes(tx.GetSenderAddress())
+	t.Recepient = grape1crypto.AddressToBytes(tx.GetReceiverAddress())
 	t.Timestamp = time.Now()
 	if t.Tx_Type == CALL_CONTRACT || t.Tx_Type == PUBLISH_CONTRACT {
 		rs := rand.New(rand.NewSource(time.Now().UnixMilli()))
@@ -644,12 +644,12 @@ func (t *Txv1) GenerateRandom(maxFuelLimit, maxFuelPrice uint64, tx *wallet.Tran
 	t.Signature = t.generateSignature(tx.GetSenderPrivK())
 }
 
-func (t *Txv1) Sign(pk *luna_wallet.PrivateKey) {
+func (t *Txv1) Sign(pk *grape_wallet.PrivateKey) {
 	t.Signature = []byte{}
 	t.Signature = t.generateSignature(pk)
 }
 
-func (t *Txv1) generateSignature(pk *luna_wallet.PrivateKey) []byte {
+func (t *Txv1) generateSignature(pk *grape_wallet.PrivateKey) []byte {
 	// generate tx hash
 	payload, err := t.Hash(crypto.SHA256)
 	if err != nil {
@@ -657,7 +657,7 @@ func (t *Txv1) generateSignature(pk *luna_wallet.PrivateKey) []byte {
 		return nil
 	}
 	// Sign the hash
-	t.Signature = luna_wallet.NewDSA().Sign(*pk, payload)
+	t.Signature = grape_wallet.NewDSA().Sign(*pk, payload)
 	if err != nil {
 		logger.Errorf("Failed to sign transaction. %v", err)
 		return nil
@@ -685,7 +685,7 @@ func (t *Txv1) Verify() error {
 	t.Signature = make([]byte, sz)
 	copy(t.Signature, sigbuf)
 
-	valid := luna_wallet.NewDSA().Verify(t.Sender_Pubk, t.Signature, payload)
+	valid := grape_wallet.NewDSA().Verify(t.Sender_Pubk, t.Signature, payload)
 	if !valid {
 		return errors.Errorf("Cannot verify transaction: %s", t.String())
 	}
@@ -711,8 +711,8 @@ func (t *Txv1) MarshalJSON() ([]byte, error) {
 		ChainType: uint8(t.Chain_Type),
 		// Depth:      t.Depth,
 		SenderPubk: hex.EncodeToString(t.Sender_Pubk),
-		Sender:     luna1crypto.BytesToAddress(t.Sender),
-		Recepient:  luna1crypto.ZeroBytesToAddress(t.Recepient),
+		Sender:     grape1crypto.BytesToAddress(t.Sender),
+		Recepient:  grape1crypto.ZeroBytesToAddress(t.Recepient),
 		Amount:     big.NewInt(0).SetBytes(t.Amount).Uint64(),
 		Nonce:      t.Nonce,
 		Timestamp:  t.Timestamp,
@@ -781,8 +781,8 @@ func (t *Txv1) UnmarshalJSON(data []byte) error {
 	t.Fuel_Limit = big.NewInt(0).SetUint64(fuel_limit).Bytes()
 	t.Fuel_Price = big.NewInt(0).SetUint64(fuel_limit).Bytes()
 	t.Sender_Pubk = []byte(spk)
-	t.Sender = luna1crypto.AddressToBytes(snd)
-	t.Recepient = luna1crypto.AddressToBytes(rcp)
+	t.Sender = grape1crypto.AddressToBytes(snd)
+	t.Recepient = grape1crypto.AddressToBytes(rcp)
 	return nil
 }
 

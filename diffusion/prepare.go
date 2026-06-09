@@ -8,10 +8,10 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/VG-Grape/luna/common"
-	"github.com/VG-Grape/luna/config"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	utils "github.com/VG-Grape/luna/utils"
+	"github.com/Grape-Chain/Grape-Dag/common"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/enescakir/emoji"
 	"github.com/libp2p/go-libp2p-core/event"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -89,9 +89,9 @@ func CreatePubSubForPeer(rd *routing.RoutingDiscovery, evtHandler common.IEvtBus
 			options = append(options, pubsub.WithEventTracer(tracer))
 		}
 	}
-	rt := pubsub.DefaultGossipSubRouter(lunapeer.GetHost())
+	rt := pubsub.DefaultGossipSubRouter(grapepeer.GetHost())
 
-	gossipSub, err := pubsub.NewGossipSubWithRouter(context.Background(), lunapeer.GetHost(), rt, options...)
+	gossipSub, err := pubsub.NewGossipSubWithRouter(context.Background(), grapepeer.GetHost(), rt, options...)
 	if err != nil {
 		logger.Fatalf("Create pubsub system: %s", err.Error())
 	}

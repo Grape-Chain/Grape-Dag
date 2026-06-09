@@ -10,7 +10,7 @@
 # The leader's REST API is at http://localhost:8010 and
 # the SMC VM's gRPC endpoint at localhost:29299.
 
-name: luna
+name: grape
 
 services:
 
@@ -19,32 +19,32 @@ services:
   # ---------------------------------------------------------------------------
 
   bootstrap1:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: bootstrap1
     hostname: bootstrap1
-    command: ["lunapeer", "-id", "bspeer1", "-bootstrap", "-purge", "-node_type", "1"]
+    command: ["grapepeer", "-id", "bspeer1", "-bootstrap", "-purge", "-node_type", "1"]
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
     networks:
       - vpcbs
     volumes:
-      - bootstrap1-data:/home/luna/.grap3/data
-      - ./bootstrap-compose.json:/home/luna/.grap3/bootstrap.json:ro
+      - bootstrap1-data:/home/grape/.grap3/data
+      - ./bootstrap-compose.json:/home/grape/.grap3/bootstrap.json:ro
     restart: unless-stopped
 
   bootstrap2:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: bootstrap2
     hostname: bootstrap2
-    command: ["lunapeer", "-id", "bspeer2", "-bootstrap", "-purge", "-node_type", "1"]
+    command: ["grapepeer", "-id", "bspeer2", "-bootstrap", "-purge", "-node_type", "1"]
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
     networks:
       - vpcbs
     volumes:
-      - bootstrap2-data:/home/luna/.grap3/data
+      - bootstrap2-data:/home/grape/.grap3/data
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -56,14 +56,14 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       args:
-        VERSION: ${LUNA_VERSION:-dev}
-    image: luna-peer:${LUNA_VERSION:-dev}
+        VERSION: ${GRAPE_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: leader
     hostname: leader
     command:
-      - lunapeer
+      - grapepeer
       - -id
-      - ${LUNA_PEER_ID:-leader}
+      - ${GRAPE_PEER_ID:-leader}
       - -leader
       - -genesis
       - -purge
@@ -82,18 +82,18 @@ services:
       bootstrap2:
         condition: service_started
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
-      LUNA_MONGODB_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-luna}:${MONGO_INITDB_ROOT_PASSWORD:?set in deploy/.env}@mongo:27017/
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_MONGODB_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-grape}:${MONGO_INITDB_ROOT_PASSWORD:?set in deploy/.env}@mongo:27017/
     ports:
       - "8010:8010"     # REST API
       - "33331:33331"   # libp2p
     networks:
       - vpcbs
     volumes:
-      - leader-data:/home/luna/.grap3/data
+      - leader-data:/home/grape/.grap3/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sfk -u $$LUNA_REST_API_USERNAME:$$LUNA_REST_API_PASSWORD https://localhost:8010/heartbeat"]
+      test: ["CMD-SHELL", "curl -sfk -u $$GRAPE_REST_API_USERNAME:$$GRAPE_REST_API_PASSWORD https://localhost:8010/heartbeat"]
       interval: 10s
       timeout: 10s
       retries: 18
@@ -104,54 +104,54 @@ services:
   # ---------------------------------------------------------------------------
 
   peer1:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: peer1
     hostname: peer1
-    command: ["lunapeer", "-id", "peer1", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
+    command: ["grapepeer", "-id", "peer1", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
     depends_on:
       txspammer-l:
         condition: service_completed_successfully
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
     networks:
       - vpcbs
     volumes:
-      - peer1-data:/home/luna/.grap3/data
+      - peer1-data:/home/grape/.grap3/data
     restart: unless-stopped
 
   peer2:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: peer2
     hostname: peer2
-    command: ["lunapeer", "-id", "peer2", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
+    command: ["grapepeer", "-id", "peer2", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
     depends_on:
       txspammer-l:
         condition: service_completed_successfully
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
     networks:
       - vpcbs
     volumes:
-      - peer2-data:/home/luna/.grap3/data
+      - peer2-data:/home/grape/.grap3/data
     restart: unless-stopped
 
   peer4:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: peer4
     hostname: peer4
-    command: ["lunapeer", "-id", "peer4", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
+    command: ["grapepeer", "-id", "peer4", "-node_type", "1", "-grpc", "-grpc_port", "50333"]
     depends_on:
       txspammer-l:
         condition: service_completed_successfully
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
     networks:
       - vpcbs
     volumes:
-      - peer4-data:/home/luna/.grap3/data
+      - peer4-data:/home/grape/.grap3/data
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -159,41 +159,41 @@ services:
   # ---------------------------------------------------------------------------
 
   peer3:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: peer3
     hostname: peer3
-    command: ["lunapeer", "-id", "peer3", "-node_type", "0", "-grpc", "-grpc_port", "50333", "-vmserver_port", "29299"]
+    command: ["grapepeer", "-id", "peer3", "-node_type", "0", "-grpc", "-grpc_port", "50333", "-vmserver_port", "29299"]
     depends_on:
       txspammer-l:
         condition: service_completed_successfully
       smc:
         condition: service_started
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
     networks:
       - vpcbs
     volumes:
-      - peer3-data:/home/luna/.grap3/data
+      - peer3-data:/home/grape/.grap3/data
     restart: unless-stopped
 
   peer5:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: peer5
     hostname: peer5
-    command: ["lunapeer", "-id", "peer5", "-node_type", "0", "-grpc", "-grpc_port", "50333", "-vmserver_port", "29299"]
+    command: ["grapepeer", "-id", "peer5", "-node_type", "0", "-grpc", "-grpc_port", "50333", "-vmserver_port", "29299"]
     depends_on:
       txspammer-l:
         condition: service_completed_successfully
       smc:
         condition: service_started
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
     networks:
       - vpcbs
     volumes:
-      - peer5-data:/home/luna/.grap3/data
+      - peer5-data:/home/grape/.grap3/data
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ services:
     build:
       context: ../smc
       dockerfile: Dockerfile
-    image: ghcr.io/vg-grape/luna-smc:${LUNA_SMC_TAG:-latest}
+    image: ghcr.io/vg-grape/grape-smc:${GRAPE_SMC_TAG:-latest}
     ports:
       - "29299:29299"   # gRPC: peer -> VM
       - "39399:39399"   # state server
@@ -215,9 +215,9 @@ services:
   mongo:
     image: mongo:7
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-luna}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-grape}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?set in deploy/.env}
-      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE:-lunadb}
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE:-grapedb}
     ports:
       - "47329:27017"
     networks:
@@ -239,23 +239,23 @@ services:
   # ---------------------------------------------------------------------------
 
   txspammer-l:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: txspammer-l
     command: ["txgen", "-mode", "genesis", "-grpc_port", "50333"]
     depends_on:
       leader:
         condition: service_healthy
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
       GENERATOR_NETWORK: "0"
     volumes:
-      - ./txgenerator-genesis.yml:/home/luna/.grap3/txgenerator.yml:ro
+      - ./txgenerator-genesis.yml:/home/grape/.grap3/txgenerator.yml:ro
     networks:
       - vpcbs
 
   txspammer:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: txspammer
     command: ["txgen", "-mode", "trader", "-grpc_port", "50333"]
     depends_on:
@@ -265,16 +265,16 @@ services:
       - peer4
       - peer5
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
       GENERATOR_NETWORK: "0"
     volumes:
-      - ./txgenerator-compose.yml:/home/luna/.grap3/txgenerator.yml:ro
+      - ./txgenerator-compose.yml:/home/grape/.grap3/txgenerator.yml:ro
     networks:
       - vpcbs
 
   init-wallets:
-    image: luna-peer:${LUNA_VERSION:-dev}
+    image: grape-peer:${GRAPE_VERSION:-dev}
     container_name: init-wallets
     command:
       - txgen
@@ -289,11 +289,11 @@ services:
     depends_on:
       - leader
     environment:
-      LUNA_REST_API_USERNAME: ${LUNA_REST_API_USERNAME:-luna}
-      LUNA_REST_API_PASSWORD: ${LUNA_REST_API_PASSWORD:?set in deploy/.env}
+      GRAPE_REST_API_USERNAME: ${GRAPE_REST_API_USERNAME:-grape}
+      GRAPE_REST_API_PASSWORD: ${GRAPE_REST_API_PASSWORD:?set in deploy/.env}
       GENERATOR_NETWORK: "0"
     volumes:
-      - ./txgenerator-compose.yml:/home/luna/.grap3/txgenerator.yml:ro
+      - ./txgenerator-compose.yml:/home/grape/.grap3/txgenerator.yml:ro
     networks:
       - vpcbs
 

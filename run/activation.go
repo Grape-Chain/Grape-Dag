@@ -13,17 +13,17 @@ import (
 	"os"
 	"time"
 
-	"github.com/VG-Grape/luna/app"
-	config "github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/app"
+	config "github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/enescakir/emoji"
 	"google.golang.org/protobuf/proto"
 )
 
 type ProcessActivation struct{}
 
-func (p *ProcessActivation) process(c *config.Lunapeer) error {
+func (p *ProcessActivation) process(c *config.Grapepeer) error {
 	if !config.USE_ACTIVATION {
 		return nil
 	}
@@ -59,7 +59,7 @@ func (p *ProcessActivation) process(c *config.Lunapeer) error {
 	return nil
 }
 
-func (p *ProcessActivation) validate(act []byte, secret string, c *config.Lunapeer) ([]byte, error) {
+func (p *ProcessActivation) validate(act []byte, secret string, c *config.Grapepeer) ([]byte, error) {
 
 	dk, err := base64.StdEncoding.DecodeString(secret)
 	if err != nil {
@@ -86,7 +86,7 @@ func (p *ProcessActivation) validate(act []byte, secret string, c *config.Lunape
 
 	payload_pb, _ := proto.Marshal(payload)
 
-	pk, err := luna1crypto.ParsePrivateKey(c.Dag.Privatekey)
+	pk, err := grape1crypto.ParsePrivateKey(c.Dag.Privatekey)
 	if err != nil {
 		if c.Host.Verbose > 2 {
 			fmt.Printf("%s\tleader %s private key is invalid %s\n", emoji.StopSign, emoji.Purse, err.Error())

@@ -13,16 +13,16 @@ If you would like to explore your db after it's launched the best way to launch 
 ```bash
 $ docker-compose run postgres bash # drop into the container shelldatabase# 
 
-> psql --host=postgres --username=luna --dbname=lunadb
-Password for user luna: 
+> psql --host=postgres --username=grape --dbname=grapedb
+Password for user grape: 
 psql (12.0 (Debian 12.0-2.pgdg100+1))
-Type "help" for help.lunadb=#
+Type "help" for help.grapedb=#
 ...
 ```
 _NOTE_: the docker compose file references postgres.env file which contains the key env vars PostgreSQL relies on when starting up
 
 ## PostgreSQL Driver and Toolkit
-In luna1 project we use __PGX__ driver. [pgx is a pure Go driver and toolkit for PostgreSQL]
+In grape1 project we use __PGX__ driver. [pgx is a pure Go driver and toolkit for PostgreSQL]
 
 The pgx driver is a low-level, high performance interface that exposes PostgreSQL-specific features such as `LISTEN` / `NOTIFY` and `COPY`. It also includes an adapter for the standard `database/sql` interface.
 

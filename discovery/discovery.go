@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
+	"github.com/Grape-Chain/Grape-Dag/config"
 	"github.com/enescakir/emoji"
 	"github.com/ledongthuc/goterators"
 	"github.com/libp2p/go-libp2p-core/discovery"

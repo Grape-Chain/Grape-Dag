@@ -1,17 +1,17 @@
 # Examples
 
-Ready-to-run scripts that exercise a Luna peer's REST API. They are
+Ready-to-run scripts that exercise a Grape peer's REST API. They are
 intentionally short so they double as documentation: every one is a
 single `curl` (or a small loop of them) you can paste into a shell
 and tweak.
 
 ## Prerequisites
 
-A reachable Luna peer with the REST API enabled. The simplest way is
+A reachable Grape peer with the REST API enabled. The simplest way is
 the local stack:
 
 ```sh
-cp deploy/.env.example deploy/.env   # set LUNA_REST_API_PASSWORD
+cp deploy/.env.example deploy/.env   # set GRAPE_REST_API_PASSWORD
 make compose-up
 ```
 
@@ -24,17 +24,17 @@ All scripts read two environment variables:
 
 | Variable        | Required | Default                          | Notes                                                  |
 | --------------- | -------- | -------------------------------- | ------------------------------------------------------ |
-| `LUNA_API_URL`  | no       | `https://localhost:8010` (or `http://...` for `publish_nft.sh`) | Base URL of the peer's REST API. |
-| `LUNA_API_AUTH` | yes      | none                             | Base64 of `user:password` for HTTP Basic auth.         |
+| `GRAPE_API_URL`  | no       | `https://localhost:8010` (or `http://...` for `publish_nft.sh`) | Base URL of the peer's REST API. |
+| `GRAPE_API_AUTH` | yes      | none                             | Base64 of `user:password` for HTTP Basic auth.         |
 
-Build `LUNA_API_AUTH` once:
+Build `GRAPE_API_AUTH` once:
 
 ```sh
-export LUNA_API_URL=https://localhost:8010
-export LUNA_API_AUTH=$(printf 'luna:changeme' | base64)
+export GRAPE_API_URL=https://localhost:8010
+export GRAPE_API_AUTH=$(printf 'grape:changeme' | base64)
 ```
 
-If `LUNA_API_AUTH` is unset the scripts fail fast with a clear
+If `GRAPE_API_AUTH` is unset the scripts fail fast with a clear
 message rather than emitting an unsigned header.
 
 ## Scripts
@@ -55,7 +55,7 @@ message rather than emitting an unsigned header.
 ./examples/payment.sh
 
 # point at a remote testnet
-LUNA_API_URL=https://testnet1.example.com ./examples/zero-payment.sh
+GRAPE_API_URL=https://testnet1.example.com ./examples/zero-payment.sh
 
 # load test against a local peer
 WAITING_TIMEOUT=10 ./examples/spammer.sh

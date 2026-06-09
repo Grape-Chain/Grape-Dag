@@ -3,8 +3,8 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <parent>
-        <groupId>io.aplfintech.luna</groupId>
-        <artifactId>luna-smc</artifactId>
+        <groupId>io.aplfintech.grape</groupId>
+        <artifactId>grape-smc</artifactId>
         <version>0.1.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
@@ -20,21 +20,21 @@
 
     <dependencies>
         <dependency>
-            <groupId>io.aplfintech.luna</groupId>
+            <groupId>io.aplfintech.grape</groupId>
             <artifactId>commons</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
-            <groupId>io.aplfintech.luna</groupId>
-            <artifactId>luna1utils</artifactId>
+            <groupId>io.aplfintech.grape</groupId>
+            <artifactId>grape1utils</artifactId>
         </dependency>
         <dependency>
-            <groupId>io.aplfintech.luna</groupId>
-            <artifactId>lunach</artifactId>
+            <groupId>io.aplfintech.grape</groupId>
+            <artifactId>grapech</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
-            <groupId>io.aplfintech.luna</groupId>
+            <groupId>io.aplfintech.grape</groupId>
             <artifactId>l1vm</artifactId>
             <version>${project.parent.version}</version>
         </dependency>

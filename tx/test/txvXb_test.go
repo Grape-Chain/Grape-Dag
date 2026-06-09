@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VG-Grape/luna/tx"
-	pb "github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/crypto"
-	"github.com/VG-Grape/luna/crypto/eth"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	pb "github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	proto "google.golang.org/protobuf/proto"
 )
 
@@ -34,9 +34,9 @@ const doRefundCall string = "590e1ae3"
 
 func TestTransactionSignatureVerification(t *testing.T) {
 	tm := tx.Txv1{}
-	wallet := luna1crypto.LoadWallet("2bd4e8de88c1578aeb38f8c04f7af4d66c99cc0fe100d06641b4dd4ee0ae3220",
+	wallet := grape1crypto.LoadWallet("2bd4e8de88c1578aeb38f8c04f7af4d66c99cc0fe100d06641b4dd4ee0ae3220",
 		"8e38269f2cc110b31572e2d9e74aa466c770e82eec34c2f0037e0531822e1e4b")
-	anotherWallet := luna1crypto.NewWallet()
+	anotherWallet := grape1crypto.NewWallet()
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -46,9 +46,9 @@ func TestTransactionSignatureVerification(t *testing.T) {
 	tm.Fuel_Price = big.NewInt(r.Int63n(10)).Bytes()
 	tm.Sender_Pubk = []byte(*wallet.PublicKey())
 	tm.Nonce = 0
-	tm.Recepient = luna1crypto.AddressToBytes(anotherWallet.WalletAddress())
+	tm.Recepient = grape1crypto.AddressToBytes(anotherWallet.WalletAddress())
 	tm.Timestamp = time.Now()
-	tm.Sender = luna1crypto.AddressToBytes(wallet.WalletAddress())
+	tm.Sender = grape1crypto.AddressToBytes(wallet.WalletAddress())
 	tm.Sign(wallet.PrivateKey())
 
 	err := tm.Verify()
@@ -68,13 +68,13 @@ func TestTransactionSignatureVerification(t *testing.T) {
 }
 
 func TestGeneratePnTx(t *testing.T) {
-	wallet := luna1crypto.LoadWallet("2bd4e8de88c1578aeb38f8c04f7af4d66c99cc0fe100d06641b4dd4ee0ae3220",
+	wallet := grape1crypto.LoadWallet("2bd4e8de88c1578aeb38f8c04f7af4d66c99cc0fe100d06641b4dd4ee0ae3220",
 		"8e38269f2cc110b31572e2d9e74aa466c770e82eec34c2f0037e0531822e1e4b")
-	recipient_wallet := luna1crypto.LoadWallet("34822818e3f182a4b5e14b62965b5ea05f2afd17aaa18104dd6d0de27577ab63",
+	recipient_wallet := grape1crypto.LoadWallet("34822818e3f182a4b5e14b62965b5ea05f2afd17aaa18104dd6d0de27577ab63",
 		"875fc5a2a5f6804101bd007b52d6542799d4b461acd359ecc9127f31fd3190b5")
 	transaction := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PAYMENT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
-		Recepient:  luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
+		Recepient:  grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:     big.NewInt(rand.Int63n(20000)).Bytes(),
 		Nonce:      0,
 		Timestamp:  time.Now(),
@@ -95,13 +95,13 @@ func TestGeneratePnTx(t *testing.T) {
 }
 
 func TestGenerateChainedPayment(t *testing.T) {
-	wallet := luna1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
+	wallet := grape1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
 		"6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af")
-	recipient_wallet := luna1crypto.NewWallet()
+	recipient_wallet := grape1crypto.NewWallet()
 	amount, _ := big.NewInt(0).SetString("10000000000000000000000", 10)
 	transaction := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PAYMENT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
-		Recepient:  luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
+		Recepient:  grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:     amount.Bytes(),
 		Nonce:      0,
 		Timestamp:  time.Now(),
@@ -122,11 +122,11 @@ func TestGenerateChainedPayment(t *testing.T) {
 	fmt.Printf("Recipient privKey=%s, pubKey=%s, id=%s\n", recipient_wallet.PrivateKeyStr(), recipient_wallet.PublicKeyStr(), recipient_wallet.WalletAddress())
 
 	wallet = recipient_wallet
-	recipient_wallet = luna1crypto.NewWallet()
+	recipient_wallet = grape1crypto.NewWallet()
 	amount = amount.Div(amount, big.NewInt(4))
 	transaction2 := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PAYMENT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
-		Recepient:  luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
+		Recepient:  grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:     amount.Bytes(),
 		Nonce:      0,
 		Timestamp:  time.Now(),
@@ -148,16 +148,16 @@ func TestGenerateChainedPayment(t *testing.T) {
 }
 
 func TestGenerateTx_TwoWalletsLoaded(t *testing.T) {
-	wallet := luna1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
+	wallet := grape1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
 		"6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af")
-	recipient_wallet := luna1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
+	recipient_wallet := grape1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
 		"f2381d878a3fc70342736123298aef78a8f1cd7cfcf8985f267e43d4bdaae330")
 
 	balance, _ := big.NewInt(0).SetString("100000000000000000000000", 10)
 	transaction := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PAYMENT),
 		Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
-		Recepient: luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
+		Recepient: grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:    balance.Bytes(),
 		Nonce:     0, Timestamp: time.Now(),
 		Fuel_Limit: big.NewInt(rand.Int63n(30000)).Bytes(),
@@ -176,16 +176,16 @@ func TestGenerateTx_TwoWalletsLoaded(t *testing.T) {
 }
 
 func TestGenerateTx_ZeroTransfer(t *testing.T) {
-	wallet := luna1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
+	wallet := grape1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
 		"6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af")
-	recipient_wallet := luna1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
+	recipient_wallet := grape1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
 		"f2381d878a3fc70342736123298aef78a8f1cd7cfcf8985f267e43d4bdaae330")
 
 	balance := big.NewInt(0)
 	transaction := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PAYMENT),
 		Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
-		Recepient: luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
+		Recepient: grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:    balance.Bytes(),
 		Nonce:     0, Timestamp: time.Now(),
 		Fuel_Limit: big.NewInt(0).Bytes(),
@@ -204,9 +204,9 @@ func TestGenerateTx_ZeroTransfer(t *testing.T) {
 }
 
 func TestGenerateSCTxs(t *testing.T) {
-	wallet := luna1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
+	wallet := grape1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
 		"6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af")
-	// nftReceiverWallet := luna1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
+	// nftReceiverWallet := grape1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
 	// 	"f2381d878a3fc70342736123298aef78a8f1cd7cfcf8985f267e43d4bdaae330")
 	bytecodeDecoded, err := hex.DecodeString(nftBytecode)
 	if err != nil {
@@ -225,7 +225,7 @@ func TestGenerateSCTxs(t *testing.T) {
 	}
 
 	publishTx := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PUBLISH_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient: nil,
 		Amount:    big.NewInt(0).Bytes(),
 		Nonce:     0, Timestamp: date,
@@ -236,7 +236,7 @@ func TestGenerateSCTxs(t *testing.T) {
 	recipient := eth.EthAddressFromCaller(ethAddress, 0)
 	fmt.Println("Recipient: ", recipient.Hex())
 	safeMintCall := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_CALL_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient: recipient,
 		Amount:    big.NewInt(0).Bytes(), Nonce: 1, Timestamp: date,
 		Fuel_Limit: big.NewInt(3000000).Bytes(),
@@ -247,7 +247,7 @@ func TestGenerateSCTxs(t *testing.T) {
 }
 func TestMakingSimpleDeposit(t *testing.T) {
 
-	wallet := luna1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
+	wallet := grape1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
 		"6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af")
 	bytecodeDecoded, err := hex.DecodeString(deposContract)
 	if err != nil {
@@ -268,7 +268,7 @@ func TestMakingSimpleDeposit(t *testing.T) {
 	amount, _ := big.NewInt(0).SetString("9999999999999999999999499999900", 10)
 
 	publishTx := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PUBLISH_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient:  nil,
 		Amount:     big.NewInt(0).Bytes(),
 		Nonce:      0,
@@ -282,7 +282,7 @@ func TestMakingSimpleDeposit(t *testing.T) {
 	fmt.Println(recipient.Hex())
 
 	depositCall := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_CALL_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient:  recipient,
 		Amount:     amount.Bytes(),
 		Nonce:      1,
@@ -295,12 +295,12 @@ func TestMakingSimpleDeposit(t *testing.T) {
 	signAndVerify(&depositCall, wallet, t)
 
 	//making payment after refund
-	recipient_wallet := luna1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
+	recipient_wallet := grape1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
 		"f2381d878a3fc70342736123298aef78a8f1cd7cfcf8985f267e43d4bdaae330")
 	amount, _ = big.NewInt(0).SetString("900000000000000000000000000000", 10)
 	transaction := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PAYMENT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
-		Recepient:  luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
+		Recepient:  grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:     amount.Bytes(),
 		Nonce:      0,
 		Timestamp:  time.Now(),
@@ -323,7 +323,7 @@ func TestMakingSimpleDeposit(t *testing.T) {
 }
 
 func TestGenerateDeposit(t *testing.T) {
-	wallet := luna1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
+	wallet := grape1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
 		"6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af")
 	bytecodeDecoded, err := hex.DecodeString(deposContract)
 	if err != nil {
@@ -348,7 +348,7 @@ func TestGenerateDeposit(t *testing.T) {
 	amount, _ := big.NewInt(0).SetString("9999999999999999999999499999900", 10)
 
 	publishTx := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PUBLISH_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient:  nil,
 		Amount:     big.NewInt(0).Bytes(),
 		Nonce:      5,
@@ -362,7 +362,7 @@ func TestGenerateDeposit(t *testing.T) {
 	fmt.Println(recipient.Hex())
 
 	depositCall := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_CALL_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient:  recipient,
 		Amount:     amount.Bytes(),
 		Nonce:      6,
@@ -372,7 +372,7 @@ func TestGenerateDeposit(t *testing.T) {
 		Data:       depositCallDecoded, Signature: randomBytes(64)}
 
 	refundCall := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_CALL_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient: recipient,
 		Amount:    big.NewInt(0).Bytes(),
 		Nonce:     7, Timestamp: date,
@@ -384,12 +384,12 @@ func TestGenerateDeposit(t *testing.T) {
 	signAndVerify(&refundCall, wallet, t)
 
 	//making payment after refund
-	recipient_wallet := luna1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
+	recipient_wallet := grape1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
 		"f2381d878a3fc70342736123298aef78a8f1cd7cfcf8985f267e43d4bdaae330")
 	amount, _ = big.NewInt(0).SetString("8000000000000000000000000000000", 10)
 	transaction := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PAYMENT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(wallet.WalletAddress()),
-		Recepient:  luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:     grape1crypto.AddressToBytes(wallet.WalletAddress()),
+		Recepient:  grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:     amount.Bytes(),
 		Nonce:      0,
 		Timestamp:  time.Now(),
@@ -398,11 +398,11 @@ func TestGenerateDeposit(t *testing.T) {
 		Data:       nil, Signature: randomBytes(64)}
 	transaction.Sign(wallet.PrivateKey())
 
-	recipient_wallet2 := luna1crypto.NewWallet()
+	recipient_wallet2 := grape1crypto.NewWallet()
 	amount, _ = big.NewInt(0).SetString("22022222222222222222220", 10)
 	transaction2 := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PAYMENT), Chain_Type: tx.MAINNET, Sender_Pubk: *recipient_wallet.PublicKey(),
-		Sender:     luna1crypto.AddressToBytes(recipient_wallet.WalletAddress()),
-		Recepient:  luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet2.PublicKey())),
+		Sender:     grape1crypto.AddressToBytes(recipient_wallet.WalletAddress()),
+		Recepient:  grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet2.PublicKey())),
 		Amount:     amount.Bytes(),
 		Nonce:      0,
 		Timestamp:  time.Now(),
@@ -427,9 +427,9 @@ func TestGenerateDeposit(t *testing.T) {
 }
 
 func TestGenerateAccountFactoryTxs(t *testing.T) {
-	wallet := luna1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
+	wallet := grape1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
 		"6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af")
-	// receiverWallet := luna1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
+	// receiverWallet := grape1crypto.LoadWallet("c13655ea323d8cf8ce392b49a5b5b45ad88f20f53ba41f4a7f2643fa19d69a4f",
 	// 	"f2381d878a3fc70342736123298aef78a8f1cd7cfcf8985f267e43d4bdaae330")
 	bytecodeDecoded, err := hex.DecodeString(accountFactoryPublish)
 	if err != nil {
@@ -453,7 +453,7 @@ func TestGenerateAccountFactoryTxs(t *testing.T) {
 	}
 
 	publishTx := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PUBLISH_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient: nil,
 		Amount:    big.NewInt(0).Bytes(),
 		Nonce:     2, Timestamp: date,
@@ -464,7 +464,7 @@ func TestGenerateAccountFactoryTxs(t *testing.T) {
 	recipient := eth.EthAddressFromCaller(ethAddress, 2)
 	fmt.Println(recipient.Hex())
 	createAccount1 := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_CALL_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient: recipient,
 		Amount:    big.NewInt(0).Bytes(), Nonce: 3, Timestamp: date,
 		Fuel_Limit: big.NewInt(3000000).Bytes(),
@@ -472,7 +472,7 @@ func TestGenerateAccountFactoryTxs(t *testing.T) {
 		Data:       createAccountDecoded, Signature: randomBytes(64)}
 
 	createAccount2 := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_CALL_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient: recipient,
 		Amount:    big.NewInt(0).Bytes(), Nonce: 4, Timestamp: date,
 		Fuel_Limit: big.NewInt(3000000).Bytes(),
@@ -486,7 +486,7 @@ func TestGenerateAccountFactoryTxs(t *testing.T) {
 }
 
 func TestGenerateSCTxsStorage(t *testing.T) {
-	wallet := luna1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
+	wallet := grape1crypto.LoadWallet("940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3",
 		"6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af")
 	bytecodeDecoded, err := hex.DecodeString(storagePublish)
 	if err != nil {
@@ -505,7 +505,7 @@ func TestGenerateSCTxsStorage(t *testing.T) {
 	}
 
 	publishTx := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_PUBLISH_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient: nil,
 		Amount:    big.NewInt(0).Bytes(), Nonce: 0, Timestamp: date,
 		Fuel_Limit: big.NewInt(3000000).Bytes(),
@@ -514,7 +514,7 @@ func TestGenerateSCTxsStorage(t *testing.T) {
 	ethAddress, _ := eth.ParseEthAddress(wallet.WalletAddress())
 	recipient := eth.EthAddressFromCaller(ethAddress, 0)
 	storageStoreCallTx := tx.Txv1{Tx_Type: tx.TransactionType(pb.TransactionType_CALL_CONTRACT), Chain_Type: tx.MAINNET, Sender_Pubk: *wallet.PublicKey(),
-		Sender:    luna1crypto.AddressToBytes(wallet.WalletAddress()),
+		Sender:    grape1crypto.AddressToBytes(wallet.WalletAddress()),
 		Recepient: recipient,
 		Amount:    big.NewInt(0).Bytes(), Nonce: 0, Timestamp: date,
 		Fuel_Limit: big.NewInt(3000000).Bytes(),
@@ -526,7 +526,7 @@ func TestGenerateSCTxsStorage(t *testing.T) {
 
 }
 
-func signAndVerify(tx *tx.Txv1, w *luna1crypto.Wallet, t *testing.T) {
+func signAndVerify(tx *tx.Txv1, w *grape1crypto.Wallet, t *testing.T) {
 	tx.Sign(w.PrivateKey())
 	pbBytes, _ := proto.Marshal(tx.MarshalBinary())
 

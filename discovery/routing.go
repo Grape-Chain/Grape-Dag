@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
+	"github.com/Grape-Chain/Grape-Dag/config"
 	"github.com/enescakir/emoji"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -56,11 +56,11 @@ func WaitUntilinDHTForTopic() {
 	// 	c := idht.RefreshRoutingTable()
 	// 	<-c
 	// 	for i, t := range config.RENDEZVOUS {
-	// 		if discovery.GetMesh().In(t, lunapeer.GetHost().ID()) {
+	// 		if discovery.GetMesh().In(t, grapepeer.GetHost().ID()) {
 	// 			flags[i] = true
-	// 			logger.Infof("%s  ~ %s registered for topic: %s", emoji.CheckBoxWithCheck, lunapeer.GetHost().ID(), t)
+	// 			logger.Infof("%s  ~ %s registered for topic: %s", emoji.CheckBoxWithCheck, grapepeer.GetHost().ID(), t)
 	// 		} else {
-	// 			logger.Warnf("%s  ~ %s not registered for topic: %s", emoji.CrossMark, lunapeer.GetHost().ID(), t)
+	// 			logger.Warnf("%s  ~ %s not registered for topic: %s", emoji.CrossMark, grapepeer.GetHost().ID(), t)
 	// 		}
 	// 	}
 	// 	exit := goterators.Reduce(flags, true, func(prev bool, cur bool, _ int, _ []bool) bool {

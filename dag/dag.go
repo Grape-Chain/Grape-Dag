@@ -7,13 +7,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	"github.com/VG-Grape/luna/stats"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/crypto"
-	luna_wallet "github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	"github.com/Grape-Chain/Grape-Dag/stats"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/enescakir/emoji"
 	"github.com/google/uuid"
 	golog "github.com/ipfs/go-log/v2"
@@ -42,7 +42,7 @@ type Dag struct {
 	stopCh          chan bool
 	pins            []*Node
 	width           uint8
-	exodusWallets   []*luna1crypto.Wallet
+	exodusWallets   []*grape1crypto.Wallet
 }
 
 var (
@@ -50,7 +50,7 @@ var (
 	_pins_               *NodeTxPin           = nil
 	__leaderReady__      atomic.Bool          = atomic.Bool{}
 	chaintype            tx.ChainType         = tx.PRIVATE_TESTNET
-	dagWallet            *luna_wallet.Wallet  = nil // node's wallet with its own set of encr keys
+	dagWallet            *grape_wallet.Wallet  = nil // node's wallet with its own set of encr keys
 	confirmationCounter  *ConfirmationCounter = nil
 	walletCache          *WalletCache         = nil // keep track of the current balances
 	walletCacheConfirmed *WalletCache         = nil // keep track of the current balances without unconfirmed payment tx
@@ -97,9 +97,9 @@ func (d *Dag) GetWalletCache() *WalletCache {
 	return walletCache
 }
 
-func (dag *Dag) Wallet() *luna_wallet.Wallet {
+func (dag *Dag) Wallet() *grape_wallet.Wallet {
 	if dagWallet == nil {
-		dagWallet = luna1crypto.NewWallet()
+		dagWallet = grape1crypto.NewWallet()
 	}
 	return dagWallet
 }
@@ -318,13 +318,13 @@ func (d *Dag) getGenesis() *Node {
 	return nil
 }
 
-func initDagWallet(dagConfig config.DagConfiguration) *luna_wallet.Wallet {
-	return luna_wallet.LoadWallet(dagConfig.Publickey, dagConfig.Privatekey)
+func initDagWallet(dagConfig config.DagConfiguration) *grape_wallet.Wallet {
+	return grape_wallet.LoadWallet(dagConfig.Publickey, dagConfig.Privatekey)
 }
 
 func InitDagToStats(statsId uuid.UUID) {
 	goterators.ForEach(_dag_._dag_, func(n *Node) {
-		stats.Enqueue(statsId, tx.ConvertToLunaTx(lunapeer.GetHost(), n.tx), stats.TX_TYPE_PUB, 0, time.Duration(0))
+		stats.Enqueue(statsId, tx.ConvertToGrapeTx(grapepeer.GetHost(), n.tx), stats.TX_TYPE_PUB, 0, time.Duration(0))
 	})
 }
 
@@ -381,7 +381,7 @@ func Init() {
 
 func (sm *DagSyncMngr) RunSynchronization(leader bool, wait_connect bool) {
 	if _dag_ != nil {
-		if host := lunapeer.GetHost(); host == nil {
+		if host := grapepeer.GetHost(); host == nil {
 			logger.Fatal("This peer's host has not been initialized")
 		}
 		// we set the sync channel for transactions here so that we can run

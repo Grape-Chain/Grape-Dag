@@ -1,4 +1,4 @@
-package lunapeer
+package grapepeer
 
 import (
 	"context"
@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	host_config "github.com/VG-Grape/luna/config"
-	discovery "github.com/VG-Grape/luna/discovery"
-	utils "github.com/VG-Grape/luna/utils"
+	host_config "github.com/Grape-Chain/Grape-Dag/config"
+	discovery "github.com/Grape-Chain/Grape-Dag/discovery"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/enescakir/emoji"
 	golog "github.com/ipfs/go-log/v2"
 	libp2p "github.com/libp2p/go-libp2p"
@@ -39,7 +39,7 @@ var (
 	addrObsrvWg sync.WaitGroup
 )
 
-type LunaHost struct {
+type GrapeHost struct {
 	host            host.Host
 	bandwidthTicker *time.Ticker
 	bandwidthDone   chan bool
@@ -47,7 +47,7 @@ type LunaHost struct {
 	relayInfo       peer.AddrInfo
 }
 
-var lunaHost *LunaHost
+var grapeHost *GrapeHost
 
 type RoutineMgr struct {
 	Name   string
@@ -93,8 +93,8 @@ func getRelayCandidates(cfg *host_config.HostConfig) []string {
 }
 
 func GetHost() host.Host {
-	if lunaHost != nil {
-		return lunaHost.host
+	if grapeHost != nil {
+		return grapeHost.host
 	}
 	return nil
 }
@@ -136,8 +136,8 @@ func handleAddr(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 	return filtered_addrs
 }
 
-func prepareHostOptions(prvKey crypto.PrivKey, cfg *host_config.HostConfig, lunaCfg *host_config.Lunapeer) []config.Option {
-	if lunaCfg.Peer.Port == 0 {
+func prepareHostOptions(prvKey crypto.PrivKey, cfg *host_config.HostConfig, grapeCfg *host_config.Grapepeer) []config.Option {
+	if grapeCfg.Peer.Port == 0 {
 		utils.ColorizeWarn(logger, "Host will choose an ephemeral port to communicate on.")
 	}
 
@@ -148,7 +148,7 @@ func prepareHostOptions(prvKey crypto.PrivKey, cfg *host_config.HostConfig, luna
 	if cfg.Port > 0 {
 		port = cfg.Port
 	} else {
-		port = lunaCfg.Peer.Port
+		port = grapeCfg.Peer.Port
 	}
 
 	options := []config.Option{
@@ -157,13 +157,13 @@ func prepareHostOptions(prvKey crypto.PrivKey, cfg *host_config.HostConfig, luna
 		libp2p.EnableHolePunching(optionsHolePunch...),
 	}
 
-	id := fmt.Sprintf("/ip4/%s/udp/%d/quic-v1", lunaCfg.Peer.Host, port)
+	id := fmt.Sprintf("/ip4/%s/udp/%d/quic-v1", grapeCfg.Peer.Host, port)
 	logger.Infof("[Host] Listen address option: %s", id)
 	options = append(options, libp2p.ListenAddrStrings(id))
-	id = fmt.Sprintf("/ip4/%s/tcp/%d", lunaCfg.Peer.Host, port)
+	id = fmt.Sprintf("/ip4/%s/tcp/%d", grapeCfg.Peer.Host, port)
 	logger.Infof("[Host] Listen address option: %s", id)
 	options = append(options, libp2p.ListenAddrStrings(id))
-	id = fmt.Sprintf("/ip4/%s/tcp/%d/ws", lunaCfg.Peer.Host, port)
+	id = fmt.Sprintf("/ip4/%s/tcp/%d/ws", grapeCfg.Peer.Host, port)
 	logger.Infof("[Host] Listen address option: %s", id)
 	options = append(options, libp2p.ListenAddrStrings(id))
 
@@ -218,17 +218,17 @@ func reportBandwidth(reporter *metrics.BandwidthCounter) (*time.Ticker, chan boo
 	return ticker, done
 }
 
-func NewHost(prvKey crypto.PrivKey, cfg *host_config.HostConfig, lunaCfg *host_config.Lunapeer) error {
+func NewHost(prvKey crypto.PrivKey, cfg *host_config.HostConfig, grapeCfg *host_config.Grapepeer) error {
 	// 0.0.0.0 will listen on any interface device.
 	// libp2p.New constructs a new libp2p Host.
 	// Other options can be added here.
-	lunaHost = new(LunaHost)
-	options := prepareHostOptions(prvKey, cfg, lunaCfg)
+	grapeHost = new(GrapeHost)
+	options := prepareHostOptions(prvKey, cfg, grapeCfg)
 	var reporter *metrics.BandwidthCounter = nil
-	if lunaCfg.Peer.Bandwidth > 0 {
+	if grapeCfg.Peer.Bandwidth > 0 {
 		reporter = metrics.NewBandwidthCounter()
 		options = append(options, libp2p.BandwidthReporter(reporter))
-		lunaHost.bandwidthTicker, lunaHost.bandwidthDone = reportBandwidth(reporter)
+		grapeHost.bandwidthTicker, grapeHost.bandwidthDone = reportBandwidth(reporter)
 	}
 
 	host, err := libp2p.New(options...)
@@ -283,13 +283,13 @@ func NewHost(prvKey crypto.PrivKey, cfg *host_config.HostConfig, lunaCfg *host_c
 		logger.Warnf("Launching a holepunching sevice err: %s. Will continue...", err.Error())
 	}
 
-	host.ConnManager().TagPeer(host.ID(), lunaCfg.Peer.Id, 5)
+	host.ConnManager().TagPeer(host.ID(), grapeCfg.Peer.Id, 5)
 	if cfg.Bootstrap {
-		lunaHost.relay, err = relayv2.New(host, relayv2.WithLimit(nil))
+		grapeHost.relay, err = relayv2.New(host, relayv2.WithLimit(nil))
 		if err != nil {
 			logger.Errorf("[RELAY] Failed to enable a new relay service: %v+", err)
 		}
-		lunaHost.relayInfo = peer.AddrInfo{
+		grapeHost.relayInfo = peer.AddrInfo{
 			ID:    host.ID(),
 			Addrs: host.Addrs(),
 		}
@@ -311,11 +311,11 @@ func NewHost(prvKey crypto.PrivKey, cfg *host_config.HostConfig, lunaCfg *host_c
 	// Ok: Sat 5 - disable stream creation. Experiment
 	//host.SetStreamHandler(protocol.ID(cfg.ProtocolID), discovery.HandleStream)
 	// an_options := []autonat.Option{}
-	// lunaHost.dialback, err = libp2p.New(libp2p.NoListenAddrs)
+	// grapeHost.dialback, err = libp2p.New(libp2p.NoListenAddrs)
 	// if err != nil {
 	// 	logger.Errorf("Dialback host error %s", err.Error())
 	// } else {
-	// 	an_options = append(an_options, autonat.EnableService(lunaHost.dialback.Network()))
+	// 	an_options = append(an_options, autonat.EnableService(grapeHost.dialback.Network()))
 	// 	an_nat, err := autonat.New(host, an_options...)
 	// 	if err != nil {
 	// 		logger.Errorf("[AutoNAT] Failed to create a NAT service: %s", err.Error())
@@ -353,16 +353,16 @@ func NewHost(prvKey crypto.PrivKey, cfg *host_config.HostConfig, lunaCfg *host_c
 	// 		}()
 	// 	}
 	// }
-	lunaHost.host = host
+	grapeHost.host = host
 	return nil
 }
 
 func Terminate() {
-	if lunaHost.bandwidthTicker != nil {
+	if grapeHost.bandwidthTicker != nil {
 		logger.Info("Stopping bandwidth estimation timers/tickers")
-		lunaHost.bandwidthDone <- true
-		close(lunaHost.bandwidthDone)
-		lunaHost.bandwidthTicker.Stop()
+		grapeHost.bandwidthDone <- true
+		close(grapeHost.bandwidthDone)
+		grapeHost.bandwidthTicker.Stop()
 	}
 	// stopping the autonat monitor
 	if evtbus_monitor.Status.Load() {
@@ -380,26 +380,26 @@ func Terminate() {
 	// close(addrObsrvCh)
 	// logger.Info("The network address observer has been successfully stopped.")
 	//
-	if lunaHost.relay != nil {
+	if grapeHost.relay != nil {
 		logger.Info("Stopping relay")
-		lunaHost.relay.Close()
+		grapeHost.relay.Close()
 	}
 	if hpService != nil {
 		logger.Info("Stopping holepunching service")
 		hpService.Close()
 	}
 	logger.Info("Stopping communication manager")
-	lunaHost.host.ConnManager().Close()
-	logger.Infof("Stopping "+host_config.APP_NAME+" %s", lunaHost.host.ID().String())
+	grapeHost.host.ConnManager().Close()
+	logger.Infof("Stopping "+host_config.APP_NAME+" %s", grapeHost.host.ID().String())
 
 	logger.Info("Purging peer store")
-	peers := lunaHost.host.Peerstore().Peers()
+	peers := grapeHost.host.Peerstore().Peers()
 	for _, p := range peers {
 		logger.Infof("Removing peer %s", p.String())
-		lunaHost.host.Peerstore().ClearAddrs(p)
-		lunaHost.host.Peerstore().RemovePeer(p)
+		grapeHost.host.Peerstore().ClearAddrs(p)
+		grapeHost.host.Peerstore().RemovePeer(p)
 	}
-	logger.Infof("Terminating peer %s", lunaHost.host.ID().String())
-	lunaHost.host.Close()
-	logger.Infof(host_config.APP_NAME+" %s terminated.", lunaHost.host.ID().String())
+	logger.Infof("Terminating peer %s", grapeHost.host.ID().String())
+	grapeHost.host.Close()
+	logger.Infof(host_config.APP_NAME+" %s terminated.", grapeHost.host.ID().String())
 }

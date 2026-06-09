@@ -22,18 +22,18 @@ func init() {
 	logger = golog.Logger("p2p-config")
 }
 
-var lunapeer *Lunapeer
+var grapepeer *Grapepeer
 
-func LoadLunaPeerFromConfig(hc *HostConfig) *Lunapeer {
-	if lunapeer == nil {
-		lunapeer = LoadLunapeer(hc)
+func LoadGrapePeerFromConfig(hc *HostConfig) *Grapepeer {
+	if grapepeer == nil {
+		grapepeer = LoadGrapepeer(hc)
 	}
-	lunapeer.Host = *hc
-	return lunapeer
+	grapepeer.Host = *hc
+	return grapepeer
 }
 
-func GetConfig() *Lunapeer {
-	return lunapeer
+func GetConfig() *Grapepeer {
+	return grapepeer
 }
 
 var (
@@ -43,8 +43,8 @@ var (
 func ParseCliArgs() *HostConfig {
 	conf := &HostConfig{}
 
-	flag.StringVar(&conf.Rendezvous, "rendezvous", "lunaone", "Unique string to identify group of nodes.")
-	flag.StringVar(&conf.ProtocolID, "protocol", "/lunaone/0.0.1", "Sets a protocol id for stream headers")
+	flag.StringVar(&conf.Rendezvous, "rendezvous", "grapeone", "Unique string to identify group of nodes.")
+	flag.StringVar(&conf.ProtocolID, "protocol", "/grapeone/0.0.1", "Sets a protocol id for stream headers")
 	flag.Int64Var(&conf.Seed, "seed", 0, "Random num gen seed value for consistent rand sequence")
 	flag.BoolVar(&conf.Bootstrap, "bootstrap", false, "this is a bootstrap node")
 	flag.BoolVar(&conf.Debug, "d", false, "Enable debug level logging")
@@ -66,7 +66,7 @@ func ParseCliArgs() *HostConfig {
 	flag.BoolVar(&conf.Pubsub_tracing, "trace", false, "enable/disable pubsub tracing")
 	flag.BoolVar(&conf.Purge, "purge", false, "Purge the peer store")
 	flag.IntVar(&conf.Verbose, "verbose", 0, "Add verbosity 1-5")
-	flag.StringVar(&conf.Config, "f", "", "Configuration file to use instead of the default lunapeer.yml")
+	flag.StringVar(&conf.Config, "f", "", "Configuration file to use instead of the default grapepeer.yml")
 	flag.StringVar(&conf.Activation, "activation", "", "Activation file to activate the leader")
 	flag.StringVar(&conf.Secret, "secret", "", "Secret activation key")
 	flag.BoolVar(&conf.SnapshotSync, "snapshot_sync", false, "Enable snapshot sync from leader's balances")
@@ -105,7 +105,7 @@ func LoadBootstrap() []multiaddr.Multiaddr {
 	if err != nil {
 		return nil
 	}
-	fd, err := os.Open(filepath.Join(hd, LUNAONE_CFG_PATH, BOOTSTRAP_FILE))
+	fd, err := os.Open(filepath.Join(hd, GRAPEONE_CFG_PATH, BOOTSTRAP_FILE))
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Configuration file does not exist
@@ -135,7 +135,7 @@ func LoadBootstrap() []multiaddr.Multiaddr {
 	return bootstrap_list
 }
 
-func LoadLunapeer(hc *HostConfig) *Lunapeer {
+func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 
 	// Set the path to look for the configurations file
 	hd, err := os.UserHomeDir()
@@ -143,14 +143,14 @@ func LoadLunapeer(hc *HostConfig) *Lunapeer {
 		return nil
 	}
 
-	configPath := filepath.Join(hd, LUNAONE_CFG_PATH)
+	configPath := filepath.Join(hd, GRAPEONE_CFG_PATH)
 	var fd *os.File = nil
-	configFile := filepath.Join(hd, LUNAONE_CFG_PATH, LUNAPEER_FILE)
+	configFile := filepath.Join(hd, GRAPEONE_CFG_PATH, GRAPEPEER_FILE)
 	if len(hc.Config) > 0 {
 		configFile = hc.Config
 		fd, err = os.Open(hc.Config)
 	} else {
-		fd, err = os.Open(filepath.Join(hd, LUNAONE_CFG_PATH, LUNAPEER_FILE))
+		fd, err = os.Open(filepath.Join(hd, GRAPEONE_CFG_PATH, GRAPEPEER_FILE))
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -164,12 +164,12 @@ func LoadLunapeer(hc *HostConfig) *Lunapeer {
 	viper.AutomaticEnv()
 	viper.SetConfigFile(configFile)
 	viper.SetConfigType("yml")
-	var peerConfig *Lunapeer = &Lunapeer{
+	var peerConfig *Grapepeer = &Grapepeer{
 		Host: *hc,
 	}
 
 	if err := viper.ReadInConfig(); err != nil {
-		logger.Errorf("Error reading %s file, %s", LUNAPEER_FILE, err)
+		logger.Errorf("Error reading %s file, %s", GRAPEPEER_FILE, err)
 		return nil
 	}
 
@@ -206,7 +206,7 @@ func LoadLunapeer(hc *HostConfig) *Lunapeer {
 
 	err = viper.Unmarshal(&peerConfig)
 	if err != nil {
-		logger.Errorf("Unable to decode into Lunapeer, %v", err)
+		logger.Errorf("Unable to decode into Grapepeer, %v", err)
 		return nil
 	}
 	peerConfig.Peer.Apikey = filepath.Join(configPath, peerConfig.Peer.Apikey)

@@ -1,4 +1,4 @@
 {
-    "bootstrap-luna-one-1":"/ip4/51.15.247.49/udp/33331/quic/p2p/12D3KooWLj6wBZ1T9Ceh1BwBwWoRCpj18jK4EG6SCoeNTfnhYhmN",    
-    "bootstrap-luna-one-2":"/ip4/51.15.139.232/udp/33331/quic/p2p/12D3KooWExJYEPTTj8QHyiCEVFVNF7D1j7rN7KwiXpEkGiMsGn3B"
+    "bootstrap-grape-one-1":"/ip4/51.15.247.49/udp/33331/quic/p2p/12D3KooWLj6wBZ1T9Ceh1BwBwWoRCpj18jK4EG6SCoeNTfnhYhmN",    
+    "bootstrap-grape-one-2":"/ip4/51.15.139.232/udp/33331/quic/p2p/12D3KooWExJYEPTTj8QHyiCEVFVNF7D1j7rN7KwiXpEkGiMsGn3B"
 }

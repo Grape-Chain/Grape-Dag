@@ -17,17 +17,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VG-Grape/luna/app"
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/dag"
-	"github.com/VG-Grape/luna/services"
-	"github.com/VG-Grape/luna/services/rest/api"
-	"github.com/VG-Grape/luna/services/rest/mapper"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/vm"
-	"github.com/VG-Grape/luna/wallet"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/app"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/dag"
+	"github.com/Grape-Chain/Grape-Dag/services"
+	"github.com/Grape-Chain/Grape-Dag/services/rest/api"
+	"github.com/Grape-Chain/Grape-Dag/services/rest/mapper"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/vm"
+	"github.com/Grape-Chain/Grape-Dag/wallet"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/google/martian/log"
 	"github.com/ledongthuc/goterators"
 	"github.com/libp2p/go-libp2p/core/discovery"
@@ -522,8 +522,8 @@ func Faucet(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(api.ApiError{Error: &err})
 		return
 	}
-	privKey, _ := luna1crypto.ParsePrivateKey(config.GetConfig().Dag.FaucetPrivatekey)
-	pubKey, _ := luna1crypto.ParsePublicKey(config.GetConfig().Dag.FaucetPublickey)
+	privKey, _ := grape1crypto.ParsePrivateKey(config.GetConfig().Dag.FaucetPrivatekey)
+	pubKey, _ := grape1crypto.ParsePublicKey(config.GetConfig().Dag.FaucetPublickey)
 	amount, _ := big.NewInt(0).SetString("1000000000000000000000", 10)
 	senderAcc := accService.GetAccountById(config.GetConfig().Dag.FaucetWallet)
 	if senderAcc == nil {

@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"time"
 
-	pb "github.com/VG-Grape/luna/tx/pb"
+	pb "github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	proto "google.golang.org/protobuf/proto"
@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const SyncEnvelopeDomain = "lunaone-tx-record"
+const SyncEnvelopeDomain = "grapeone-tx-record"
 
 // Register in https://github.com/multiformats/multicodec/blob/master/table.csv
 var SyncEnvelopePayloadType = []byte{0xFF, 0x44}

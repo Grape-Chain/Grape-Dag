@@ -1,4 +1,4 @@
-module github.com/VG-Grape/luna
+module github.com/Grape-Chain/Grape-Dag
 
 go 1.24.6
 

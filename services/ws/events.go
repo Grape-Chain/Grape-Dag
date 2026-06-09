@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/VG-Grape/luna/services/rest/mapper"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/vm"
+	"github.com/Grape-Chain/Grape-Dag/services/rest/mapper"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/vm"
 	"github.com/gorilla/websocket"
 	golog "github.com/ipfs/go-log/v2"
 	uuid "github.com/satori/go.uuid"

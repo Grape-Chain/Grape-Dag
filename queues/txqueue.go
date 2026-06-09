@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx"
 )
 
 type QueuePriority uint8

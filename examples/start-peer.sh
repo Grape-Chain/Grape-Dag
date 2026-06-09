@@ -3,7 +3,7 @@
 PARENT_PID=$$
 SCRIPT_NAME=$(basename $0)
 BASE_DIR=$(dirname "$(realpath "$0")")
-LUNAPEER_PID=0
+GRAPEPEER_PID=0
 echo "*** *** ${SCRIPT_NAME} running by user=${USER} *** ***"
 
 DEBUG=1
@@ -85,7 +85,7 @@ local count=0
 
 #Wait while the peer is setting up
 #$1 - timeout (default=15s)
-wait_lunapeer_setup() {
+wait_grapepeer_setup() {
 local kwait=$1
 local count=0
 local proc_pid=0
@@ -93,10 +93,10 @@ local proc_pid=0
   
   while true; do
     if [ -f ${PID_FILE} ]; then
-      LUNAPEER_PID=$(cat ${PID_FILE}) 
+      GRAPEPEER_PID=$(cat ${PID_FILE}) 
       proc_pid=$(pgrep -f ${PEER_APP})
-      #debug "LUNAPEER_PID=[${LUNAPEER_PID}] PROC_PID=[${proc_pid}])"
-      if [ "${LUNAPEER_PID}" == "${proc_pid}" ]; then
+      #debug "GRAPEPEER_PID=[${GRAPEPEER_PID}] PROC_PID=[${proc_pid}])"
+      if [ "${GRAPEPEER_PID}" == "${proc_pid}" ]; then
         break
       fi      
     fi
@@ -135,7 +135,7 @@ start_watchdog_loop(){
     debug "wait peer rc=${rc}"
     if [ "$rc" == "0" ]; then 
       debug "waiting for setup"
-      rc=$(wait_lunapeer_setup 30)
+      rc=$(wait_grapepeer_setup 30)
       debug "Is peer running?, rc=${rc}"
       if [ "$rc" == "0" ]; then 
         "${TXGEN_APP}" -mode watchdog -timeout $WATCHDOG_TIMEOUT -retries $WATCHDOG_RETRIES &> /dev/null

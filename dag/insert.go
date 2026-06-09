@@ -3,8 +3,8 @@ package dag
 import (
 	"time"
 
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/utils"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/google/uuid"
 	"github.com/ledongthuc/goterators"
 	"github.com/pkg/errors"

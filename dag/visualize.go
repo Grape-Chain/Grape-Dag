@@ -6,7 +6,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/VG-Grape/luna/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/dominikbraun/graph"
 	"github.com/dominikbraun/graph/draw"
 	"github.com/ledongthuc/goterators"
@@ -64,8 +64,8 @@ func (dag *Dag) visualizeMcmcPlus(peerID string) {
 		g := graph.New(graph.IntHash, graph.Weighted(), graph.Directed(), graph.Acyclic())
 		dag.visPopulateGraph(g, vertices)
 		fileID++
-		fmt.Printf("Creating file lunapeer.%s.%d.gv", peerID, fileID)
-		file, _ := os.Create(fmt.Sprintf("./lunapeer.%s.%d.gv", peerID, fileID))
+		fmt.Printf("Creating file grapepeer.%s.%d.gv", peerID, fileID)
+		file, _ := os.Create(fmt.Sprintf("./grapepeer.%s.%d.gv", peerID, fileID))
 		_ = draw.DOT(g, file)
 	}
 }
@@ -88,8 +88,8 @@ func (dag *Dag) visualizeMcmcPlusPlus(peerID string) {
 				dag.visPopulateGraph(g, vertices)
 				offset = idx
 				fileID++
-				fmt.Printf("Creating file lunapeer.%s.%d.gv", peerID, fileID)
-				file, _ := os.Create(fmt.Sprintf("./lunapeer.%s.%d.gv", peerID, fileID))
+				fmt.Printf("Creating file grapepeer.%s.%d.gv", peerID, fileID)
+				file, _ := os.Create(fmt.Sprintf("./grapepeer.%s.%d.gv", peerID, fileID))
 				_ = draw.DOT(g, file)
 			}
 		}
@@ -99,8 +99,8 @@ func (dag *Dag) visualizeMcmcPlusPlus(peerID string) {
 			vertices := dag._dag_[idxPin:]
 			dag.visPopulateGraph(g, vertices)
 			fileID++
-			fmt.Printf("Creating file lunapeer.%s.%d.gv", peerID, fileID)
-			file, _ := os.Create(fmt.Sprintf("./lunapeer.%s.%d.gv", peerID, fileID))
+			fmt.Printf("Creating file grapepeer.%s.%d.gv", peerID, fileID)
+			file, _ := os.Create(fmt.Sprintf("./grapepeer.%s.%d.gv", peerID, fileID))
 			_ = draw.DOT(g, file)
 		}
 	}
@@ -124,7 +124,7 @@ func (dag *Dag) visualizeRandomWalk(peerID string) {
 			)
 		})
 
-		file, _ := os.Create(fmt.Sprintf("./lunapeer.%s.gv", peerID))
+		file, _ := os.Create(fmt.Sprintf("./grapepeer.%s.gv", peerID))
 		_ = draw.DOT(g, file)
 	}
 }
@@ -160,7 +160,7 @@ func (d *Dag) visualizePins(id string) {
 			graph.EdgeAttribute("label", fmt.Sprintf("%s[%d]... => %s...", sign[:5], lsites, prev[:5])))
 	}
 
-	file, _ := os.Create(fmt.Sprintf("./lunapeer.pin.%s.gv", id))
+	file, _ := os.Create(fmt.Sprintf("./grapepeer.pin.%s.gv", id))
 	_ = draw.DOT(g, file)
 
 }

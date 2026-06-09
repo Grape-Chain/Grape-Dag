@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	sm "github.com/VG-Grape/luna/statemachine"
+	sm "github.com/Grape-Chain/Grape-Dag/statemachine"
 	"github.com/google/uuid"
 )
 

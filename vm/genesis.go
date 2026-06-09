@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 )
 
 // Private key=  6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af
@@ -61,8 +61,8 @@ type GenesisWallet struct {
 	PublicKey  string
 }
 
-func (w GenesisWallet) LunaCryptoWallet() *luna1crypto.Wallet {
-	return luna1crypto.LoadWallet(w.PublicKey, w.PrivateKey)
+func (w GenesisWallet) GrapeCryptoWallet() *grape1crypto.Wallet {
+	return grape1crypto.LoadWallet(w.PublicKey, w.PrivateKey)
 }
 
 type LnAccount struct {

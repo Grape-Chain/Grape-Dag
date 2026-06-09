@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"os"
 
-	config "github.com/VG-Grape/luna/config"
-	utils "github.com/VG-Grape/luna/utils"
+	config "github.com/Grape-Chain/Grape-Dag/config"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	p2p_config "github.com/libp2p/go-libp2p/config"
@@ -59,12 +59,12 @@ func detectlogLevel(level golog.LogLevel, debug bool) golog.LogLevel {
 	return logLevel
 }
 
-func GearUpConfig() *config.Lunapeer {
+func GearUpConfig() *config.Grapepeer {
 	help := flag.Bool("help", false, "Show usage")
 	cfg = config.ParseCliArgs()
 	if *help || len(cfg.PeerID) == 0 {
 		utils.ColorizePrint(config.APP_NAME)
-		utils.ColorizePrint("Usage: \n   Run lunaone -id <peerID>'\n")
+		utils.ColorizePrint("Usage: \n   Run grapeone -id <peerID>'\n")
 		os.Exit(0)
 	}
 	if cfg.Home && (cfg.Port < 1023) {
@@ -73,13 +73,13 @@ func GearUpConfig() *config.Lunapeer {
 	}
 
 	// Load peer and dag configs
-	lunaPeerConf := config.LoadLunaPeerFromConfig(cfg)
-	if lunaPeerConf == nil {
+	grapePeerConf := config.LoadGrapePeerFromConfig(cfg)
+	if grapePeerConf == nil {
 		logger.Warnf("Failed to load %s. To better customize please create %s/%s",
-			config.LUNAPEER_FILE, config.LUNAONE_CFG_PATH, config.LUNAPEER_FILE)
+			config.GRAPEPEER_FILE, config.GRAPEONE_CFG_PATH, config.GRAPEPEER_FILE)
 	}
 
-	lunaPeerConf.Peer.Id = cfg.PeerID
+	grapePeerConf.Peer.Id = cfg.PeerID
 
 	if cfg.Profile {
 		fmt.Println("* Profiling is enabled")
@@ -90,41 +90,41 @@ func GearUpConfig() *config.Lunapeer {
 
 	if cfg.VmServerPort > 1023 && cfg.VmServerPort <= 65535 {
 		fmt.Printf("Use VmServerPort supplied via CMD (override yml file config) %d\n", cfg.VmServerPort)
-		lunaPeerConf.Peer.VmServerPort = cfg.VmServerPort
+		grapePeerConf.Peer.VmServerPort = cfg.VmServerPort
 	}
 	if cfg.StateServerPort > 1023 && cfg.StateServerPort <= 65535 {
 		fmt.Printf("Use StateServerPort supplied via CMD (override yml file config) %d\n", cfg.StateServerPort)
-		lunaPeerConf.Peer.StateServerPort = cfg.StateServerPort
+		grapePeerConf.Peer.StateServerPort = cfg.StateServerPort
 	}
 	if cfg.NodeType > 0 {
 		fmt.Printf("Node type=%d [cmd override]\n", cfg.NodeType)
-		lunaPeerConf.Peer.NodeType = cfg.NodeType
+		grapePeerConf.Peer.NodeType = cfg.NodeType
 	}
 	if cfg.SnapshotSync {
 		fmt.Printf("Snapshot sync is enabled [cmd override]")
-		lunaPeerConf.Peer.SnapshotSync = true
+		grapePeerConf.Peer.SnapshotSync = true
 	}
-	fmt.Printf("Node started with type=%d, snapshotSync=%t", lunaPeerConf.Peer.NodeType, lunaPeerConf.Peer.SnapshotSync)
+	fmt.Printf("Node started with type=%d, snapshotSync=%t", grapePeerConf.Peer.NodeType, grapePeerConf.Peer.SnapshotSync)
 
 	// @TODO - temp fix for easy launching without constantly changing yml
 	if cfg.Grpc {
-		lunaPeerConf.Peer.Grpc = cfg.Grpc
+		grapePeerConf.Peer.Grpc = cfg.Grpc
 	}
 	if cfg.Grpcport > 1023 {
-		lunaPeerConf.Peer.Grpcport = cfg.Grpcport
+		grapePeerConf.Peer.Grpcport = cfg.Grpcport
 	}
 	if cfg.Leader {
-		lunaPeerConf.Peer.Leader = cfg.Leader
+		grapePeerConf.Peer.Leader = cfg.Leader
 	}
 	if cfg.Apiport > 1023 {
-		lunaPeerConf.Peer.Apiport = cfg.Apiport
+		grapePeerConf.Peer.Apiport = cfg.Apiport
 	}
 	if cfg.VmServerPort > 1023 && cfg.VmServerPort < 65535 {
-		lunaPeerConf.Peer.StateServerPort = cfg.VmServerPort
+		grapePeerConf.Peer.StateServerPort = cfg.VmServerPort
 	}
 
 	if cfg.Purge {
-		lunaPeerConf.Peer.Purge = func() int {
+		grapePeerConf.Peer.Purge = func() int {
 			if cfg.Purge {
 				return 1
 			}
@@ -132,5 +132,5 @@ func GearUpConfig() *config.Lunapeer {
 		}()
 	}
 
-	return lunaPeerConf
+	return grapePeerConf
 }

@@ -9,17 +9,17 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/dag"
-	txqueue "github.com/VG-Grape/luna/queues"
-	"github.com/VG-Grape/luna/smc"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/types"
-	"github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/vm"
-	"github.com/VG-Grape/luna/crypto"
-	"github.com/VG-Grape/luna/crypto/eth"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/dag"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	"github.com/Grape-Chain/Grape-Dag/smc"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/types"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/vm"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/golang/protobuf/ptypes/timestamp"
 	"google.golang.org/protobuf/proto"
 )
@@ -66,7 +66,7 @@ func (ts *TransactionServiceImpl) CallReadContract(contractAddress string, contr
 	}
 	header := &pb.PinTxHeader{CoinbaseAccountAddress: &pb.Address{AddBytes: coinbaseAddrBytes},
 		Timestamp: dag.GetPin().CurrentTS(), TxNumber: int32(dag.GetPin().CurrentHeight())}
-	decodedAddress := luna1crypto.AddressToBytes(contractAddress)
+	decodedAddress := grape1crypto.AddressToBytes(contractAddress)
 	response, vmErr := client.RunCode(context.TODO(), &pb.ReadContractRequest{Header: header, ContractAddress: &pb.Address{AddBytes: decodedAddress}, MethodSignature: contractMethod, MethodParameters: methodParameters, Sender: sender})
 	if vmErr != nil {
 		logger.Errorf("VM error occurred during calling method %s on contract %s with parameters = %s and sender = %s: %s", contractMethod, contractAddress, methodParameters, sender, vmErr.Error())

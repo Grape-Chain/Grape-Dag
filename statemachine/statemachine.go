@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
+	"github.com/Grape-Chain/Grape-Dag/config"
 	golog "github.com/ipfs/go-log/v2"
 )
 

@@ -1,15 +1,15 @@
 openapi: 3.1.0
 servers:
   - url: 'https://localhost:8010/api/rest'
-    description: Local LunaOne full node's API sever with TLS
-  - url: 'https://testnet1.lunaone.com'
+    description: Local GrapeOne full node's API sever with TLS
+  - url: 'https://testnet1.grapeone.com'
     description: Testnet 1 API sever to test features waiting for release
 info:
   description: >-
-    Provides REST API endpoints to work with LunaOne node by sending/viewing
+    Provides REST API endpoints to work with GrapeOne node by sending/viewing
     transactions, accounts, contracts and node state
   version: 1.0.0
-  title: LunaOne full node API
+  title: GrapeOne full node API
   termsOfService: 'https://to.be.defined'
   contact:
     email: support@aplfintech.com
@@ -68,7 +68,7 @@ paths:
       summary: Send signed transaction
       description: >-
         Send raw signed transaction encoded in hexadecimal format to be accepted
-        in mempool of the full node and then distributed withing the LunaOne
+        in mempool of the full node and then distributed withing the GrapeOne
         network and confirmed by validators
       parameters: []
       operationId: sendRawTransaction
@@ -597,7 +597,7 @@ paths:
         - basic: []
       summary: Get user's account by id
       description: >-
-        Get account for user in LunaOne network with public key, balance and nonce
+        Get account for user in GrapeOne network with public key, balance and nonce
       parameters:
         - in: path
           name: accountId
@@ -661,7 +661,7 @@ paths:
         - $ref: '#/components/parameters/pageSizeParam'
       responses:
         '200':
-          description: Sorted and paginated list of existing account in LunaOne network
+          description: Sorted and paginated list of existing account in GrapeOne network
           content:
             application/json:
               schema:
@@ -682,7 +682,7 @@ paths:
         - basic: []
       summary: Get all peers for this node
       description: >-
-        Get a list of connected/disconnected nodes communicating with this node via P2P protocol over LunaOne network. Peers are sorted by reputation (higher are first)
+        Get a list of connected/disconnected nodes communicating with this node via P2P protocol over GrapeOne network. Peers are sorted by reputation (higher are first)
       parameters:
         - in: query
           name: status
@@ -740,7 +740,7 @@ paths:
     get:
       security: 
         - basic: []
-      summary: Get general information about LunaOne network
+      summary: Get general information about GrapeOne network
       description: "Return a information related to network charasteristics: blockchain height, chain id, consensus"
       responses:
         '200':
@@ -984,12 +984,12 @@ components:
           example: 'API error occurred, reason: Bad request'
     RawTransaction:
       type: object
-      description: New signed transaction to be sent to the LunaOne network
+      description: New signed transaction to be sent to the GrapeOne network
       properties:
         encodedTx: 
           type: string
           format: hexadecimal
-          description: Signed and encoded into a the hexadecimal format transaction that must be sent into the LunaOne network and get confirmed
+          description: Signed and encoded into a the hexadecimal format transaction that must be sent into the GrapeOne network and get confirmed
           example: "0x12321fcbdaaadd12977a7a802000002371232"
       required:
         - encodedTx
@@ -1034,7 +1034,7 @@ components:
         publicKey:
           type: string
           format: hexadecimal
-          description: Public key for EC (elliptic curve Ed25519) cryptography operations (verify the signature of the transaction, signed by this account's private key). Key is encoded in hexadecimal format (Ed25519 compressed format with only X point). Public key is getting published into the LunaOne network via first outgoing transaction
+          description: Public key for EC (elliptic curve Ed25519) cryptography operations (verify the signature of the transaction, signed by this account's private key). Key is encoded in hexadecimal format (Ed25519 compressed format with only X point). Public key is getting published into the GrapeOne network via first outgoing transaction
           example: "0x897938b42aa41961ff960ea2aafedfe11dbe1628a73506322ffd3819e601bee5"
         balance:
           type: string
@@ -1046,7 +1046,7 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Number of transactions sent by account and confirmed in LunaOne network. This number is used to order transactions in mempool and confirm them from lesser nonce to higher without allowing gaps. (tx1-nonce-1, tx2-nonce-3 - only tx1 will be confirmed until the tx3-nonc-2 will be sent to allow the confirmation of tx3)
+          description: Number of transactions sent by account and confirmed in GrapeOne network. This number is used to order transactions in mempool and confirm them from lesser nonce to higher without allowing gaps. (tx1-nonce-1, tx2-nonce-3 - only tx1 will be confirmed until the tx3-nonc-2 will be sent to allow the confirmation of tx3)
           example: 1
         created:
           type: string
@@ -1063,7 +1063,7 @@ components:
             $ref: '#/components/schemas/Account'
     Peer:
       type: object
-      description: Information about node connected to the LunaOne network which is responsible for transaction propagation, validation and confirmation
+      description: Information about node connected to the GrapeOne network which is responsible for transaction propagation, validation and confirmation
       properties:
         id:
           type: string
@@ -1078,7 +1078,7 @@ components:
           type: string
           format: hostname
           description: Domain name or IP (v4/v6) with optional port value appended whereto the P2P requests can be sent and properly responded by this node
-          example: 'https://my.lunaone.node.com:4555/p2p'
+          example: 'https://my.grapeone.node.com:4555/p2p'
         status:
           type: string
           description: Status of the node's connection to the network
@@ -1114,7 +1114,7 @@ components:
           example: SYSTEM
         version:
           type: string
-          description: 'Version of the LunaOne client launched'
+          description: 'Version of the GrapeOne client launched'
           example: '1.0.0-PRE_RELEASE'
     NetworkInfo:
       type: object
@@ -1134,7 +1134,7 @@ components:
           - POS
           - POA
           - dPOS
-          description: Type of the consensus (generator/validator choosing strategy) chosen for the LunaOne network
+          description: Type of the consensus (generator/validator choosing strategy) chosen for the GrapeOne network
           example: POS
         height:
           type: integer
@@ -1157,7 +1157,7 @@ components:
           example: '1.2.0-RELEASE'
         p2pVersion:
           type: string
-          description: Version of the P2P protocol used to interact with other nodes over LunaOne network
+          description: Version of the P2P protocol used to interact with other nodes over GrapeOne network
           example: '1.0.0'
         apiVersion:
           type: string
@@ -1284,7 +1284,7 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RawTransaction'
-      description: Raw signed transaction that must be sent to the LunaOne network and get confirmed
+      description: Raw signed transaction that must be sent to the GrapeOne network and get confirmed
       required: true
   links: {}
   callbacks: {}

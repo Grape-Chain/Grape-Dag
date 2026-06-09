@@ -1,7 +1,7 @@
 package mongo
 
 import (
-	"github.com/VG-Grape/luna/db/base"
+	"github.com/Grape-Chain/Grape-Dag/db/base"
 )
 
 type MongoFactory struct {

@@ -1,7 +1,7 @@
 package dag
 
 import (
-	"github.com/VG-Grape/luna/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/golang-collections/collections/set"
 	"github.com/golang-collections/collections/stack"
 	"github.com/google/uuid"

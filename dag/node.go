@@ -7,9 +7,9 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/google/uuid"
 	"go.uber.org/atomic"
 
@@ -208,20 +208,20 @@ func (n *Node) UpdateBalanceIfValid() bool {
 	// add to wallet cache
 	subInt := big.NewInt(0).SetBytes(n.tx.GetAmount().Bytes())
 	if bytes.Compare(n.tx.GetSender(), n.tx.GetRecipient()) != 0 {
-		err := walletCache.sub(luna1crypto.BytesToAddress(n.tx.GetSender()), n.id.id.String(), subInt)
+		err := walletCache.sub(grape1crypto.BytesToAddress(n.tx.GetSender()), n.id.id.String(), subInt)
 		if err != nil {
 			logger.Errorf(err.Error())
-			lastKnownBalance, err1 := _pins_.unsafe_getBalanceForWallet(luna1crypto.BytesToAddress(n.tx.GetSender())) //walletCache.get(string(n.tx.Sender))
+			lastKnownBalance, err1 := _pins_.unsafe_getBalanceForWallet(grape1crypto.BytesToAddress(n.tx.GetSender())) //walletCache.get(string(n.tx.Sender))
 			if err1 != nil {
-				logger.Errorf("Cannot locate balance for wallet %s. %s", luna1crypto.BytesToAddress(n.tx.GetSender()), err1.Error())
+				logger.Errorf("Cannot locate balance for wallet %s. %s", grape1crypto.BytesToAddress(n.tx.GetSender()), err1.Error())
 			} else {
 				logger.Errorf("Error subtracting %d from %d in wallet %s in tx %s. %s",
-					subInt.Uint64(), lastKnownBalance.Uint64(), luna1crypto.BytesToAddress(n.tx.GetSender()), n.id.id.String(), err.Error())
+					subInt.Uint64(), lastKnownBalance.Uint64(), grape1crypto.BytesToAddress(n.tx.GetSender()), n.id.id.String(), err.Error())
 			}
 			return false
 		}
 		addInt := big.NewInt(0).SetBytes(n.tx.GetAmount().Bytes())
-		err = walletCache.add(luna1crypto.BytesToAddress(n.tx.GetRecipient()), n.id.id.String(), addInt)
+		err = walletCache.add(grape1crypto.BytesToAddress(n.tx.GetRecipient()), n.id.id.String(), addInt)
 		if err != nil {
 			logger.Errorf("Error adding %d to %s in tx %s. %s", subInt.Uint64(), n.tx.GetRecipient(), n.id.id.String(), err.Error())
 			return false

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
     SPDX-License-Identifier: Apache-2.0
-    Luna SMC parent POM. Aggregates the smart-contract VM, its supporting
-    libraries (luna1utils, grap3-crypto, grap3-ether), and the lunach
+    Grape SMC parent POM. Aggregates the smart-contract VM, its supporting
+    libraries (grape1utils, grap3-crypto, grap3-ether), and the grapech
     Java client SDK into a single Maven multi-module build.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -10,14 +10,14 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>io.aplfintech.luna</groupId>
-    <artifactId>luna-smc</artifactId>
+    <groupId>io.aplfintech.grape</groupId>
+    <artifactId>grape-smc</artifactId>
     <version>0.1.0</version>
     <packaging>pom</packaging>
 
-    <name>Luna SMC</name>
-    <description>Smart Contract Virtual Machine for the Luna DAG blockchain.</description>
-    <url>https://github.com/VG-Grape/luna</url>
+    <name>Grape SMC</name>
+    <description>Smart Contract Virtual Machine for the Grape DAG blockchain.</description>
+    <url>https://github.com/Grape-Chain/Grape-Dag</url>
 
     <licenses>
         <license>
@@ -28,14 +28,14 @@
     </licenses>
 
     <modules>
-        <module>luna1utils</module>
+        <module>grape1utils</module>
         <module>grap3-crypto</module>
         <module>grap3-ether</module>
         <module>commons</module>
         <module>l1vm</module>
         <module>vm</module>
         <module>server</module>
-        <module>lunach</module>
+        <module>grapech</module>
     </modules>
 
     <properties>
@@ -44,8 +44,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Internal sibling artifact versions -->
-        <luna-smc.version>0.1.0</luna-smc.version>
-        <luna1utils.version>0.1.2</luna1utils.version>
+        <grape-smc.version>0.1.0</grape-smc.version>
+        <grape1utils.version>0.1.2</grape1utils.version>
         <grap3-crypto.version>0.5.1</grap3-crypto.version>
         <grap3-ether.version>0.5.1</grap3-ether.version>
 
@@ -99,39 +99,39 @@
         <dependencies>
             <!-- Sibling modules -->
             <dependency>
-                <groupId>io.aplfintech.luna</groupId>
-                <artifactId>luna1utils</artifactId>
-                <version>${luna1utils.version}</version>
+                <groupId>io.aplfintech.grape</groupId>
+                <artifactId>grape1utils</artifactId>
+                <version>${grape1utils.version}</version>
             </dependency>
             <dependency>
-                <groupId>io.aplfintech.luna.grap3</groupId>
+                <groupId>io.aplfintech.grape.grap3</groupId>
                 <artifactId>grap3-crypto</artifactId>
                 <version>${grap3-crypto.version}</version>
             </dependency>
             <dependency>
-                <groupId>io.aplfintech.luna.grap3</groupId>
+                <groupId>io.aplfintech.grape.grap3</groupId>
                 <artifactId>grap3-ether</artifactId>
                 <version>${grap3-ether.version}</version>
             </dependency>
             <dependency>
-                <groupId>io.aplfintech.luna</groupId>
+                <groupId>io.aplfintech.grape</groupId>
                 <artifactId>commons</artifactId>
-                <version>${luna-smc.version}</version>
+                <version>${grape-smc.version}</version>
             </dependency>
             <dependency>
-                <groupId>io.aplfintech.luna</groupId>
+                <groupId>io.aplfintech.grape</groupId>
                 <artifactId>l1vm</artifactId>
-                <version>${luna-smc.version}</version>
+                <version>${grape-smc.version}</version>
             </dependency>
             <dependency>
-                <groupId>io.aplfintech.luna</groupId>
+                <groupId>io.aplfintech.grape</groupId>
                 <artifactId>vm</artifactId>
-                <version>${luna-smc.version}</version>
+                <version>${grape-smc.version}</version>
             </dependency>
             <dependency>
-                <groupId>io.aplfintech.luna</groupId>
-                <artifactId>lunach</artifactId>
-                <version>${luna-smc.version}</version>
+                <groupId>io.aplfintech.grape</groupId>
+                <artifactId>grapech</artifactId>
+                <version>${grape-smc.version}</version>
             </dependency>
 
             <!-- Third-party -->

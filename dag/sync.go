@@ -13,17 +13,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/discovery"
-	"github.com/VG-Grape/luna/graph"
-	"github.com/VG-Grape/luna/graph/iface"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	txqueue "github.com/VG-Grape/luna/queues"
-	"github.com/VG-Grape/luna/smc"
-	sm "github.com/VG-Grape/luna/statemachine"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/utils"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/discovery"
+	"github.com/Grape-Chain/Grape-Dag/graph"
+	"github.com/Grape-Chain/Grape-Dag/graph/iface"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	"github.com/Grape-Chain/Grape-Dag/smc"
+	sm "github.com/Grape-Chain/Grape-Dag/statemachine"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/enescakir/emoji"
 	"github.com/golang-collections/collections/set"
 	"github.com/golang-collections/collections/stack"
@@ -234,7 +234,7 @@ func respondLatestPin(rec *tx.Syncv1) error {
 
 func respondLatestBalances(rec *tx.Syncv1) error {
 	logger.Info("Respond with the latest Balance Snapshot, id=%s", rec.Tracking_Id.String())
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -340,7 +340,7 @@ func handleLatestBalances(rec *tx.Syncv1) error {
 
 func respondAllPinsFrom(rec *tx.Syncv1) error {
 	logger.Infof("Respond with all pins from height, id=%s", rec.Tracking_Id.String())
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -418,7 +418,7 @@ func handleDownloadedPinsFromLeader(rec *tx.Syncv1) error {
 
 func transactMissingPinRequest(sign []byte) error {
 	logger.Infof("%s  ~ Requesting pin tx  %s ->", emoji.IncomingEnvelope, hex.EncodeToString(sign)[:10])
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -453,7 +453,7 @@ func transactMissingPinRequest(sign []byte) error {
 
 func sendPindDownloadRequest(fromHeight int) error {
 
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -489,7 +489,7 @@ func sendPindDownloadRequest(fromHeight int) error {
 
 func sendSnapshotRequest() (error, *uuid.UUID) {
 	logger.Info("Sending Balance snapshot request")
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -526,7 +526,7 @@ func sendSnapshotRequest() (error, *uuid.UUID) {
 // that are missing from the local copy of dag. Sig: SITE-STX_REQUEST
 func transactSiteRequest(sites []string) error {
 	logger.Infof("%s  ~ Issue a miss request for %d site(s)", emoji.Receipt, len(sites))
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -576,7 +576,7 @@ func transactSiteRequest(sites []string) error {
 // locate and return all vertices(nodes) matching their IDs. Sig: SITE-STX_RESPONSE
 func handleSiteRequest(trackingId uuid.UUID, sites []string) error {
 	logger.Infof("%s  ~ Processing site request [%s]", emoji.Receipt, trackingId)
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -646,7 +646,7 @@ func handleSyncSiteResponse(syncTx *tx.Syncv1) error {
 
 func transactLatestPin(trackignId uuid.UUID, syncType tx.SyncType, msgType tx.SyncMsgType) error {
 	// a new pinning transaction should confirm all tips
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -859,11 +859,11 @@ func NewDagSyncSub(rd *routing.RoutingDiscovery, ps *pubsub.PubSub, rendezvous s
 	if !bs {
 		logger.Infof("%s  ~ Waiting until DHT sees our peer join topic %s", emoji.HourglassNotDone, rendezvous)
 		for {
-			if discovery.GetMesh().In(rendezvous, lunapeer.GetHost().ID()) {
-				logger.Infof("%s  ~ %s registered for topic: %s", emoji.CheckBoxWithCheck, lunapeer.GetHost().ID(), rendezvous)
+			if discovery.GetMesh().In(rendezvous, grapepeer.GetHost().ID()) {
+				logger.Infof("%s  ~ %s registered for topic: %s", emoji.CheckBoxWithCheck, grapepeer.GetHost().ID(), rendezvous)
 				break
 			} else {
-				logger.Warnf("%s  ~ %s not registered for topic: %s", emoji.CrossMark, lunapeer.GetHost().ID(), rendezvous)
+				logger.Warnf("%s  ~ %s not registered for topic: %s", emoji.CrossMark, grapepeer.GetHost().ID(), rendezvous)
 			}
 			tm := time.NewTimer(time.Second * 5)
 			<-tm.C
@@ -904,11 +904,11 @@ func DagSync(host host.Host, idht *dht.IpfsDHT, rd *routing.RoutingDiscovery, ps
 	}
 	logger.Infof("%s  ~ Waiting for other peers to register with topic %s", emoji.HourglassNotDone, rendezvous)
 	for {
-		if discovery.GetMesh().In(rendezvous, lunapeer.GetHost().ID()) {
-			logger.Infof("%s  ~ %s registered for topic: %s", emoji.CheckBoxWithCheck, lunapeer.GetHost().ID(), rendezvous)
+		if discovery.GetMesh().In(rendezvous, grapepeer.GetHost().ID()) {
+			logger.Infof("%s  ~ %s registered for topic: %s", emoji.CheckBoxWithCheck, grapepeer.GetHost().ID(), rendezvous)
 			break
 		} else {
-			logger.Warnf("%s  ~ %s not registered for topic: %s", emoji.CrossMark, lunapeer.GetHost().ID(), rendezvous)
+			logger.Warnf("%s  ~ %s not registered for topic: %s", emoji.CrossMark, grapepeer.GetHost().ID(), rendezvous)
 		}
 		time.Sleep(time.Second * 5)
 		c := idht.RefreshRoutingTable()

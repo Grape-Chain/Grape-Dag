@@ -1,7 +1,7 @@
 package network
 
 import (
-	utils "github.com/VG-Grape/luna/utils"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/enescakir/emoji"
 )
 

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/utils"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/utils"
 	golog "github.com/ipfs/go-log/v2"
 )
 

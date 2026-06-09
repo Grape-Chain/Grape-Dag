@@ -8,11 +8,11 @@ import (
 	"math/big"
 	"sort"
 
-	"github.com/VG-Grape/luna/smc"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/types"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/smc"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/types"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/google/uuid"
 	"github.com/ledongthuc/goterators"
 )
@@ -25,7 +25,7 @@ var accountFilter = func(transaction tx.Transaction, accounts []string, txType i
 		return true
 	}
 	for _, account := range accounts {
-		accountId := luna1crypto.AddressToBytes(account)
+		accountId := grape1crypto.AddressToBytes(account)
 		senderId := transaction.GetSender()
 		if (directionIsSent == nil || *directionIsSent) && bytes.Equal(senderId, accountId) {
 			return true

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	host_config "github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/utils"
+	host_config "github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/enescakir/emoji"
 	"github.com/ledongthuc/goterators"
 	"github.com/libp2p/go-libp2p/core/host"

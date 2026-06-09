@@ -6,14 +6,14 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/dag"
-	"github.com/VG-Grape/luna/discovery"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	txqueue "github.com/VG-Grape/luna/queues"
-	"github.com/VG-Grape/luna/stats"
-	"github.com/VG-Grape/luna/tx"
-	utils "github.com/VG-Grape/luna/utils"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/dag"
+	"github.com/Grape-Chain/Grape-Dag/discovery"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	"github.com/Grape-Chain/Grape-Dag/stats"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/enescakir/emoji"
 	"github.com/google/uuid"
 	"github.com/ledongthuc/goterators"
@@ -23,13 +23,13 @@ import (
 func publish(ctx context.Context, topic *pubsub.Topic, statsId uuid.UUID, leader bool) {
 	//runtime.LockOSThread()
 	//defer runtime.UnlockOSThread()
-	var rec *tx.LunaTx = nil
+	var rec *tx.GrapeTx = nil
 	// var yield_time int64 = config.PUBSUB_QUEUE_YIELD_MIN
 	pubopt := []pubsub.PubOpt{}
 	for {
 		deq, sz := txqueue.GetPublishQueue().Dequeue()
 		if deq != nil {
-			rec = tx.NewLunaTx(lunapeer.GetHost())
+			rec = tx.NewGrapeTx(grapepeer.GetHost())
 			rec.Transaction = deq.(tx.Transaction)
 			// yield_time = config.PUBSUB_QUEUE_YIELD_MIN
 		} else {
@@ -84,7 +84,7 @@ func publish(ctx context.Context, topic *pubsub.Topic, statsId uuid.UUID, leader
 			logger.Errorf("[PUB] Queue:%d Tx:[%d.%d] running with delay %f sec...", sz, rec.TxIdMajor, rec.TxIdMinor, diff.Seconds())
 		}
 
-		// envelope, err := record.Seal(rec, lunapeer.GetHost().Peerstore().PrivKey(lunapeer.GetHost().ID()))
+		// envelope, err := record.Seal(rec, grapepeer.GetHost().Peerstore().PrivKey(grapepeer.GetHost().ID()))
 		// if err != nil {
 		// 	utils.ColorizeError(logger, "Failed to seal the record. %v", err)
 		// }

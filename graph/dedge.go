@@ -1,6 +1,6 @@
 package graph
 
-import "github.com/VG-Grape/luna/graph/iface"
+import "github.com/Grape-Chain/Grape-Dag/graph/iface"
 
 type DEdge struct {
 	from iface.Vertex_ID_type

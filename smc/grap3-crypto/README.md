@@ -1,9 +1,9 @@
-# LunaOne Crypto operations (Java)
+# GrapeOne Crypto operations (Java)
 
 ## Overview
 
-This module is an official fully compatible implementation of signing, verifying and hashing operations for LunaOne
-project where the reference impl is [luna1crypto](../luna1crypto/README.md)
+This module is an official fully compatible implementation of signing, verifying and hashing operations for GrapeOne
+project where the reference impl is [grape1crypto](../grape1crypto/README.md)
 
 ## Build
 
@@ -18,13 +18,13 @@ This module can be imported to any Java17 maven project using a local maven repo
 ```xml
 
 <dependency>
-    <groupId>io.aplfintech.luna.grap3</groupId>
+    <groupId>io.aplfintech.grape.grap3</groupId>
     <artifactId>grap3-crypto</artifactId>
     <version>0.4</version>
 </dependency>
 ```
 
 When module is imported then you can use Sign/Verify/Hash operations like given
-in [test](src/test/java/io/aplfintech/luna/grap3/CryptoTest.java)
+in [test](src/test/java/io/aplfintech/grape/grap3/CryptoTest.java)
 All operations are using the same messages and keys to ensure that correctness and compatibility of algorithms is
 preserved

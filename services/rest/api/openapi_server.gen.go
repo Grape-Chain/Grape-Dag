@@ -82,10 +82,10 @@ type Account struct {
 	// Unique identifier of the account derived from its public key encoded hex format (Ethereum-like)
 	Id *string `json:"id,omitempty"`
 
-	// Number of transactions sent by account and confirmed in LunaOne network. This number is used to order transactions in mempool and confirm them from lesser nonce to higher without allowing gaps. (tx1-nonce-1, tx2-nonce-3 - only tx1 will be confirmed until the tx3-nonc-2 will be sent to allow the confirmation of tx3)
+	// Number of transactions sent by account and confirmed in GrapeOne network. This number is used to order transactions in mempool and confirm them from lesser nonce to higher without allowing gaps. (tx1-nonce-1, tx2-nonce-3 - only tx1 will be confirmed until the tx3-nonc-2 will be sent to allow the confirmation of tx3)
 	Nonce *int64 `json:"nonce,omitempty"`
 
-	// Public key for EC (elliptic curve Ed25519) cryptography operations (verify the signature of the transaction, signed by this account's private key). Key is encoded in hexadecimal format (Ed25519 compressed format with only X point). Public key is getting published into the LunaOne network via first outgoing transaction
+	// Public key for EC (elliptic curve Ed25519) cryptography operations (verify the signature of the transaction, signed by this account's private key). Key is encoded in hexadecimal format (Ed25519 compressed format with only X point). Public key is getting published into the GrapeOne network via first outgoing transaction
 	PublicKey *string `json:"publicKey,omitempty"`
 }
 
@@ -171,7 +171,7 @@ type NetworkInfo struct {
 	// Id of the network whereto transaction is sent and was confirmed
 	ChainId *NetworkInfoChainId `json:"chainId,omitempty"`
 
-	// Type of the consensus (generator/validator choosing strategy) chosen for the LunaOne network
+	// Type of the consensus (generator/validator choosing strategy) chosen for the GrapeOne network
 	Consensus *NetworkInfoConsensus `json:"consensus,omitempty"`
 
 	// Current number of the blocks on top of genesis block
@@ -181,10 +181,10 @@ type NetworkInfo struct {
 // Id of the network whereto transaction is sent and was confirmed
 type NetworkInfoChainId string
 
-// Type of the consensus (generator/validator choosing strategy) chosen for the LunaOne network
+// Type of the consensus (generator/validator choosing strategy) chosen for the GrapeOne network
 type NetworkInfoConsensus string
 
-// Information about node connected to the LunaOne network which is responsible for transaction propagation, validation and confirmation
+// Information about node connected to the GrapeOne network which is responsible for transaction propagation, validation and confirmation
 type Peer struct {
 	// Time when the node was firstly accepted into the network to validate/confirm transactions (UTC)
 	EnrolledAt *time.Time `json:"enrolledAt,omitempty"`
@@ -210,7 +210,7 @@ type Peer struct {
 	// Level of the trust showing how are the results received from node can be trusted. SYSTEM node's responses are trusted the most, ORDINARY node's results can be verified with other ORDINARY nodes, UNTRUSTED are better to be verified against SYSTEM nodes or better off not actually request data from UNTRUSTED nodes
 	TrustLevel *PeerTrustLevel `json:"trustLevel,omitempty"`
 
-	// Version of the LunaOne client launched
+	// Version of the GrapeOne client launched
 	Version *string `json:"version,omitempty"`
 }
 
@@ -231,9 +231,9 @@ type PubsubReady struct {
 	Ready *bool `json:"ready,omitempty"`
 }
 
-// New signed transaction to be sent to the LunaOne network
+// New signed transaction to be sent to the GrapeOne network
 type RawTransaction struct {
-	// Signed and encoded into a the hexadecimal format transaction that must be sent into the LunaOne network and get confirmed
+	// Signed and encoded into a the hexadecimal format transaction that must be sent into the GrapeOne network and get confirmed
 	EncodedTx string `json:"encodedTx"`
 }
 
@@ -251,7 +251,7 @@ type SystemInfo struct {
 	// Number of total db connections in a pool ready to query db
 	DbTotalConnections *int `json:"dbTotalConnections,omitempty"`
 
-	// Version of the P2P protocol used to interact with other nodes over LunaOne network
+	// Version of the P2P protocol used to interact with other nodes over GrapeOne network
 	P2pVersion *string `json:"p2pVersion,omitempty"`
 
 	// Number of total thread currently alive under full node's process
@@ -347,7 +347,7 @@ type PageParam = int
 // PageSizeParam defines model for pageSizeParam.
 type PageSizeParam = int
 
-// New signed transaction to be sent to the LunaOne network
+// New signed transaction to be sent to the GrapeOne network
 type SendRawTransactionRequest = RawTransaction
 
 // GetAccountsParams defines parameters for GetAccounts.
@@ -500,7 +500,7 @@ type ServerInterface interface {
 	// Get SMC logs by filter
 	// (GET /logs)
 	GetLogs(w http.ResponseWriter, r *http.Request, params GetLogsParams)
-	// Get general information about LunaOne network
+	// Get general information about GrapeOne network
 	// (GET /network-info)
 	GetNetworkInfo(w http.ResponseWriter, r *http.Request)
 	// Get all peers for this node

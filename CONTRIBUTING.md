@@ -1,6 +1,6 @@
-# Contributing to Luna
+# Contributing to Grape
 
-Thanks for your interest in improving Luna. This document covers the workflow,
+Thanks for your interest in improving Grape. This document covers the workflow,
 coding standards, and review expectations for contributions.
 
 ## Code of Conduct

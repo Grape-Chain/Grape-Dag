@@ -9,19 +9,19 @@ import (
 	"reflect"
 	"syscall"
 
-	"github.com/VG-Grape/luna/app"
-	"github.com/VG-Grape/luna/common"
-	config "github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/dag"
-	"github.com/VG-Grape/luna/diffusion"
-	"github.com/VG-Grape/luna/discovery"
-	network "github.com/VG-Grape/luna/network"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	"github.com/VG-Grape/luna/services"
-	"github.com/VG-Grape/luna/services/rest"
-	"github.com/VG-Grape/luna/stats"
-	utils "github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/vm"
+	"github.com/Grape-Chain/Grape-Dag/app"
+	"github.com/Grape-Chain/Grape-Dag/common"
+	config "github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/dag"
+	"github.com/Grape-Chain/Grape-Dag/diffusion"
+	"github.com/Grape-Chain/Grape-Dag/discovery"
+	network "github.com/Grape-Chain/Grape-Dag/network"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	"github.com/Grape-Chain/Grape-Dag/services"
+	"github.com/Grape-Chain/Grape-Dag/services/rest"
+	"github.com/Grape-Chain/Grape-Dag/stats"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/vm"
 	"github.com/enescakir/emoji"
 	"github.com/google/uuid"
 	golog "github.com/ipfs/go-log/v2"
@@ -54,10 +54,10 @@ func Start() {
 	// Let DAG init its config after we parse and process config/cmd line args.
 	dag.Init()
 
-	// Load peer keys or generate and save in ${HOME}/.lunaone
+	// Load peer keys or generate and save in ${HOME}/.grapeone
 	prvKey := utils.ManagePK(config.GetConfig().Host.PeerID)
 	// Start a new p2p host
-	err := lunapeer.NewHost(prvKey, cfg, config.GetConfig())
+	err := grapepeer.NewHost(prvKey, cfg, config.GetConfig())
 	if err != nil {
 		utils.ColorizeError(logger, "Host creation failed. %v", err)
 	}
@@ -68,22 +68,22 @@ func Start() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	app.GetApp().App_kdht = discovery.PeerDHT(lunapeer.GetHost(), cfg.Bootstrap_peers)
+	app.GetApp().App_kdht = discovery.PeerDHT(grapepeer.GetHost(), cfg.Bootstrap_peers)
 	app.GetApp().App_kdht_wg, app.GetApp().App_kdht_ch = discovery.RunRoutingTableRefresh(app.GetApp().App_kdht)
-	lunapeer.SetIDHT(app.GetApp().App_kdht)
+	grapepeer.SetIDHT(app.GetApp().App_kdht)
 	logger.Debug("Peer DHT discovery is running...")
 
 	var routingDiscovery *routing.RoutingDiscovery
 	app.GetApp().App_dhtDiscoveryDone, routingDiscovery, app.GetApp().App_dhtWg =
-		discovery.HandleDht(ctx, lunapeer.GetHost(), lunapeer.GetIDHT(), config.RENDEZVOUS)
+		discovery.HandleDht(ctx, grapepeer.GetHost(), grapepeer.GetIDHT(), config.RENDEZVOUS)
 
 	// It is possible to enable mDns discovery if this is a non-bootstrap node and mDns requested
 	if config.GetConfig().Peer.Mdns > 0 {
-		app.GetApp().App_mdnsDiscovery, err = discovery.InitMDNS(lunapeer.GetHost(), config.RENDEZVOUS[0])
+		app.GetApp().App_mdnsDiscovery, err = discovery.InitMDNS(grapepeer.GetHost(), config.RENDEZVOUS[0])
 		if err != nil {
 			logger.Error("Failed to start mDns peer discovery. Ignoring...")
 		} else {
-			go discovery.HandlemDns(ctx, lunapeer.GetHost(), app.GetApp().App_mdnsDiscovery)
+			go discovery.HandlemDns(ctx, grapepeer.GetHost(), app.GetApp().App_mdnsDiscovery)
 		}
 	}
 
@@ -107,12 +107,12 @@ func Start() {
 	logger.Infof("%s  ~ Continue with creating a pubsub subsystem", emoji.CheckBoxWithCheck)
 	// this is an event handler for the pubsub protocol update
 	// we want to wait for an upgrade event before we return the subscr.
-	evtProtoUpdate := &lunapeer.EvtHandler{}
+	evtProtoUpdate := &grapepeer.EvtHandler{}
 	gossipSub := diffusion.CreatePubSubForPeer(routingDiscovery, evtProtoUpdate)
 	app.GetApp().App_topic,
 		app.GetApp().App_sub,
 		app.GetApp().App_TopicRelayCsl =
-		diffusion.Diffusion(ctx, lunapeer.GetHost(), gossipSub, config.RENDEZVOUS[0], session_id, cfg.Leader)
+		diffusion.Diffusion(ctx, grapepeer.GetHost(), gossipSub, config.RENDEZVOUS[0], session_id, cfg.Leader)
 
 	if app.GetApp().App_topic == nil || app.GetApp().App_sub == nil {
 		utils.ColorizeError(logger, "Failed to create Tx Topic/Subscription")
@@ -123,9 +123,9 @@ func Start() {
 
 	// @DEVJOURNAL: it takes a bit of time to show up in DHT [no reason as to why]
 	// since it's holding up unnecessarily too long, not check
-	//	discovery.WaitUntilinDHT(app.GetApp().App_kdht, lunapeer.GetHost().ID())
+	//	discovery.WaitUntilinDHT(app.GetApp().App_kdht, grapepeer.GetHost().ID())
 
-	app.GetApp().App_dagsyncmgr = dag.DagSync(lunapeer.GetHost(), app.GetApp().App_kdht, routingDiscovery, gossipSub, config.RENDEZVOUS[1], config.GetConfig().Peer.Leader, false)
+	app.GetApp().App_dagsyncmgr = dag.DagSync(grapepeer.GetHost(), app.GetApp().App_kdht, routingDiscovery, gossipSub, config.RENDEZVOUS[1], config.GetConfig().Peer.Leader, false)
 
 	// Must run after both host and dag have been initialized
 	app.GetApp().App_dagsyncmgr.RunSynchronization(cfg.Leader, cfg.WaitConnect)
@@ -155,7 +155,7 @@ func Start() {
 			srv.ListenAndServe()
 		}()
 	}
-	utils.ColorizeInfo(logger, "%s  ~ %s %s is running with ID: %d [Ctrl-C to terminate]", emoji.CheckMarkButton, config.GRAPE, lunapeer.GetHost().ID().String(), os.Getpid())
+	utils.ColorizeInfo(logger, "%s  ~ %s %s is running with ID: %d [Ctrl-C to terminate]", emoji.CheckMarkButton, config.GRAPE, grapepeer.GetHost().ID().String(), os.Getpid())
 	postProcessId(config.GetConfig().Host.PeerID)
 	defer cleanProcessId(config.GetConfig().Host.PeerID)
 	utils.WaitOnSignal([]os.Signal{syscall.SIGINT, syscall.SIGTERM})
@@ -181,7 +181,7 @@ func stopApp(cancel context.CancelFunc) {
 	logger.Infof("%s  ~ Stopping %s app components %s ...", emoji.HorizontalTrafficLight, emoji.Grapes, emoji.HammerAndWrench)
 	app.GetApp().Terminate()
 	logger.Infof("%s  ~ Stopping %s peer components %s ...", emoji.HorizontalTrafficLight, emoji.Grapes, emoji.HammerAndWrench)
-	lunapeer.Terminate()
+	grapepeer.Terminate()
 	logger.Infof("%s  ALL SERVICES STOPPED  %s", emoji.VerticalTrafficLight, emoji.HammerAndWrench)
 
 }

@@ -5,18 +5,18 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 )
 
 func TestGenesisAccs(t *testing.T) {
 	genesisPubKey := "2bd4e8de88c1578aeb38f8c04f7af4d66c99cc0fe100d06641b4dd4ee0ae3220"
-	key, _ := luna1crypto.ParsePublicKey(genesisPubKey)
-	fmt.Println(luna1crypto.AddressFromPulicKey(key))
+	key, _ := grape1crypto.ParsePublicKey(genesisPubKey)
+	fmt.Println(grape1crypto.AddressFromPulicKey(key))
 }
 
 func TestGenerateGenesis(t *testing.T) {
 	for i := 0; i < 10; i++ {
-		wallet := luna1crypto.NewWallet()
+		wallet := grape1crypto.NewWallet()
 		fmt.Println("Private key= ", wallet.PrivateKeyStr())
 		fmt.Println("Public key= ", wallet.PublicKeyStr())
 		fmt.Println("Acccount=", wallet.WalletAddress())
@@ -37,7 +37,7 @@ func TestGenerateIds(t *testing.T) {
 		"6fd03841dde673cb166dba06df0ae35a4699f06ee12f0e73367e8908375c97d0"}
 	for _, k := range publicKeys {
 		byteKey, _ := hex.DecodeString(k)
-		address := luna1crypto.AddressFromPulicKey(luna1crypto.PublicKey(byteKey))
+		address := grape1crypto.AddressFromPulicKey(grape1crypto.PublicKey(byteKey))
 		fmt.Println(address)
 	}
 }

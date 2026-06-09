@@ -1,21 +1,21 @@
-# Luna SMC
+# Grape SMC
 
-Smart Contract Virtual Machine for the Luna DAG blockchain. Implements an
+Smart Contract Virtual Machine for the Grape DAG blockchain. Implements an
 EVM-compatible interpreter and exposes it as a gRPC service that the peer
-(`cmd/lunapeer`) calls into to execute transactions.
+(`cmd/grapepeer`) calls into to execute transactions.
 
 ## Modules
 
 | Module         | Purpose                                                          |
 |----------------|------------------------------------------------------------------|
-| `luna1utils`   | Shared low-level helpers (Bytes, HexUtils, JsonUtils, FileUtils) |
+| `grape1utils`   | Shared low-level helpers (Bytes, HexUtils, JsonUtils, FileUtils) |
 | `grap3-crypto` | Cryptographic primitives (DSA, hashing, key derivation)          |
 | `grap3-ether`  | Ethereum-compatible crypto (secp256k1, BLS12-381, RLP)           |
 | `commons`      | Shared VM model: math (UInt256/Word256), config, BCEI interface  |
 | `l1vm`         | The interpreter — opcode tables, gas, stack machine, precompiles |
 | `vm`           | High-level VM façade consumed by `server`                        |
 | `server`       | gRPC entry point. Listens on `:29299` (calls), `:39399` (state)  |
-| `lunach`       | Java client SDK plus shared `vm.proto` / `txvX.proto`            |
+| `grapech`       | Java client SDK plus shared `vm.proto` / `txvX.proto`            |
 
 ## Build
 
@@ -37,8 +37,8 @@ directory but build independently.
 ## Container
 
 ```bash
-docker build -t luna-smc:dev -f Dockerfile .
-docker run --rm -p 29299:29299 -p 39399:39399 luna-smc:dev
+docker build -t grape-smc:dev -f Dockerfile .
+docker run --rm -p 29299:29299 -p 39399:39399 grape-smc:dev
 ```
 
 The full peer + VM + Mongo stack is wired up in `../deploy/docker-compose.yml`.

@@ -1,4 +1,4 @@
-package luna1crypto
+package grape1crypto
 
 import (
 	"crypto/sha256"

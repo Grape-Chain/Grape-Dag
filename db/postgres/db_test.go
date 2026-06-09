@@ -10,9 +10,9 @@ import (
 )
 
 func TestConnect(t *testing.T) {
-	db_url := os.Getenv("LUNA_TEST_POSTGRES_URI")
+	db_url := os.Getenv("GRAPE_TEST_POSTGRES_URI")
 	if db_url == "" {
-		t.Skip("LUNA_TEST_POSTGRES_URI not set; skipping")
+		t.Skip("GRAPE_TEST_POSTGRES_URI not set; skipping")
 	}
 	ctxConnect, cancelConnect := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelConnect()

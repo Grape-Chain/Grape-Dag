@@ -9,9 +9,9 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/VG-Grape/luna/types"
-	"github.com/VG-Grape/luna/utils"
-	luna_wallet "github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/types"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	proto "google.golang.org/protobuf/proto"
@@ -140,7 +140,7 @@ func (t *TxPin) Hash(algo crypto.Hash) ([]byte, error) {
 	return utils.GetBuilder().Build(crypto.SHA256).Hash(buf), nil
 }
 
-func (t *TxPin) SignTx(w *luna_wallet.Wallet) {
+func (t *TxPin) SignTx(w *grape_wallet.Wallet) {
 	t.Sign = []byte{}
 	t.Pk = *w.PublicKey()
 	t.generateSignature(w.PrivateKey())
@@ -164,21 +164,21 @@ func (t *TxPin) VerifyTx() error {
 	t.Sign = make([]byte, sz)
 	copy(t.Sign, sigbuf)
 
-	valid := luna_wallet.NewDSA().Verify(t.Pk, t.Sign, payload)
+	valid := grape_wallet.NewDSA().Verify(t.Pk, t.Sign, payload)
 	if !valid {
 		return errors.Errorf("Cannot verify pin tx: %s", t.String())
 	}
 	return nil
 }
 
-func (t *TxPin) generateSignature(pk *luna_wallet.PrivateKey) []byte {
+func (t *TxPin) generateSignature(pk *grape_wallet.PrivateKey) []byte {
 	// generate tx hash
 	payload, err := t.Hash(crypto.SHA256)
 	if err != nil {
 		return nil
 	}
 	// Sign the hash
-	t.Sign = luna_wallet.NewDSA().Sign(*pk, payload)
+	t.Sign = grape_wallet.NewDSA().Sign(*pk, payload)
 	if err != nil {
 		return nil
 	}

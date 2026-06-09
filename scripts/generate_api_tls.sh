@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # This script generates a private key and a certificate to be used
-# in lunapeer rest api with tls
+# in grapepeer rest api with tls
 
 
 # This functions prints the usage information
@@ -28,7 +28,7 @@ function generate_certificate() {
 	openssl x509 -req -days 365 -in "$1".csr -signkey "$1".key -out "$1".crt
 }
 
-echo "Generate a self-signed certificate for the use by Luna 1 API TLS"
+echo "Generate a self-signed certificate for the use by Grape 1 API TLS"
 if [ "$#" -lt 2 ]; then
 	echo "<Error> This script expects exactly two parameters"
 	print_usage $0

@@ -1,4 +1,4 @@
-# Luna One Node API
+# Grape One Node API
 
 ---
 Type: REST
@@ -8,7 +8,7 @@ Protocol: HTTPS
 Format: JSON
 
 
-Luna One node's API is defined as an OpenAPI v3 specification located in `swagger/openapi.yml` file
+Grape One node's API is defined as an OpenAPI v3 specification located in `swagger/openapi.yml` file
 
 ## Setting up the client
 To get the client boilerplate auto-generated code from this spec, you can use `Swagger Editor`
@@ -30,9 +30,9 @@ oapi-codegen --config api/oapi-config.yml api/openapi.yml
 Edit `oapi-config.yml` file to generate a different server code or include other OpenApi v3 specs
 
 ### TLS Setup
-1. Go to ${HOME_DIR}/.lunaone
-2. Generate self-signed mock TLS key + cert: `openssl req -new -newkey rsa:4096 -x509 -sha256 -days 365 -nodes -out luna-tls.crt -keyout luna-tls.key`
-3. Add `peer.apikey=luna-tls.key` and `peer.apicert=luna-tls.crt` to lunapeer.yml
+1. Go to ${HOME_DIR}/.grapeone
+2. Generate self-signed mock TLS key + cert: `openssl req -new -newkey rsa:4096 -x509 -sha256 -days 365 -nodes -out grape-tls.crt -keyout grape-tls.key`
+3. Add `peer.apikey=grape-tls.key` and `peer.apicert=grape-tls.crt` to grapepeer.yml
 4. Start the node: `go run . -id 1`
-5. Test (export `LUNA_REST_API_USERNAME` and `LUNA_REST_API_PASSWORD` first):
-   `curl -k "${LUNA_API_URL:-https://localhost:8010}/api/rest/peers" -H 'accept: application/json' -H "Authorization: Basic $(printf '%s' "$LUNA_REST_API_USERNAME:$LUNA_REST_API_PASSWORD" | base64)"`
+5. Test (export `GRAPE_REST_API_USERNAME` and `GRAPE_REST_API_PASSWORD` first):
+   `curl -k "${GRAPE_API_URL:-https://localhost:8010}/api/rest/peers" -H 'accept: application/json' -H "Authorization: Basic $(printf '%s' "$GRAPE_REST_API_USERNAME:$GRAPE_REST_API_PASSWORD" | base64)"`

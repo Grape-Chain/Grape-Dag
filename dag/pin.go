@@ -14,14 +14,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/smc"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/vm"
-	"github.com/VG-Grape/luna/crypto"
-	"github.com/VG-Grape/luna/crypto/eth"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/smc"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/vm"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/enescakir/emoji"
 	"github.com/golang-collections/collections/set"
 	"github.com/google/uuid"
@@ -367,7 +367,7 @@ func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
 	for _, vertex := range sites {
 		// Get all senders' balances first
 		// Look in cache first
-		wallet := luna1crypto.BytesToAddress(vertex.tx.GetSender())
+		wallet := grape1crypto.BytesToAddress(vertex.tx.GetSender())
 		senderBalance, err := p.unsafe_getBalanceForWallet(wallet)
 		if err != nil {
 			logger.Error(err.Error())
@@ -378,7 +378,7 @@ func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
 		senders[wallet] = append(senders[wallet], senderBalance)
 		// get all receivers' balances
 		// Look in cache first
-		wallet = luna1crypto.BytesToAddress(vertex.tx.GetRecipient())
+		wallet = grape1crypto.BytesToAddress(vertex.tx.GetRecipient())
 		receiverBalance, err := p.unsafe_getBalanceForWallet(wallet)
 		if err != nil {
 			logger.Error(err.Error())
@@ -402,25 +402,25 @@ func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
 		}
 		// for each site update the balance, when valid
 		// 1. Find the latest balance update for the sender
-		senderBalanceTx := senders[luna1crypto.BytesToAddress(val.tx.GetSender())]
+		senderBalanceTx := senders[grape1crypto.BytesToAddress(val.tx.GetSender())]
 		senderBalance := senderBalanceTx[len(senderBalanceTx)-1]
 		if senderBalance.Cmp(big.NewInt(0)) < 0 {
 			// this transaction cannot be processed
 			val.valid = false
 			logger.Warnf("[@DEVNOTE] Need to revert balances in cache")
-			logger.Errorf("Sender wallet %s balance is %d", luna1crypto.BytesToAddress(val.tx.GetSender()), senderBalance.Uint64())
+			logger.Errorf("Sender wallet %s balance is %d", grape1crypto.BytesToAddress(val.tx.GetSender()), senderBalance.Uint64())
 		}
 		// 2. Find the latest balance update for the recipient
 		// receiver may not be known to us at all at this point
-		receiverBalanceTx := receivers[luna1crypto.BytesToAddress(val.tx.GetRecipient())]
+		receiverBalanceTx := receivers[grape1crypto.BytesToAddress(val.tx.GetRecipient())]
 		receiverBalance := receiverBalanceTx[len(receiverBalanceTx)-1]
 		pin.Sites = append(pin.Sites, s)
 		// allow tx balance update
-		pin.Balance.Balance[luna1crypto.BytesToAddress(val.tx.GetSender())] = senderBalance.Bytes()
-		pin.Balance.Balance[luna1crypto.BytesToAddress(val.tx.GetRecipient())] = receiverBalance.Bytes()
+		pin.Balance.Balance[grape1crypto.BytesToAddress(val.tx.GetSender())] = senderBalance.Bytes()
+		pin.Balance.Balance[grape1crypto.BytesToAddress(val.tx.GetRecipient())] = receiverBalance.Bytes()
 		// remove from wallet cache
-		walletCache.remove(luna1crypto.BytesToAddress(val.tx.GetSender()), []string{val.Id()})
-		walletCache.remove(luna1crypto.BytesToAddress(val.tx.GetRecipient()), []string{val.Id()})
+		walletCache.remove(grape1crypto.BytesToAddress(val.tx.GetSender()), []string{val.Id()})
+		walletCache.remove(grape1crypto.BytesToAddress(val.tx.GetRecipient()), []string{val.Id()})
 	}
 	pin.PinNumber = pinsQuantity
 	pinsQuantity++
@@ -626,7 +626,7 @@ func (p *NodeTxPin) GetWallets() ([][]byte, error) {
 
 	wallet_set.Do(func(i interface{}) {
 		wallet_address := i.(string)
-		resp = append(resp, luna1crypto.AddressToBytes(wallet_address))
+		resp = append(resp, grape1crypto.AddressToBytes(wallet_address))
 	})
 
 	return resp, nil
@@ -661,11 +661,11 @@ func (p *NodeTxPin) GetBalances(wallets [][]byte) ([][]byte, error) {
 		// var bs []*Pair[string, *big.Int]
 		// var ok bool
 		walletCache.lock()
-		bs, ok := walletCache.cache[luna1crypto.BytesToAddress(wallet)]
+		bs, ok := walletCache.cache[grape1crypto.BytesToAddress(wallet)]
 		walletCache.unlock()
 		if !ok || len(bs) == 0 {
 			for l := len(p.pins) - 1; l >= 0; l-- {
-				wallet_str := luna1crypto.BytesToAddress(wallet)
+				wallet_str := grape1crypto.BytesToAddress(wallet)
 				if balance, ok := p.pins[l].Balance.Balance[wallet_str]; ok {
 					logger.Debugf("[GetBalance] *** Wallet %s found in pin %d", wallet_str, l)
 					resp = append(resp, balance)
@@ -684,7 +684,7 @@ func (p *NodeTxPin) GetBalances(wallets [][]byte) ([][]byte, error) {
 			success = true
 		}
 		if !success {
-			return nil, fmt.Errorf("Balance for wallet %s not found", luna1crypto.BytesToAddress(wallet))
+			return nil, fmt.Errorf("Balance for wallet %s not found", grape1crypto.BytesToAddress(wallet))
 		}
 	}
 	return resp, nil
@@ -878,24 +878,24 @@ func (pin *NodeTxPin) SyncPins(recentPin *pb.TxPin) {
 	//here we adding balances to fill walletcacheConfirmed
 
 	for _, payment := range sites {
-		senderBalance, err := walletCacheConfirmed.get(luna1crypto.BytesToAddress(payment.Tx.Sender))
+		senderBalance, err := walletCacheConfirmed.get(grape1crypto.BytesToAddress(payment.Tx.Sender))
 		if err != nil {
-			senderBalance, err = pin.unsafe_getLatestBalance(luna1crypto.BytesToAddress(payment.Tx.Sender))
+			senderBalance, err = pin.unsafe_getLatestBalance(grape1crypto.BytesToAddress(payment.Tx.Sender))
 			if err != nil {
-				logger.Errorf("Sender's wallet %s does not exist", luna1crypto.BytesToAddress(payment.Tx.Sender))
+				logger.Errorf("Sender's wallet %s does not exist", grape1crypto.BytesToAddress(payment.Tx.Sender))
 
 			}
 		}
 		transferAmount := new(big.Int)
 		transferAmount.SetBytes(payment.Tx.Amount)
-		walletCacheConfirmed.sub(luna1crypto.BytesToAddress(payment.Tx.Sender), payment.Tx.String(), transferAmount)
+		walletCacheConfirmed.sub(grape1crypto.BytesToAddress(payment.Tx.Sender), payment.Tx.String(), transferAmount)
 
-		walletCacheConfirmed.add(luna1crypto.BytesToAddress(payment.Tx.Recepient), payment.Tx.String(), transferAmount)
-		receiverBalance, _ := walletCacheConfirmed.get(luna1crypto.BytesToAddress(payment.Tx.Recepient))
+		walletCacheConfirmed.add(grape1crypto.BytesToAddress(payment.Tx.Recepient), payment.Tx.String(), transferAmount)
+		receiverBalance, _ := walletCacheConfirmed.get(grape1crypto.BytesToAddress(payment.Tx.Recepient))
 		// update sender's balance after sub operation
-		senderBalance, _ = walletCacheConfirmed.get(luna1crypto.BytesToAddress(payment.Tx.Sender))
-		balances[luna1crypto.BytesToAddress(payment.Tx.Sender)] = senderBalance.Bytes()
-		balances[luna1crypto.BytesToAddress(payment.Tx.Recepient)] = receiverBalance.Bytes()
+		senderBalance, _ = walletCacheConfirmed.get(grape1crypto.BytesToAddress(payment.Tx.Sender))
+		balances[grape1crypto.BytesToAddress(payment.Tx.Sender)] = senderBalance.Bytes()
+		balances[grape1crypto.BytesToAddress(payment.Tx.Recepient)] = receiverBalance.Bytes()
 	}
 	if config.GetConfig().Peer.NodeType == 0 {
 		logger.Info("Dump new balances to vm state store")

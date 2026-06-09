@@ -21,7 +21,7 @@ tx_max=$1
 [ -z "${tx_max}" ] && tx_max=50000
 echo $node_ip $tx_rate $tx_max $@
 
-cfg="/home/luna/.grap3/txgenerator.yml"
+cfg="/home/grape/.grap3/txgenerator.yml"
 
 sed -ri "s/nodeip: \"(.+)\".*/nodeip: \"${node_ip}\"/g;s/txrate:(.+)/txrate: ${tx_rate}/g;s/txmax:(.+)/txmax: ${tx_max}/g" "$cfg"
 

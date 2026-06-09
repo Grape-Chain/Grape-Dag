@@ -10,23 +10,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestAmountBigInt(t *testing.T) {
 	rand.Seed(time.Now().UnixMicro())
-	sender_wallet := luna1crypto.NewWallet()
-	recipient_wallet := luna1crypto.NewWallet()
+	sender_wallet := grape1crypto.NewWallet()
+	recipient_wallet := grape1crypto.NewWallet()
 
 	transaction := tx.Txv1{
 		Tx_Type:     tx.TransactionType(pb.TransactionType_PAYMENT),
 		Chain_Type:  tx.MAINNET,
 		Sender_Pubk: *sender_wallet.PublicKey(),
-		Sender:      luna1crypto.AddressToBytes(sender_wallet.WalletAddress()),
-		Recepient:   luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:      grape1crypto.AddressToBytes(sender_wallet.WalletAddress()),
+		Recepient:   grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:      big.NewInt(rand.Int63n(20000)).Bytes(),
 		Nonce:       uint64(rand.Int()),
 		Timestamp:   time.Now(),
@@ -55,15 +55,15 @@ func TestAmountBigInt(t *testing.T) {
 
 func TestAmountBigIntMarshal(t *testing.T) {
 	rand.Seed(time.Now().UnixMicro())
-	sender_wallet := luna1crypto.NewWallet()
-	recipient_wallet := luna1crypto.NewWallet()
+	sender_wallet := grape1crypto.NewWallet()
+	recipient_wallet := grape1crypto.NewWallet()
 
 	transaction := tx.Txv1{
 		Tx_Type:     tx.TransactionType(pb.TransactionType_PAYMENT),
 		Chain_Type:  tx.MAINNET,
 		Sender_Pubk: *sender_wallet.PublicKey(),
-		Sender:      luna1crypto.AddressToBytes(sender_wallet.WalletAddress()),
-		Recepient:   luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:      grape1crypto.AddressToBytes(sender_wallet.WalletAddress()),
+		Recepient:   grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:      big.NewInt(rand.Int63n(20000)).Bytes(),
 		Nonce:       uint64(rand.Int()),
 		Timestamp:   time.Now(),
@@ -84,15 +84,15 @@ func TestAmountBigIntMarshal(t *testing.T) {
 
 func TestAmountBigIntMarshalUnmarshal(t *testing.T) {
 	rand.Seed(time.Now().UnixMicro())
-	sender_wallet := luna1crypto.NewWallet()
-	recipient_wallet := luna1crypto.NewWallet()
+	sender_wallet := grape1crypto.NewWallet()
+	recipient_wallet := grape1crypto.NewWallet()
 
 	transaction := tx.Txv1{
 		Tx_Type:     tx.TransactionType(pb.TransactionType_PAYMENT),
 		Chain_Type:  tx.MAINNET,
 		Sender_Pubk: *sender_wallet.PublicKey(),
-		Sender:      luna1crypto.AddressToBytes(sender_wallet.WalletAddress()),
-		Recepient:   luna1crypto.AddressToBytes(luna1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
+		Sender:      grape1crypto.AddressToBytes(sender_wallet.WalletAddress()),
+		Recepient:   grape1crypto.AddressToBytes(grape1crypto.AddressFromPulicKey(*recipient_wallet.PublicKey())),
 		Amount:      big.NewInt(rand.Int63n(20000)).Bytes(),
 		Nonce:       uint64(rand.Int()),
 		Timestamp:   time.Now(),

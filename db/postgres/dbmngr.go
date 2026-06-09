@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/db/base"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/db/base"
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

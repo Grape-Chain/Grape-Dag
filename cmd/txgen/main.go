@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	txgen "github.com/VG-Grape/luna/tools/txgen"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/crypto"
+	txgen "github.com/Grape-Chain/Grape-Dag/tools/txgen"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/briandowns/spinner"
 	"github.com/enescakir/emoji"
 )
@@ -121,7 +121,7 @@ func main() {
 
 	if txgen.GenesisWalletMode(m) {
 		// Need to load the genesis wallet object to bootstrap the process
-		genesisWallet := luna1crypto.LoadWallet(g.Publickey, g.Privatekey)
+		genesisWallet := grape1crypto.LoadWallet(g.Publickey, g.Privatekey)
 		if genesisWallet == nil {
 			fmt.Printf("[ERROR]Failed to load Genesis Wallet. pvt:%s|pub:%s\n", g.Privatekey, g.Publickey)
 			return
@@ -130,7 +130,7 @@ func main() {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		genesisBalance, err := cltService.GetBalances(ctx, &pb.BalanceRequest{
-			Wallets: [][]byte{luna1crypto.AddressToBytes(genesisWallet.WalletAddress())},
+			Wallets: [][]byte{grape1crypto.AddressToBytes(genesisWallet.WalletAddress())},
 		})
 		if err != nil {
 			fmt.Printf("[$] 0 Get balance for %s. err: %s", genesisWallet.WalletAddress(), err.Error())

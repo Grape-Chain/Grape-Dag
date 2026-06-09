@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VG-Grape/luna/dag"
-	"github.com/VG-Grape/luna/services/rest/api"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/vm"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/dag"
+	"github.com/Grape-Chain/Grape-Dag/services/rest/api"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/vm"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 )
 
 func LogsToDto(logs []vm.Log) []api.Log {
@@ -43,7 +43,7 @@ func AccountToDto(account *vm.LnAccount) api.Account {
 	// balance for non-SC accounts is more recent in wallet_cache instead of
 	//
 	if !vm.IsSCAccount(account.Id) {
-		byteAddress := luna1crypto.AddressToBytes(account.Id)
+		byteAddress := grape1crypto.AddressToBytes(account.Id)
 		balance, err := dag.GetPin().GetBalance(byteAddress)
 		if err != nil {
 			balanceString = "0"
@@ -96,7 +96,7 @@ func TxToDto(transaction *tx.UnifiedTx) api.UnifiedTransaction {
 	nonce := int(txToMap.GetNonce())
 	recepient := ""
 	if len(txToMap.GetRecipient()) > 0 {
-		recepient = luna1crypto.BytesToAddress(txToMap.GetRecipient())
+		recepient = grape1crypto.BytesToAddress(txToMap.GetRecipient())
 	}
 	sender := txToMap.GetSender().String()
 	signature := txToMap.GetSignature().String()

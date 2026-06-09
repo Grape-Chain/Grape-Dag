@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you believe you have found a security vulnerability in Luna, please report it
+If you believe you have found a security vulnerability in Grape, please report it
 privately. **Do not open a public GitHub issue.**
 
 Email: `security@aplfintech.com`
@@ -20,7 +20,7 @@ case-by-case once we have assessed the issue.
 
 ## Supported Versions
 
-Luna is in early public release. Until a `v1.0.0` tag is published, only the
+Grape is in early public release. Until a `v1.0.0` tag is published, only the
 latest commit on `main` receives security fixes. Once stable releases begin, the
 two most recent minor versions will be supported.
 
@@ -28,7 +28,7 @@ two most recent minor versions will be supported.
 
 In scope:
 
-- The peer node (`cmd/lunapeer`)
+- The peer node (`cmd/grapepeer`)
 - The transaction generator (`cmd/txgen`)
 - The REST API service (`cmd/api`, `services/api`)
 - Cryptographic primitives (`crypto/`)
@@ -38,6 +38,6 @@ Out of scope:
 
 - Issues in third-party dependencies (please report upstream first; we will
   pick up the fix once it is released)
-- The smart-contract VM image (`ghcr.io/vg-grape/luna-smc`) — report there
+- The smart-contract VM image (`ghcr.io/vg-grape/grape-smc`) — report there
 - Vulnerabilities that require physical access or compromised peer keys
 - Denial-of-service attacks on public test networks

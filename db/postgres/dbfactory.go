@@ -1,6 +1,6 @@
 package postgres
 
-import "github.com/VG-Grape/luna/db/base"
+import "github.com/Grape-Chain/Grape-Dag/db/base"
 
 type PostgresFactory struct{}
 

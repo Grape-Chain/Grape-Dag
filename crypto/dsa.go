@@ -1,4 +1,4 @@
-package luna1crypto
+package grape1crypto
 
 import (
 	"crypto"
@@ -25,7 +25,7 @@ type Ed25519DSA struct{}
 var logger golog.EventLogger
 
 func init() {
-	logger = golog.Logger("luna1crypto")
+	logger = golog.Logger("grape1crypto")
 }
 
 func NewDSA() DSA {

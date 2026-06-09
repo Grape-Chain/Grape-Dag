@@ -5,11 +5,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	txqueue "github.com/VG-Grape/luna/queues"
-	sm "github.com/VG-Grape/luna/statemachine"
-	"github.com/VG-Grape/luna/tx"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	sm "github.com/Grape-Chain/Grape-Dag/statemachine"
+	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/enescakir/emoji"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -37,7 +37,7 @@ func syncUpSites(dsm *DagSyncMngr, wg *sync.WaitGroup) {
 }
 
 func requestSitesFromLeader(dsm *DagSyncMngr) error {
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)

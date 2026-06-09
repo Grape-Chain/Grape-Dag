@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/types"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/types"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	golog "github.com/ipfs/go-log/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -408,7 +408,7 @@ func (s *InMemoryNodeStorageServer) PutContractCode(ctx context.Context, req *pb
 		return nil, fmt.Errorf("Account for address %s doesn't exist, no place to put code", hex.EncodeToString(req.ContractAddress.AddBytes))
 	}
 	contractAccount.Code = hex.EncodeToString(req.ContractCode.Bytecode)
-	hasher := luna1crypto.NewSHA3Hasher()
+	hasher := grape1crypto.NewSHA3Hasher()
 	codeHash := hasher.Digest(req.ContractCode.Bytecode)
 	contractAccount.CodeHash = hex.EncodeToString(codeHash)
 	s.storage.putAccount(contractAccount)
@@ -632,8 +632,8 @@ func ResetCaptureStateStoreDiffs() {
 func SubBalance(pubKey []byte, amount *big.Int) error {
 	server.lock.Lock()
 	defer server.lock.Unlock()
-	address := luna1crypto.AddressFromPulicKey(luna1crypto.PublicKey(pubKey))
-	acc, exists := server.storage.getAccount(luna1crypto.AddressToBytes(address))
+	address := grape1crypto.AddressFromPulicKey(grape1crypto.PublicKey(pubKey))
+	acc, exists := server.storage.getAccount(grape1crypto.AddressToBytes(address))
 	if !exists {
 		return fmt.Errorf("account doesn't exist %s", address)
 	}
@@ -652,7 +652,7 @@ func SubBalance(pubKey []byte, amount *big.Int) error {
 func IncrementNonce(address string) error {
 	server.lock.Lock()
 	defer server.lock.Unlock()
-	acc, exists := server.storage.getAccount(luna1crypto.AddressToBytes(address))
+	acc, exists := server.storage.getAccount(grape1crypto.AddressToBytes(address))
 	if !exists {
 		return fmt.Errorf("account doesn't exist %s", address)
 	}
@@ -668,7 +668,7 @@ func IncrementNonce(address string) error {
 func SearchAccount(address string) *LnAccount {
 	server.lock.Lock()
 	defer server.lock.Unlock()
-	acc, exists := server.storage.getAccount(luna1crypto.AddressToBytes(address))
+	acc, exists := server.storage.getAccount(grape1crypto.AddressToBytes(address))
 	if !exists {
 		return nil
 	}
@@ -680,7 +680,7 @@ func SearchAccount(address string) *LnAccount {
 func GetCodeHash(address string) string {
 	server.lock.Lock()
 	defer server.lock.Unlock()
-	acc, exists := server.storage.getAccount(luna1crypto.AddressToBytes(address))
+	acc, exists := server.storage.getAccount(grape1crypto.AddressToBytes(address))
 	if !exists {
 		return keccak256NullHash
 	}
@@ -691,7 +691,7 @@ func GetCodeHash(address string) string {
 func GetContractCode(address string) string {
 	server.lock.Lock()
 	defer server.lock.Unlock()
-	acc, exists := server.storage.getAccount(luna1crypto.AddressToBytes(address))
+	acc, exists := server.storage.getAccount(grape1crypto.AddressToBytes(address))
 	if !exists {
 		return ""
 	}
@@ -701,9 +701,9 @@ func GetContractCode(address string) string {
 func GetStorageAt(address string, key string) string {
 	server.lock.Lock()
 	defer server.lock.Unlock()
-	value, exists := server.storage.getValue(luna1crypto.AddressToBytes(address), luna1crypto.LeftPadTo(32, luna1crypto.AddressToBytes(key)))
+	value, exists := server.storage.getValue(grape1crypto.AddressToBytes(address), grape1crypto.LeftPadTo(32, grape1crypto.AddressToBytes(key)))
 	if !exists {
-		return luna1crypto.ZeroHex(32)
+		return grape1crypto.ZeroHex(32)
 	}
 	return "0x" + hex.EncodeToString(value)
 }
@@ -777,7 +777,7 @@ func SyncBalances(balances map[string][]byte) {
 	defer server.lock.Unlock()
 	slogger.Infof("Run sync of %d balances from pin tx", len(balances))
 	for key, value := range balances {
-		address := luna1crypto.AddressToBytes(key)
+		address := grape1crypto.AddressToBytes(key)
 		account, exists := server.storage.getAccount(address)
 		newBalance := big.NewInt(0).SetBytes(value).String()
 		if !exists {

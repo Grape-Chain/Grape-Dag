@@ -5,8 +5,8 @@
     </encoder>
   </appender>
 
-  <logger name="io.aplfintech.luna" level="TRACE"/>
-  <logger name="io.aplfintech.luna.l1vm.gas" level="DEBUG"/>
+  <logger name="io.aplfintech.grape" level="TRACE"/>
+  <logger name="io.aplfintech.grape.l1vm.gas" level="DEBUG"/>
 
 
   <root level="warn">

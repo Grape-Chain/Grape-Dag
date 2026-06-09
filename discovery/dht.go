@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
+	"github.com/Grape-Chain/Grape-Dag/config"
 	"github.com/ledongthuc/goterators"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kbucket "github.com/libp2p/go-libp2p-kbucket"

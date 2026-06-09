@@ -8,10 +8,10 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/wallet"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/wallet"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 )
 
 type CommandArgs struct {
@@ -51,7 +51,7 @@ type Command interface {
 type WalletCommand struct {
 }
 type WalletResponse struct {
-	Wallet *luna1crypto.Wallet
+	Wallet *grape1crypto.Wallet
 }
 
 func (w *WalletCommand) AdviseColor() string {
@@ -75,7 +75,7 @@ func (w *WalletCommand) ProcessResult(i any) (CommandStatus, error) {
 }
 func (c *WalletCommand) Execute(_ *pb.RoboTraderClient) any {
 	return &WalletResponse{
-		Wallet: luna1crypto.NewWallet(),
+		Wallet: grape1crypto.NewWallet(),
 	}
 }
 func (c *WalletCommand) Init(_ *CommandArgs) error {

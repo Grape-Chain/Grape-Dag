@@ -1,0 +1,21 @@
+# Sample systemd unit for the Grape peer daemon.
+# Copy to /etc/systemd/system/ on the host and adjust User, paths, and the
+# command-line flags for your deployment.
+[Unit]
+Description=Grape peer daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=grape
+Group=grape
+WorkingDirectory=/var/lib/grape
+ExecStart=/usr/local/bin/grapepeer-start.sh
+PIDFile=/run/grape/grapepeer.pid
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

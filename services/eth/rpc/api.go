@@ -7,15 +7,15 @@ import (
 	"math/big"
 	"net/http"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/dag"
-	"github.com/VG-Grape/luna/services"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/types"
-	"github.com/VG-Grape/luna/vm"
-	"github.com/VG-Grape/luna/crypto"
-	"github.com/VG-Grape/luna/crypto/eth"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/dag"
+	"github.com/Grape-Chain/Grape-Dag/services"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/types"
+	"github.com/Grape-Chain/Grape-Dag/vm"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/ethereum/go-ethereum/common"
 	golog "github.com/ipfs/go-log/v2"
 )
@@ -238,7 +238,7 @@ func handleEthGetBalance(params []interface{}) RPCResponse {
 	if account != nil {
 		balance = &account.Balance
 		if !vm.IsSCAccount(addressStr) {
-			byteAddress := luna1crypto.AddressToBytes(account.Id)
+			byteAddress := grape1crypto.AddressToBytes(account.Id)
 			cachedBalance, err := dag.GetPin().GetBalance(byteAddress)
 			if err != nil {
 				balance = big.NewInt(0)
@@ -427,10 +427,10 @@ func handleEthEstimateGas(params []interface{}) RPCResponse {
 	}
 
 	res, err := services.NewTransactionService().EstimateTxFuel(services.FuelEstimationRequest{Message: &services.Message{
-		From:   luna1crypto.AddressToBytes(p.From),
-		To:     luna1crypto.AddressToBytes(p.To),
-		Data:   luna1crypto.HexToBytesNil(p.Data),
-		Amount: luna1crypto.HexToBytesNil(p.Value),
+		From:   grape1crypto.AddressToBytes(p.From),
+		To:     grape1crypto.AddressToBytes(p.To),
+		Data:   grape1crypto.HexToBytesNil(p.Data),
+		Amount: grape1crypto.HexToBytesNil(p.Value),
 	}})
 	if err != nil {
 		return RPCResponse{Result: "null", Error: &RPCError{
@@ -466,7 +466,7 @@ func handleEthGetTransactionReceipt(params []interface{}) RPCResponse {
 	}
 	var to *string
 	if len(confirmedTx.GetRecipient()) != 0 {
-		recipientAddress := luna1crypto.BytesToAddress(confirmedTx.GetRecipient())
+		recipientAddress := grape1crypto.BytesToAddress(confirmedTx.GetRecipient())
 		to = &recipientAddress
 	}
 	status := 1
@@ -485,7 +485,7 @@ func handleEthGetTransactionReceipt(params []interface{}) RPCResponse {
 		TransactionIndex:  intToHex(confirmedTx.TxIndex),
 		BlockHash:         confirmedTx.PinTxHash,
 		BlockNumber:       intToHex(confirmedTx.PinTxNumber),
-		From:              luna1crypto.BytesToAddress(confirmedTx.GetSender()),
+		From:              grape1crypto.BytesToAddress(confirmedTx.GetSender()),
 		To:                to,
 		CumulativeGasUsed: intToHex(confirmedTx.CumulativeGasUsed),
 		EffectiveGasPrice: "0x" + big.NewInt(0).SetBytes(confirmedTx.GetFuelPrice().Bytes()).Text(16),
@@ -493,7 +493,7 @@ func handleEthGetTransactionReceipt(params []interface{}) RPCResponse {
 		ContractAddress:   contractAddress,
 		Status:            intToHex(status),
 		Type:              intToHex(0),
-		LogsBloom:         luna1crypto.ZeroHex(32),
+		LogsBloom:         grape1crypto.ZeroHex(32),
 		Logs:              mapLogs(logs, *confirmedTx),
 	}
 
@@ -545,8 +545,8 @@ func mapTx(trx *tx.UnifiedTx) TransactionResponse {
 
 	} else {
 		// mock signature
-		r = stringToPointer(luna1crypto.RandomHex(32))
-		s = stringToPointer(luna1crypto.RandomHex(32))
+		r = stringToPointer(grape1crypto.RandomHex(32))
+		s = stringToPointer(grape1crypto.RandomHex(32))
 		v = stringToPointer("0x26")
 	}
 	if len(trx.GetRawTx().GetData()) != 0 {
@@ -560,7 +560,7 @@ func mapTx(trx *tx.UnifiedTx) TransactionResponse {
 		TransactionIndex: idx,
 		BlockHash:        blockHash,
 		BlockNumber:      blockNumber,
-		From:             luna1crypto.BytesToAddress(trx.GetRawTx().GetSender()),
+		From:             grape1crypto.BytesToAddress(trx.GetRawTx().GetSender()),
 		To:               to,
 		Input:            input,
 		Value:            bigIntToHex(trx.GetRawTx().GetAmount()),
@@ -683,7 +683,7 @@ func mapLogs(logs []vm.Log, confirmedTx tx.ConfirmedTx) []Log {
 				TransactionHash:  confirmedTx.GetHash().String(),
 				BlockHash:        confirmedTx.PinTxHash,
 				BlockNumber:      intToHex(confirmedTx.PinTxNumber),
-				Address:          luna1crypto.BytesToAddress(l.ContractAddress),
+				Address:          grape1crypto.BytesToAddress(l.ContractAddress),
 				Data:             "0x" + hex.EncodeToString(l.Data),
 				Topics:           mapTopic(l.Topics),
 			})
@@ -732,7 +732,7 @@ func int64ToHexPointer(i int64) *string {
 	return &res
 }
 func hexToInt(h string) (error, int) {
-	b := luna1crypto.HexToBytes(h)
+	b := grape1crypto.HexToBytes(h)
 
 	return nil, int(big.NewInt(0).SetBytes(b).Int64())
 

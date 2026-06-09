@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/VG-Grape/luna/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/enescakir/emoji"
 )
 

@@ -8,19 +8,19 @@ import (
 )
 
 const (
-	PRE_RENDEZVOUS_ID              = "/LunaOne/43312633-80cf-429d-bc92-a17ca501aa5b"
+	PRE_RENDEZVOUS_ID              = "/GrapeOne/43312633-80cf-429d-bc92-a17ca501aa5b"
 	PRE_DAGSYNC_ID                 = "/dagsync/0.0.1" // identify the subscription topic for synchronization
 	APP_NAME                       = "Grape Node"
 	LOG_FILE_PREFIX                = "%s.log"
 	GOLOG_FILE                     = "GOLOG_FILE"
 	GOLOG_OUTPUT                   = "GOLOG_OUTPUT"
 	GOLOG_DEFAULT_OUTPUT_MODE      = "file"
-	LUNAONE_CFG_PATH               = ".grap3"
+	GRAPEONE_CFG_PATH               = ".grap3"
 	BOOTSTRAP_FILE                 = "bootstrap.json"
 	GENERATOR_NAME                 = "txgenerator"
 	GENERATOR_EXT                  = "yml"
 	GENERATOR_FILE                 = GENERATOR_NAME + "." + GENERATOR_EXT
-	LUNAPEER_FILE                  = "grapepeer.yml"
+	GRAPEPEER_FILE                  = "grapepeer.yml"
 	MAX_CONN_LIMIT                 = 100
 	DB_CTX_TIMEOUT                 = 5
 	STATS_DB                       = "mongo"
@@ -29,7 +29,7 @@ const (
 	TX_WEIGHT_LOWER_LIMIT          = 0.6 // tx weigth bounds used when generating transactions
 	TX_PIN_DEPTH_THRESHOLD         = 100 // threshold value for generating a pinning transaction
 	// REST_API_USERNAME and REST_API_PASSWORD are exported as vars below
-	// (read from the LUNA_REST_API_USERNAME and LUNA_REST_API_PASSWORD
+	// (read from the GRAPE_REST_API_USERNAME and GRAPE_REST_API_PASSWORD
 	// environment variables). They are not constants because we want
 	// operators to set them at process start.
 	NET_CONN_TIMEOUT               = 15 // timeout time in seconds before we stop trying to connect
@@ -54,14 +54,14 @@ const (
 	LOGGER_FN                      = "grape-%s"
 	ACTIVATION_OK                  = 0x10
 	USE_ACTIVATION                 = false
-	LUNAPEER_ID                    = "GRAPEPEER_ID"
+	GRAPEPEER_ID                    = "GRAPEPEER_ID"
 	ROUTING_TABLE_REFRESH          = 30
 	STATE_CHANGE_WAIT              = 1000
 	RELAY_SRV_1                    = "/dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1"
 	RELAY_SRV_2                    = "/dns4/bootstrap2/udp/43431/quic-v1/p2p/12D3KooWQYaGFAHo5zSsJR4Sgdpv9AoCWU9y6aTdAvmVjg6rcmzf"
 )
 
-type Lunapeer struct {
+type Grapepeer struct {
 	Peer PeerConfiguration
 	Dag  DagConfiguration
 	Tx   TxConfiguration
@@ -160,6 +160,6 @@ type HostConfig struct {
 // If unset, the REST API runs without HTTP basic-auth credentials configured;
 // the service is expected to require them at startup or short-circuit auth.
 var (
-	REST_API_USERNAME = os.Getenv("LUNA_REST_API_USERNAME")
-	REST_API_PASSWORD = os.Getenv("LUNA_REST_API_PASSWORD")
+	REST_API_USERNAME = os.Getenv("GRAPE_REST_API_USERNAME")
+	REST_API_PASSWORD = os.Getenv("GRAPE_REST_API_PASSWORD")
 )

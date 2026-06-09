@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/services"
-	"github.com/VG-Grape/luna/services/eth/rpc"
-	"github.com/VG-Grape/luna/services/rest/api"
-	"github.com/VG-Grape/luna/services/ws"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/services"
+	"github.com/Grape-Chain/Grape-Dag/services/eth/rpc"
+	"github.com/Grape-Chain/Grape-Dag/services/rest/api"
+	"github.com/Grape-Chain/Grape-Dag/services/ws"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -115,7 +115,7 @@ func (app *RestAPIConfig) routes() http.Handler {
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
-	mux.Use(middleware.BasicAuth("luna-1", users))
+	mux.Use(middleware.BasicAuth("grape-1", users))
 	mux.Use(middleware.Heartbeat("/heartbeat"))
 	mux.Use(func(h http.Handler) http.Handler { // configure general error handling on API endpoints
 		return &ErrorRecovery{h}

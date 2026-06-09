@@ -8,7 +8,7 @@ import (
 
 // func TestDagInit(t *testing.T) {
 // 	fmt.Printf("Running %s\n", t.Name())
-// 	x := config.GetLunaPeerFromConfig()
+// 	x := config.GetGrapePeerFromConfig()
 // 	// init random
 // 	rand.Seed(time.Now().UnixMilli())
 // 	d := dag.GenerateWideDag(uint8(x.Dag.Initialwidth))
@@ -27,13 +27,13 @@ import (
 
 func removeVis(name string) {
 	wd, _ := os.Getwd()
-	os.Remove(path.Join(wd, fmt.Sprintf("lunapeer.%s.*.gv", name)))
+	os.Remove(path.Join(wd, fmt.Sprintf("grapepeer.%s.*.gv", name)))
 }
 
 // func TestDagRandom(t *testing.T) {
 // 	removeVis(t.Name())
 // 	fmt.Printf("Running %s\n", t.Name())
-// 	x := config.GetLunaPeerFromConfig()
+// 	x := config.GetGrapePeerFromConfig()
 // 	// init random
 // 	rand.Seed(time.Now().UnixMilli())
 // 	dagHeight := 4
@@ -60,7 +60,7 @@ func removeVis(name string) {
 // func TestConfirmedSites(t *testing.T) {
 // 	removeVis(t.Name())
 // 	fmt.Printf("Running %s\n", t.Name())
-// 	x := config.GetLunaPeerFromConfig()
+// 	x := config.GetGrapePeerFromConfig()
 // 	// init random
 // 	rand.Seed(time.Now().UnixMilli())
 // 	var dagHeight uint16 = 1000
@@ -83,7 +83,7 @@ func removeVis(name string) {
 
 // func TestConfirmedSitesN(t *testing.T) {
 // 	fmt.Printf("Running %s\n", t.Name())
-// 	x := config.GetLunaPeerFromConfig()
+// 	x := config.GetGrapePeerFromConfig()
 // 	// init random
 // 	rand.Seed(time.Now().UnixMilli())
 // 	count := []float64{}

@@ -3,7 +3,7 @@ package services
 import (
 	"fmt"
 
-	"github.com/VG-Grape/luna/vm"
+	"github.com/Grape-Chain/Grape-Dag/vm"
 )
 
 type AccountService interface {

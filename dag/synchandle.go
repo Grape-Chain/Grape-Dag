@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	txqueue "github.com/VG-Grape/luna/queues"
-	sm "github.com/VG-Grape/luna/statemachine"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	sm "github.com/Grape-Chain/Grape-Dag/statemachine"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/enescakir/emoji"
 	"github.com/google/uuid"
 	"github.com/ledongthuc/goterators"
@@ -59,7 +59,7 @@ func handleSyncUpResponse(syncTx *tx.Syncv1) error {
 
 func processSyncUpRequest(trackingId uuid.UUID) error {
 	logger.Infof("%s  ~ Processing SyncUp Request [%s]", emoji.HammerAndWrench, trackingId)
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)
 	pk, pubkey, err := crypto.KeyPairFromStdKey(stdkey)
@@ -166,7 +166,7 @@ func handleMissPinResponse(rec *tx.Syncv1) error {
 
 func publishMissPinResponse(trackingId uuid.UUID, pin *pb.TxPin) error {
 	logger.Infof("%s ~ Publish response to MISS PIN REQ [%s]", emoji.IncomingEnvelope, trackingId)
-	host := lunapeer.GetHost()
+	host := grapepeer.GetHost()
 	// messages are signed with the host private key, not the wallet's
 	hostpk := host.Peerstore().PrivKey(host.ID())
 	stdkey, _ := crypto.PrivKeyToStdKey(hostpk)

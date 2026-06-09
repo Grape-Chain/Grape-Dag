@@ -23,10 +23,10 @@
 
     <logger name="io.grpc.netty.shaded.io.grpc.netty" level="ERROR"/>
 
-    <logger name="io.aplfintech.luna" level="DEBUG"/>
-    <logger name="io.aplfintech.luna.bcei" level="DEBUG"/>
-    <logger name="io.aplfintech.luna.l1vm.gas" level="DEBUG"/>
-    <logger name="io.aplfintech.luna.StateClient" level="DEBUG"/>
+    <logger name="io.aplfintech.grape" level="DEBUG"/>
+    <logger name="io.aplfintech.grape.bcei" level="DEBUG"/>
+    <logger name="io.aplfintech.grape.l1vm.gas" level="DEBUG"/>
+    <logger name="io.aplfintech.grape.StateClient" level="DEBUG"/>
 
     <root level="warn">
         <appender-ref ref="console"/>

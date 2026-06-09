@@ -1,13 +1,13 @@
-# Luna
+# Grape
 
 A DAG-based distributed ledger with EVM-compatible smart contracts.
 
-> **Project status:** early public release. APIs and on-disk formats may
+> **Project status:** early release. APIs and on-disk formats may
 > change before `v1.0.0`. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Overview
 
-Luna is an open-source peer-to-peer network that combines:
+Grape is a peer-to-peer network that combines:
 
 - **DAG consensus** with MCMC+ weighted random-walk tip selection
 - **Deterministic finality** via leader-issued checkpoint ("pin") transactions
@@ -66,9 +66,9 @@ cd smc && mvn -T 1C clean install -DskipTests
 ## Repository Layout
 
 ```
-luna/
+grape/
 ├── cmd/
-│   ├── lunapeer/        peer node binary
+│   ├── grapepeer/        peer node binary
 │   ├── txgen/           transaction generator
 │   └── secret/          wallet key / secret utility
 ├── crypto/              cryptographic primitives (Ed25519, hashing, wallet)
@@ -79,7 +79,7 @@ luna/
 ├── statemachine/        node-lifecycle FSM (bootstrap → syncing → ready)
 ├── services/            REST and gRPC services exposed by the peer
 ├── tx/                  transaction types and encoding
-├── vm/                  smart-contract VM client (gRPC to luna-smc)
+├── vm/                  smart-contract VM client (gRPC to grape-smc)
 ├── smc/                 JVM-based smart-contract VM (Maven multi-module)
 ├── examples/            ready-to-run demo scripts
 ├── deploy/              Dockerfile, docker-compose, sample env
@@ -119,4 +119,4 @@ public issue.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Proprietary. Copyright © 2026 Grape DLT Inc. All rights reserved. See [LICENSE](LICENSE).

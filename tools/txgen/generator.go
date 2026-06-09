@@ -13,12 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/wallet"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/wallet"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/ledongthuc/goterators"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
@@ -50,9 +50,9 @@ type TxGenerator struct {
 	Tx        config.TxConfiguration
 	Generator GenConfiguration
 	// Note: RoboTrader manages all wallets it transacts on
-	Wallets  []*luna1crypto.Wallet
+	Wallets  []*grape1crypto.Wallet
 	Balances map[string]*big.Int
-	Wallet   *luna1crypto.Wallet
+	Wallet   *grape1crypto.Wallet
 }
 
 func (gc TxGenerator) String() string {
@@ -151,14 +151,14 @@ func (g *TxGenerator) Trade0(cltService *pb.RoboTraderClient) error {
 	var err error
 	// get the current balance for the genesis wallet
 	balance_response, err = (*cltService).GetBalances(ctx, &pb.BalanceRequest{
-		Wallets: [][]byte{luna1crypto.AddressToBytes(wsb.WalletAddress())},
+		Wallets: [][]byte{grape1crypto.AddressToBytes(wsb.WalletAddress())},
 	})
 	cancel()
 	if err != nil {
 		return fmt.Errorf("[$] 0 Get balance for %s. err: %s", wsb.WalletAddress(), err.Error())
 	}
 	// we are generating exodus tx - get a new wallet address
-	var wrb *luna1crypto.Wallet = luna1crypto.NewWallet()
+	var wrb *grape1crypto.Wallet = grape1crypto.NewWallet()
 	g.Wallets = append(g.Wallets, wrb)
 	lastKnownBalance := big.NewInt(0).SetBytes(balance_response.Balances[0])
 	x := math.Log10(float64(lastKnownBalance.Uint64()))
@@ -199,10 +199,10 @@ func (g *TxGenerator) Trade1(cltService *pb.RoboTraderClient) error {
 	// and add these wallets to cache
 	// Get random wallet from slice of wallets, and get its balance,
 	// if balance is sufficient, move 1/10 of the funds to a new wallet
-	var wsb *luna1crypto.Wallet
+	var wsb *grape1crypto.Wallet
 	var err error
 	wsb = g.Wallets[0]
-	var wrb *luna1crypto.Wallet = luna1crypto.NewWallet()
+	var wrb *grape1crypto.Wallet = grape1crypto.NewWallet()
 	// for {
 	// 	wrb = g.Wallets[r.Intn(len(g.Wallets))]
 	// 	if wsb.WalletAddress() != wrb.WalletAddress() {
@@ -344,7 +344,7 @@ func (g *TxGenerator) Trade(cltService *pb.RoboTraderClient) error {
 	// and add these wallets to cache
 	// Get random wallet from slice of wallets, and get its balance,
 	// if balance is sufficient, move 1/10 of the funds to a new wallet
-	var wsb *luna1crypto.Wallet
+	var wsb *grape1crypto.Wallet
 	var balance_response *pb.BalanceResponse
 	var err error
 	for {
@@ -352,7 +352,7 @@ func (g *TxGenerator) Trade(cltService *pb.RoboTraderClient) error {
 		wsb = g.Wallets[r.Intn(len(g.Wallets))]
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 		balance_response, err = (*cltService).GetBalances(ctx, &pb.BalanceRequest{
-			Wallets: [][]byte{luna1crypto.AddressToBytes(wsb.WalletAddress())},
+			Wallets: [][]byte{grape1crypto.AddressToBytes(wsb.WalletAddress())},
 		})
 		cancel()
 		// sender must have positive balance
@@ -360,7 +360,7 @@ func (g *TxGenerator) Trade(cltService *pb.RoboTraderClient) error {
 			break
 		}
 	}
-	var wrb *luna1crypto.Wallet
+	var wrb *grape1crypto.Wallet
 	if len(g.Wallets) > int(g.Generator.Width) && rand.Int31n(10) <= 5 {
 		for {
 			wrb = g.Wallets[r.Intn(len(g.Wallets))]
@@ -370,7 +370,7 @@ func (g *TxGenerator) Trade(cltService *pb.RoboTraderClient) error {
 		}
 	} else {
 		// need to generate a new wallet
-		wrb = luna1crypto.NewWallet()
+		wrb = grape1crypto.NewWallet()
 	}
 
 	lastKnownBalance := big.NewInt(0).SetBytes(balance_response.Balances[0])
@@ -412,7 +412,7 @@ func (g *TxGenerator) make_payment(cltService *pb.RoboTraderClient, walletto str
 	var err error
 	// get the current balance for the genesis wallet
 	balance_response, err = (*cltService).GetBalances(ctx, &pb.BalanceRequest{
-		Wallets: [][]byte{luna1crypto.AddressToBytes(wsb.WalletAddress())},
+		Wallets: [][]byte{grape1crypto.AddressToBytes(wsb.WalletAddress())},
 	})
 	cancel()
 	if err != nil {
@@ -451,7 +451,7 @@ func (g *TxGenerator) make_payment(cltService *pb.RoboTraderClient, walletto str
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), time.Second*30)
 	balance_response, err = (*cltService).GetBalances(ctx, &pb.BalanceRequest{
-		Wallets: [][]byte{luna1crypto.AddressToBytes(walletto)},
+		Wallets: [][]byte{grape1crypto.AddressToBytes(walletto)},
 	})
 	cancel()
 	if err != nil {
@@ -463,7 +463,7 @@ func (g *TxGenerator) make_payment(cltService *pb.RoboTraderClient, walletto str
 
 	ctx, cancel = context.WithTimeout(context.Background(), time.Second*30)
 	balance_response, err = (*cltService).GetBalances(ctx, &pb.BalanceRequest{
-		Wallets: [][]byte{luna1crypto.AddressToBytes(wsb.WalletAddress())},
+		Wallets: [][]byte{grape1crypto.AddressToBytes(wsb.WalletAddress())},
 	})
 	cancel()
 	if err != nil {
@@ -478,7 +478,7 @@ func (g *TxGenerator) make_payment(cltService *pb.RoboTraderClient, walletto str
 
 func (g *TxGenerator) GenWallet() {
 	defer os.Exit(1)
-	w := luna1crypto.NewWallet()
+	w := grape1crypto.NewWallet()
 	utils.SaveWalletKey(w.WalletAddress(), w.PrivateKeyStr(), w.PublicKeyStr())
 	// t := time.NewTicker(time.Second * 2)
 	// <-t.C
@@ -496,7 +496,7 @@ func (g *TxGenerator) check_balance(cltService *pb.RoboTraderClient, wallet stri
 	var err error
 	// get the current balance for the genesis wallet
 	balance_response, err = (*cltService).GetBalances(ctx, &pb.BalanceRequest{
-		Wallets: [][]byte{luna1crypto.AddressToBytes(wallet)},
+		Wallets: [][]byte{grape1crypto.AddressToBytes(wallet)},
 	})
 	cancel()
 	if err != nil {
@@ -654,7 +654,7 @@ func (g *TxGenerator) Generate(cltService *pb.RoboTraderClient, stop <-chan bool
 		//		for _, w := range wallets.Wallets {
 		fmt.Printf("Wallets %d\n", len(wallets.Wallets))
 		//		}
-		// goterators.ForEach(g.Wallets, func(i *luna1crypto.Wallet) {
+		// goterators.ForEach(g.Wallets, func(i *grape1crypto.Wallet) {
 		// 	walletSet.Insert(i.WalletAddress())
 		// })
 		// balanceSet := [][]byte{}
@@ -703,9 +703,9 @@ func TxGeneratorFromConfig() *TxGenerator {
 		return nil
 	}
 
-	configPath := filepath.Join(hd, config.LUNAONE_CFG_PATH)
+	configPath := filepath.Join(hd, config.GRAPEONE_CFG_PATH)
 
-	fd, err := os.Open(filepath.Join(hd, config.LUNAONE_CFG_PATH, config.GENERATOR_FILE))
+	fd, err := os.Open(filepath.Join(hd, config.GRAPEONE_CFG_PATH, config.GENERATOR_FILE))
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Configuration file does not exist
@@ -752,7 +752,7 @@ func TxGeneratorFromConfig() *TxGenerator {
 
 	err = viper.Unmarshal(&txConfig)
 	if err != nil {
-		fmt.Printf("Unable to decode into Lunapeer, %v", err)
+		fmt.Printf("Unable to decode into Grapepeer, %v", err)
 		return nil
 	}
 	fmt.Printf("%s", txConfig)

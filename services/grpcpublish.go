@@ -10,15 +10,15 @@ import (
 	"syscall"
 	"time" // fmt.Printf("\n[Transact] From %s $%d to %s move $%d\n", wsb.WalletAddress(), lastKnownBalance.Uint64(), wrb.WalletAddress(), delta.Uint64())
 
-	"github.com/VG-Grape/luna/app"
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/dag"
-	txqueue "github.com/VG-Grape/luna/queues"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/utils"
-	"github.com/VG-Grape/luna/wallet"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/app"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/dag"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/Grape-Chain/Grape-Dag/wallet"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/enescakir/emoji"
 	golog "github.com/ipfs/go-log/v2"
 	"google.golang.org/grpc"
@@ -43,14 +43,14 @@ type TxGeneration struct {
 	txrate   uint32
 	txmax    uint32
 	txcount  uint32
-	wallet   *luna1crypto.Wallet
+	wallet   *grape1crypto.Wallet
 	network  uint8
 }
 
 func (g *TxGeneration) Trade() (int64, error) {
 	tx := tx.NewTxv1(tx.ChainType(g.network))
 
-	var wrb *luna1crypto.Wallet = luna1crypto.NewWallet()
+	var wrb *grape1crypto.Wallet = grape1crypto.NewWallet()
 
 	var delta *big.Int = big.NewInt(1)
 
@@ -163,7 +163,7 @@ func (g *TxGeneration) generate() (float32, int32) {
 
 func (ps *RoboTraderServer) GenerateTx(ctx context.Context, req *pb.TxGenerateRequest) (*pb.TxGenerateResponse, error) {
 
-	genesisWallet := luna1crypto.LoadWallet(req.Publickey, req.Privatekey)
+	genesisWallet := grape1crypto.LoadWallet(req.Publickey, req.Privatekey)
 	if genesisWallet == nil {
 		logger.Errorf("[ERROR]Failed to load Genesis Wallet. pvt:%s|pub:%s\n", req.Privatekey, req.Publickey)
 	}

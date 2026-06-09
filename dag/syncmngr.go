@@ -6,13 +6,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	txqueue "github.com/VG-Grape/luna/queues"
-	sm "github.com/VG-Grape/luna/statemachine"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/utils"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	sm "github.com/Grape-Chain/Grape-Dag/statemachine"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/enescakir/emoji"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -89,7 +89,7 @@ func (s *DagSyncMngr) subEvHndlr(ctx context.Context, wg *sync.WaitGroup) {
 					}
 					for _, p := range peer_ais {
 						logger.Infof("[dag sync evt hdl] [+] Peer %s has joined the topic: %s", p.String(), s.SyncSub.rendezvous)
-						peerId := lunapeer.GetHost().ID().String()
+						peerId := grapepeer.GetHost().ID().String()
 						if peerId == p.ID.String() {
 							utils.ColorizeInfo(logger, "[dag sync evt hdl] [!] Our peer %s has joined %s. READY", peerId, s.SyncSub.rendezvous)
 						}
@@ -149,7 +149,7 @@ func (syncmgr *DagSyncMngr) syncPublish(ctx context.Context, wg *sync.WaitGroup)
 			continue
 		}
 		// seal the packet
-		envelope, err := record.Seal(syncTx, lunapeer.GetHost().Peerstore().PrivKey(lunapeer.GetHost().ID()))
+		envelope, err := record.Seal(syncTx, grapepeer.GetHost().Peerstore().PrivKey(grapepeer.GetHost().ID()))
 		if err != nil {
 			utils.ColorizeError(logger, "[dag sync] Failed to seal the record. %v", err)
 		}

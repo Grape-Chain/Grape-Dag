@@ -6,14 +6,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/tx"
-	"github.com/VG-Grape/luna/vm"
-	"github.com/VG-Grape/luna/wallet"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	"github.com/Grape-Chain/Grape-Dag/vm"
+	"github.com/Grape-Chain/Grape-Dag/wallet"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/ledongthuc/goterators"
 
-	luna_wallet "github.com/VG-Grape/luna/crypto"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/google/uuid"
 )
 
@@ -23,7 +23,7 @@ func newDag(dagConfig config.DagConfiguration) *Dag {
 	// generate this node's pseudowallet
 	//wg := dagWallet // NOTE: each node should have its own permanent wallet
 	// ccounter := newConfirmationCounter()
-	//dagWallet = luna1crypto.NewWallet() // should serialize and reuse
+	//dagWallet = grape1crypto.NewWallet() // should serialize and reuse
 	genesis_tx := tx.NewGenesisTxv1(chaintype, dagWallet)
 	amount, _ := big.NewInt(0).SetString(INITIAL_OFFERING, 10)
 	logger.Infof("Set genesis balance=%s for genesis account=%s", amount.String(), dagWallet.WalletAddress())
@@ -76,7 +76,7 @@ func GenerateWideDag(dagWidth uint8) *Dag {
 	// generate this node's pseudowallet
 	//wg := dagWallet // NOTE: each node should have its own permanent wallet
 	// ccounter := newConfirmationCounter()
-	dagWallet = luna1crypto.NewWallet() // should serialize and reuse
+	dagWallet = grape1crypto.NewWallet() // should serialize and reuse
 	genesis_tx := tx.NewGenesisTxv1(chaintype, dagWallet)
 	genesisAmount := big.NewInt(0)
 	genesisAmount, _ = genesisAmount.SetString(INITIAL_OFFERING, 10)
@@ -98,12 +98,12 @@ func GenerateWideDag(dagWidth uint8) *Dag {
 	ico, _ := big.NewInt(0).SetString(INITIAL_OFFERING, 10)
 	equal_amount := ico.Div(ico, big.NewInt(int64(dagWidth+1)))
 	// generate a collection of nodes distributed in time
-	exodusWallets := []*luna1crypto.Wallet{}
+	exodusWallets := []*grape1crypto.Wallet{}
 	// our second pin tx is exodus nodes
 	exodusNodes := []*Node{}
 	for count := uint8(0); count < dagWidth; count++ {
 		tx := tx.NewTxv1(chaintype)
-		exodusWallet := vm.GenesisWallets[int(count)%len(vm.GenesisWallets)].LunaCryptoWallet()
+		exodusWallet := vm.GenesisWallets[int(count)%len(vm.GenesisWallets)].GrapeCryptoWallet()
 		exodusWallets = append(exodusWallets, exodusWallet)
 		tx.GeneratePayment(
 			wallet.GenPaymentTransaction(dagWallet, exodusWallet, equal_amount),
@@ -179,8 +179,8 @@ func GenerateRandomDag(width uint8, height uint32) *Dag {
 	d := GenerateWideDag(width)
 	for ; height != 0; height-- {
 		t := tx.NewTxv1(tx.PRIVATE_TESTNET)
-		sw := luna_wallet.NewWallet()
-		rw := luna_wallet.NewWallet()
+		sw := grape_wallet.NewWallet()
+		rw := grape_wallet.NewWallet()
 		tt := wallet.NewTransaction(sw.PrivateKey(), sw.PublicKey(), sw.WalletAddress(), rw.WalletAddress(), big.NewInt(1))
 		t.GenerateRandom(1000, 1000, tt, uint8(tx.PRIVATE_TESTNET))
 		d.AddTxDag(NewDagNode(t, false))

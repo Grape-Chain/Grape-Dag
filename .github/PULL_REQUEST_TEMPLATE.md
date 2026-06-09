@@ -1,5 +1,5 @@
 <!--
-Thanks for contributing to Luna! Please fill in the sections below
+Thanks for contributing to Grape! Please fill in the sections below
 and remove any that do not apply.
 -->
 

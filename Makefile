@@ -1,6 +1,6 @@
 GO      ?= go
 DOCKER  ?= docker
-MODULE  := github.com/VG-Grape/luna
+MODULE  := github.com/Grape-Chain/Grape-Dag
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X $(MODULE)/version.Version=$(VERSION)
 
@@ -24,7 +24,7 @@ fmt:   ## Check formatting (fails if any file needs gofmt)
 lint: vet fmt ## Run all static checks
 
 docker: ## Build the peer Docker image
-	$(DOCKER) build -t luna-peer:$(VERSION) --build-arg VERSION=$(VERSION) -f deploy/Dockerfile .
+	$(DOCKER) build -t grape-peer:$(VERSION) --build-arg VERSION=$(VERSION) -f deploy/Dockerfile .
 
 compose-up: ## Bring up the local stack (peer + smc + mongo)
 	$(DOCKER) compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build

@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"sync"
 
-	"github.com/VG-Grape/luna/config"
+	"github.com/Grape-Chain/Grape-Dag/config"
 )
 
 /*

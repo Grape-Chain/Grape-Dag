@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 )
 
 func checkFsRequirements() (string, error) {
@@ -28,7 +28,7 @@ func checkFsRequirements() (string, error) {
 	return key_path, nil
 }
 
-func LoadWalletKey(wallet string) (luna1crypto.PrivateKey, luna1crypto.PublicKey) {
+func LoadWalletKey(wallet string) (grape1crypto.PrivateKey, grape1crypto.PublicKey) {
 	key_path, err := checkFsRequirements()
 	if err != nil {
 		logger.Errorf("Load wallet %s key err: %s", err.Error())
@@ -63,12 +63,12 @@ func LoadWalletKey(wallet string) (luna1crypto.PrivateKey, luna1crypto.PublicKey
 			keys := strings.Split(s, "|")
 			if len(keys) == 2 {
 				logger.Debugf("Successfully loaded the private key [%s] for wallet %s", s, wallet)
-				privkey, err := luna1crypto.ParsePrivateKey(keys[0])
+				privkey, err := grape1crypto.ParsePrivateKey(keys[0])
 				if err != nil {
 					logger.Errorf("Private key string to byte array. err: %s", err.Error())
 					return nil, nil
 				}
-				pubkey, err := luna1crypto.ParsePublicKey(keys[1])
+				pubkey, err := grape1crypto.ParsePublicKey(keys[1])
 				if err != nil {
 					logger.Errorf("Public key string to byte array. err: %s", err.Error())
 					return nil, nil

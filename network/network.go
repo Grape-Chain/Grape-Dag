@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	cfg "github.com/VG-Grape/luna/config"
-	lunapeer "github.com/VG-Grape/luna/peer"
-	"github.com/VG-Grape/luna/utils"
+	cfg "github.com/Grape-Chain/Grape-Dag/config"
+	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
+	"github.com/Grape-Chain/Grape-Dag/utils"
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/ledongthuc/goterators"
 	"github.com/libp2p/go-libp2p"
@@ -111,7 +111,7 @@ func prepareLocalAddresses(port int) ([]string, []int, error) {
 	// ifaceAddrs, _ := h.Network().InterfaceListenAddresses()
 	// // First, let's find all interesting private addresses
 	// pAddrs := multiaddr.FilterAddrs(ifaceAddrs, manet.IsPrivateAddr)
-	// r, _ := regexp.Compile(lunapeer.ADDR_REGEXP)
+	// r, _ := regexp.Compile(grapepeer.ADDR_REGEXP)
 	// for _, privAddr := range pAddrs {
 	// 	// We are skipping over 127. and 172. addresses
 	// 	if r.MatchString(privAddr.String()) {
@@ -123,7 +123,7 @@ func prepareLocalAddresses(port int) ([]string, []int, error) {
 	// 	options = append(options, libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/%s/tcp/%d", privAddr.String(), port)))
 	// 	options = append(options, libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/%s/tcp/%d/ws", privAddr.String(), port)))
 	// 	// if cfg.Bootstrap {
-	// 	// 	fmt.Printf("\nHost ID: %s/p2p/%s\n", privAddr.String(), lunapeer.GetHost().ID().Pretty())
+	// 	// 	fmt.Printf("\nHost ID: %s/p2p/%s\n", privAddr.String(), grapepeer.GetHost().ID().Pretty())
 	// 	// }
 	// }
 	// // Second, let's see if we have any public addresses assigned to us
@@ -163,7 +163,7 @@ var (
 
 func Init() {
 	// After the host has been created, list its interfaces
-	ListNetworkInterfaces(lunapeer.GetHost(), cfg.GetConfig().Host.Port, cfg.GetConfig().Host.Home)
+	ListNetworkInterfaces(grapepeer.GetHost(), cfg.GetConfig().Host.Port, cfg.GetConfig().Host.Home)
 
 	if cfg.GetConfig().Host.Home {
 		// There might be a dependency on host being created first before we start port mappings
@@ -224,7 +224,7 @@ func natPortMappings(port int) {
 			}
 			logger.Infof("[UPnP] NAT device external address: %s", eaddr.String())
 
-			id := fmt.Sprintf("lunaone-tcp-%s:%d", iaddr.String(), port)
+			id := fmt.Sprintf("grapeone-tcp-%s:%d", iaddr.String(), port)
 			eport, err := myNat.AddPortMapping(context.Background(), "tcp", port, id, time.Second*300)
 			if err != nil {
 				logger.Errorf("[UPnP] [E] Get device address: %s", err.Error())
@@ -242,7 +242,7 @@ func natPortMappings(port int) {
 			port_mappings[id] = rule_tcp
 			pm_mu.Unlock()
 			notifyAddPortMapping(&rule_tcp)
-			id = fmt.Sprintf("lunaone-udp-%s:%d", iaddr.String(), port)
+			id = fmt.Sprintf("grapeone-udp-%s:%d", iaddr.String(), port)
 			eport, err = myNat.AddPortMapping(context.Background(), "udp", port, id, time.Second*60)
 			if err != nil {
 				logger.Errorf("[UPnP] [E] Add port mapping: %s", err.Error())
@@ -294,7 +294,7 @@ func prepareUPnPAddresses(port int) (map[string]PortMapping, error) {
 		return nil, err
 	}
 	logger.Infof("[UPnP] NAT device external address: %s", eaddr.String())
-	id := fmt.Sprintf("lunaone-tcp-%d", port)
+	id := fmt.Sprintf("grapeone-tcp-%d", port)
 	eport, err := myNat.AddPortMapping(context.Background(), "tcp", port, id, time.Second*300)
 	if err != nil {
 		return nil, err
@@ -307,7 +307,7 @@ func prepareUPnPAddresses(port int) (map[string]PortMapping, error) {
 		eport: eport,
 		prot:  "tcp",
 	}
-	id = fmt.Sprintf("lunaone-udp-%d", port)
+	id = fmt.Sprintf("grapeone-udp-%d", port)
 	eport, err = myNat.AddPortMapping(context.Background(), "udp", port, id, time.Second*60)
 	if err != nil {
 		return nil, err

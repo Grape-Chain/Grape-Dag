@@ -14,8 +14,8 @@ import (
 	"math/big"
 	"os"
 
-	"github.com/VG-Grape/luna/tx/pb"
-	"github.com/VG-Grape/luna/crypto"
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/enescakir/emoji"
 	"golang.org/x/crypto/scrypt"
 	"google.golang.org/protobuf/proto"
@@ -42,7 +42,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	pk, err := luna1crypto.ParsePrivateKey(leader_pk)
+	pk, err := grape1crypto.ParsePrivateKey(leader_pk)
 	if err != nil {
 		fmt.Printf("%s\tleader %s private key is invalid %s\n", emoji.StopSign, emoji.Purse, err.Error())
 		flag.PrintDefaults()
@@ -206,7 +206,7 @@ func validate(fn string, secret string, pr_key string) ([]byte, error) {
 
 	payload_pb, _ := proto.Marshal(payload)
 
-	pk, err := luna1crypto.ParsePrivateKey(pr_key)
+	pk, err := grape1crypto.ParsePrivateKey(pr_key)
 	if err != nil {
 		fmt.Printf("%s\tleader %s private key is invalid %s\n", emoji.StopSign, emoji.Purse, err.Error())
 		flag.PrintDefaults()

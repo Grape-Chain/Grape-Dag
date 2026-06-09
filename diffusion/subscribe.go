@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/dag"
-	txqueue "github.com/VG-Grape/luna/queues"
-	"github.com/VG-Grape/luna/stats"
-	"github.com/VG-Grape/luna/tx"
-	utils "github.com/VG-Grape/luna/utils"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/dag"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	"github.com/Grape-Chain/Grape-Dag/stats"
+	"github.com/Grape-Chain/Grape-Dag/tx"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/google/uuid"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -87,7 +87,7 @@ func subscribe(subscriber *pubsub.Subscription,
 			continue
 		}
 		rec_bytes := msg.Data
-		rec := &tx.LunaTx{}
+		rec := &tx.GrapeTx{}
 		err = rec.UnmarshalRecord(rec_bytes)
 		if err != nil {
 			logger.Errorf("Failed to unmarshal tx. err: %s", err.Error())

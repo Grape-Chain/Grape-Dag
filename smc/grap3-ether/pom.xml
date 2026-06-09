@@ -5,13 +5,13 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>io.aplfintech.luna</groupId>
-        <artifactId>luna-smc</artifactId>
+        <groupId>io.aplfintech.grape</groupId>
+        <artifactId>grape-smc</artifactId>
         <version>0.1.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <groupId>io.aplfintech.luna.grap3</groupId>
+    <groupId>io.aplfintech.grape.grap3</groupId>
     <artifactId>grap3-ether</artifactId>
     <version>${grap3-ether.version}</version>
 
@@ -23,11 +23,11 @@
 
     <dependencies>
         <dependency>
-            <groupId>io.aplfintech.luna</groupId>
+            <groupId>io.aplfintech.grape</groupId>
             <artifactId>commons</artifactId>
         </dependency>
         <dependency>
-            <groupId>io.aplfintech.luna.grap3</groupId>
+            <groupId>io.aplfintech.grape.grap3</groupId>
             <artifactId>grap3-crypto</artifactId>
         </dependency>
         <dependency>

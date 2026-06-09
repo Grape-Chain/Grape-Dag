@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/VG-Grape/luna/config"
-	"github.com/VG-Grape/luna/discovery"
-	utils "github.com/VG-Grape/luna/utils"
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/discovery"
+	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/enescakir/emoji"
 	"github.com/google/uuid"
 	golog "github.com/ipfs/go-log/v2"
@@ -20,7 +20,7 @@ const (
 
 var (
 	logger     golog.EventLogger
-	lunaConfig *config.Lunapeer
+	grapeConfig *config.Grapepeer
 	txCount    uint64 = 0
 )
 
@@ -41,7 +41,7 @@ func Diffusion(ctx context.Context,
 	statsId uuid.UUID,
 	leader bool) (*pubsub.Topic, *pubsub.Subscription, pubsub.RelayCancelFunc) {
 
-	lunaConfig = config.GetConfig()
+	grapeConfig = config.GetConfig()
 
 	topic, err := gossipSub.Join(subscription)
 	if err != nil {
@@ -85,7 +85,7 @@ func Diffusion(ctx context.Context,
 		logger.Infof("Known topic: %s", t)
 	}
 
-	synch := lunaConfig.Peer.Qsync
+	synch := grapeConfig.Peer.Qsync
 	utils.ColorizeInfo(logger, "Diffusion:Topic event handler is running...")
 	go topicEventHandler(eh, subscription)
 	utils.ColorizeInfo(logger, "Diffusion:Publisher is running...")
