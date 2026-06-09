@@ -5,7 +5,7 @@ go 1.24.6
 require (
 	github.com/briandowns/spinner v1.23.0
 	github.com/deepmap/oapi-codegen v1.12.4
-	github.com/dominikbraun/graph v0.20.0
+	github.com/dominikbraun/graph v0.23.0
 	github.com/enescakir/emoji v1.0.0
 	github.com/ethereum/go-ethereum v1.12.0
 	github.com/go-chi/chi/v5 v5.0.8
