@@ -4,7 +4,9 @@ MODULE  := github.com/Grape-Chain/Grape-Dag
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X $(MODULE)/version.Version=$(VERSION)
 
-.PHONY: help build test lint vet fmt docker compose-up compose-down clean
+WALLET_DIR := web/wallet
+
+.PHONY: help build test lint vet fmt docker compose-up compose-down clean wallet wallet-clean
 
 help:  ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -22,6 +24,17 @@ fmt:   ## Check formatting (fails if any file needs gofmt)
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "Files need gofmt:"; echo "$$out"; exit 1; fi
 
 lint: vet fmt ## Run all static checks
+
+wallet: ## Build the web wallet signer (WebAssembly) into web/wallet/
+	@echo "building $(WALLET_DIR)/wallet.wasm"
+	GOOS=js GOARCH=wasm $(GO) build -ldflags="-s -w" -o $(WALLET_DIR)/wallet.wasm ./cmd/walletwasm
+	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WALLET_DIR)/wasm_exec.js 2>/dev/null \
+	  || cp "$$($(GO) env GOROOT)/misc/wasm/wasm_exec.js" $(WALLET_DIR)/wasm_exec.js
+	@gzip -9 -c $(WALLET_DIR)/wallet.wasm > $(WALLET_DIR)/wallet.wasm.gz
+	@ls -lh $(WALLET_DIR)/wallet.wasm $(WALLET_DIR)/wallet.wasm.gz | awk '{print "  " $$9 "  " $$5}'
+
+wallet-clean: ## Remove built wallet assets
+	rm -f $(WALLET_DIR)/wallet.wasm $(WALLET_DIR)/wallet.wasm.gz
 
 docker: ## Build the peer Docker image
 	$(DOCKER) build -t grape-peer:$(VERSION) --build-arg VERSION=$(VERSION) -f deploy/Dockerfile .

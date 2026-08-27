@@ -92,6 +92,7 @@ type PeerConfiguration struct {
 	Apikey          string //private key location and name for tls on api (if enabled)
 	Apicert         string // cert location and name for tls on api (if enabled)
 	ApiAuthDisabled bool   // run the REST API with no authentication (local development only)
+	Walletdir       string // directory holding the web wallet assets; empty disables the /wallet route when absent
 	StateServerPort int    // port of the gRPC server serving state for SMC VM
 	VmServerPort    int    // port of the smart contract vm server where send contracts to
 	Logging         int    // Log level: -1 Debug (through CLI only), 0 - Info, 1 - Warn, 2 - Error

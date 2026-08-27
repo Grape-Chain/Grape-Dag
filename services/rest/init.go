@@ -148,6 +148,20 @@ func (app *RestAPIConfig) routes() http.Handler {
 	mux.HandleFunc("/events", ws.EventsEndpoint)
 	mux.HandleFunc("/eth/rpc", rpc.RpcHandler())
 
+	// the bundled testnet wallet, when its assets have been built
+	if dir := walletDir(); dir != "" {
+		if index, wasm := walletAssetsPresent(dir); index {
+			if !wasm {
+				logger.Warnf("[rest api] Wallet assets in %s are missing wallet.wasm - run 'make wallet'", dir)
+			}
+			mux.Handle("/wallet", http.RedirectHandler("/wallet/", http.StatusMovedPermanently))
+			mux.Handle("/wallet/*", http.StripPrefix("/wallet/", walletHandler(dir)))
+			logger.Infof("[rest api] Serving the web wallet from %s at /wallet/", dir)
+		} else {
+			logger.Infof("[rest api] No web wallet assets in %s - skipping /wallet (run 'make wallet' to build them)", dir)
+		}
+	}
+
 	finalHandler := api.HandlerFromMuxWithBaseURL(s, mux, "/api/rest")
 	logger.Info("[rest api] Successfully configured route handlers")
 	return finalHandler

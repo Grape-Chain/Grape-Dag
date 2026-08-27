@@ -203,6 +203,7 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("peer.network", 2)
 	viper.SetDefault("peer.snapshotsync", true)
 	viper.SetDefault("peer.apiauthdisabled", false)
+	viper.SetDefault("peer.walletdir", "web/wallet")
 	viper.SetDefault("dag.algorithm", "default")
 	viper.SetDefault("dag.alpha", 0.5)
 	viper.SetDefault("dag.approvetx", 2)

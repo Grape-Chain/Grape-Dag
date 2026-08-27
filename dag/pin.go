@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
@@ -31,47 +32,68 @@ import (
 var storageNode NodeTxPin
 
 type NodeTxPin struct {
-	NodeType       int
-	pins           []*pb.TxPin
-	mu             sync.Mutex
-	last           string
-	ready          bool
+	NodeType int
+	pins     []*pb.TxPin
+	mu       sync.Mutex
+	last     string
+	ready    bool
+	// view - an immutable copy of the chain published on every mutation, so
+	// readers (REST, eth-RPC, balance lookups) never take p.mu. Taking the
+	// mutex on the read path would serialise every query behind pin
+	// application, which re-executes smart contracts against the VM over gRPC
+	// and can therefore block for a long time - or indefinitely, if the VM is
+	// unreachable.
+	view           atomic.Pointer[[]*pb.TxPin]
 	downloadedPins chan *pb.TxPin
 }
 
-func (p *NodeTxPin) GetPin(number int) *pb.TxPin {
-	p.lock("GetPin")
-	defer p.unlock()
-	return p.unsafe_getPin(number)
+// chain - the current published view of the pin chain. Lock-free; the returned
+// slice is never mutated in place, only replaced.
+func (p *NodeTxPin) chain() []*pb.TxPin {
+	if v := p.view.Load(); v != nil {
+		return *v
+	}
+	return nil
 }
 
-// unsafe_getPin - caller must hold p.mu
-func (p *NodeTxPin) unsafe_getPin(number int) *pb.TxPin {
-	if len(p.pins) > 0 {
-		if number >= len(p.pins) || number < 0 {
-			return nil
-		}
-		directPin := p.pins[number]
-		if directPin.PinNumber == int64(number) {
-			return directPin
-		} else {
-			logger.Warnf("Gap in pins detected. Pin with number %d was found in position %d", directPin.PinNumber, number)
-			for _, pin := range p.pins {
-				if pin.PinNumber == int64(number) {
-					return pin
-				}
-			}
-			return nil
-		}
+// unsafe_publish - republish the reader view after mutating p.pins.
+// Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_publish() {
+	cp := make([]*pb.TxPin, len(p.pins))
+	copy(cp, p.pins)
+	p.view.Store(&cp)
+}
 
+// unsafe_appendPin - add a pin to the chain and republish the reader view.
+// Every mutation of p.pins must go through here (or call unsafe_publish
+// itself), otherwise readers keep seeing a stale chain. Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_appendPin(pin *pb.TxPin) {
+	p.pins = append(p.pins, pin)
+	p.unsafe_publish()
+}
+
+func (p *NodeTxPin) GetPin(number int) *pb.TxPin {
+	pins := p.chain()
+	// Prefer the pin whose number matches. Indexing by position only works
+	// while the chain starts at zero: a node that joined via a balance snapshot
+	// holds pins numbered from wherever the leader was.
+	if number >= 0 && number < len(pins) && pins[number].PinNumber == int64(number) {
+		return pins[number]
+	}
+	for _, pin := range pins {
+		if pin.PinNumber == int64(number) {
+			return pin
+		}
 	}
 	return nil
 }
 
 func (p *NodeTxPin) GetLastPin() *pb.TxPin {
-	p.lock("GetLastPin")
-	defer p.unlock()
-	return p.unsafe_getLastPin()
+	pins := p.chain()
+	if len(pins) > 0 {
+		return pins[len(pins)-1]
+	}
+	return nil
 }
 
 // unsafe_getLastPin - caller must hold p.mu
@@ -93,8 +115,10 @@ func (p *NodeTxPin) unsafe_nextPinNumber() int64 {
 }
 
 func (p *NodeTxPin) unlock() {
-	p.mu.Unlock()
+	// clear the diagnostic before releasing, or concurrent lock/unlock pairs
+	// race on the field itself
 	p.last = ""
+	p.mu.Unlock()
 }
 
 func (p *NodeTxPin) lock(caller string) {
@@ -157,18 +181,20 @@ func (p *NodeTxPin) set(genesis *Node, wallet string) {
 	pin.PinNumber = p.unsafe_nextPinNumber()
 	pin.SignTx(_dag_.Wallet())
 
-	p.pins = append(p.pins, pin)
+	p.unsafe_appendPin(pin)
+	// The genesis site reaches a pin without going through the confirmed pool,
+	// so record it as harvested here: otherwise the first two sites to approve
+	// genesis promote it and it lands in a second pin.
+	if confirmationCounter != nil {
+		confirmationCounter.markHarvested(genesis.id.id)
+	}
 }
 
 // snapshotPins - a shallow copy of the pin chain, taken under the pin lock.
 // Readers iterate the copy so that an append (which may reallocate the backing
 // array) cannot race them.
 func (p *NodeTxPin) snapshotPins() []*pb.TxPin {
-	p.lock("snapshotPins")
-	defer p.unlock()
-	out := make([]*pb.TxPin, len(p.pins))
-	copy(out, p.pins)
-	return out
+	return p.chain()
 }
 
 func (p *NodeTxPin) getLast() *pb.TxPin {
@@ -219,11 +245,13 @@ func (p *NodeTxPin) ClosePinDownloading() {
 //	*big.Int - if wallet address is found, return is last known balance
 //	error - if an error occurs, such as there is no information on the wallet
 func (p *NodeTxPin) unsafe_getLatestBalance(wallet_address string) (*big.Int, error) {
-	// p.lock("getLatestBalance")
-	// defer p.unlock()
+	// Reads the published view rather than p.pins, so callers that hold only
+	// their own lock (the wallet cache, on the payment hot path) do not race
+	// the appends made under p.mu.
+	pins := p.chain()
 	// lookups take place in reverce order to that we always find the latest first
-	for ri := len(p.pins) - 1; ri >= 0; ri-- {
-		if v, ok := p.pins[ri].Balance.Balance[wallet_address]; ok {
+	for ri := len(pins) - 1; ri >= 0; ri-- {
+		if v, ok := pins[ri].Balance.Balance[wallet_address]; ok {
 			return big.NewInt(0).SetBytes(v), nil
 		}
 	}
@@ -233,6 +261,9 @@ func (p *NodeTxPin) unsafe_getLatestBalance(wallet_address string) (*big.Int, er
 func (p *NodeTxPin) insertIfNotFound(ptx *pb.TxPin) {
 	p.lock("inserIfNotFound")
 	defer p.unlock()
+	// this function splices p.pins in several branches; republish the reader
+	// view once, whichever branch ran
+	defer p.unsafe_publish()
 	logger.Infof("%s  ~ %s Inserting pin tx \nS:%s P:%s",
 		emoji.RoundPushpin,
 		emoji.ClockwiseVerticalArrows,
@@ -470,7 +501,7 @@ func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
 	pin.SignTx(dagWallet)
 
 	// append the latest pinning transaction to the slice of all pinning tx
-	p.pins = append(p.pins, pin)
+	p.unsafe_appendPin(pin)
 	// b, _ := pin.MarshalJSON()
 	// logger.Infof("%s", string(b))
 	return nil
@@ -608,9 +639,11 @@ func (pin *NodeTxPin) runSmartContractStageFullNode(balances map[string][]byte, 
 }
 
 func (p *NodeTxPin) CurrentHeight() int {
-	p.lock("CurrentHeight")
-	defer p.unlock()
-	return p.unsafe_currentHeight()
+	pins := p.chain()
+	if len(pins) == 0 {
+		return 0
+	}
+	return int(pins[len(pins)-1].PinNumber)
 }
 
 // unsafe_currentHeight - the pin number at the head of the chain.
@@ -623,12 +656,11 @@ func (p *NodeTxPin) unsafe_currentHeight() int {
 }
 
 func (p *NodeTxPin) CurrentTS() int64 {
-	p.lock("CurrentTS")
-	defer p.unlock()
-	if len(p.pins) == 0 {
+	pins := p.chain()
+	if len(pins) == 0 {
 		return 0
 	}
-	return p.pins[len(p.pins)-1].Ts.AsTime().Unix()
+	return pins[len(pins)-1].Ts.AsTime().Unix()
 }
 
 func (p *NodeTxPin) UpdateIfValid(wallet string, amount *big.Int) bool {

@@ -523,7 +523,7 @@ func applyPin(pin *pb.TxPin) bool {
 	}
 	_pins_.SyncPins(pin)
 	walletCache.copyFrom(walletCacheConfirmed)
-	_pins_.pins = append(_pins_.pins, pin)
+	_pins_.unsafe_appendPin(pin)
 	return true
 }
 
@@ -544,27 +544,42 @@ func processPin(pin *pb.TxPin) {
 		logger.Infof("[Gap detected] Pin catch-up already in progress, ignoring this announce")
 		return
 	}
-	defer pinGapSyncing.Store(false)
 
+	// Open the channel and request the missing range before handing off, so the
+	// response cannot arrive before there is somewhere to put it.
 	_pins_.openPinDownloading()
+	downloads := _pins_.downloadedPins
 	if err := sendPindDownloadRequest(int(currentHeight) + 1); err != nil {
+		pinGapSyncing.Store(false)
 		logger.Errorf("[Gap detected] downloading missing pins to catch up with leader: %s, will try again on next leader's new pin announce", err.Error())
 		return
 	}
 
+	// The catch-up must not run on the caller's goroutine. processPin is called
+	// from the sync subscriber loop, and that same loop is what dispatches the
+	// leader's download response into this channel - waiting here would block
+	// the producer and guarantee the timeout.
+	go drainDownloadedPins(downloads)
+}
+
+// drainDownloadedPins - apply the pins the leader sent for a gap, in order.
+// The producer (handleDownloadedPinsFromLeader) closes the channel when it has
+// queued the whole batch, which is what ends this loop.
+func drainDownloadedPins(downloads chan *pb.TxPin) {
+	defer pinGapSyncing.Store(false)
 	timer := time.After(time.Second * 120)
-	loggedWhenFirstDownloadedPinReceived := false
+	logged := false
 pinProcessing:
 	for {
 		select {
-		case downloadedPin, ok := <-_pins_.downloadedPins:
+		case downloadedPin, ok := <-downloads:
 			if !ok {
 				logger.Infof("[Gap detected] No downloaded pins left to process")
 				break pinProcessing
 			}
-			if !loggedWhenFirstDownloadedPinReceived {
+			if !logged {
 				logger.Infof("[Gap detected] Start downloaded pin processing")
-				loggedWhenFirstDownloadedPinReceived = true
+				logged = true
 			}
 			if !applyPin(downloadedPin) {
 				logger.Errorf("[Gap detected] Downloaded pin=%d is out of order, exit downloading loop", downloadedPin.PinNumber)

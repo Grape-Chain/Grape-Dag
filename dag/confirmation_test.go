@@ -177,3 +177,33 @@ func TestConfirmationCounterConcurrentAccess(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// Genesis reaches the first pin without going through the confirmed pool, so it
+// has to be recorded as harvested explicitly - otherwise the first two sites to
+// approve it promote it and it lands in a second pin.
+func TestMarkHarvestedKeepsASiteOutOfLaterPins(t *testing.T) {
+	c := newConfirmationCounter()
+	genesis := newTestSite()
+	c.add(genesis)
+
+	c.markHarvested(genesis.id.id)
+
+	if c.isTip(genesis.id.id) {
+		t.Fatalf("harvested genesis is still a tip")
+	}
+	approve(c, genesis, 3)
+	if got := len(c.pop()); got != 0 {
+		t.Fatalf("harvested genesis was confirmed again: got %d sites", got)
+	}
+}
+
+func TestMarkHarvestedIsIdempotent(t *testing.T) {
+	c := newConfirmationCounter()
+	s := newTestSite()
+	c.add(s)
+	c.markHarvested(s.id.id)
+	c.markHarvested(s.id.id)
+	if c.isTip(s.id.id) {
+		t.Fatalf("site returned to the tip set")
+	}
+}

@@ -306,7 +306,7 @@ func handleLatestBalances(rec *tx.Syncv1) error {
 	if err != nil {
 		return errors.New("unmarshaling latest pin from leader withing BalanceSnapshot response: " + err.Error())
 	}
-	p.pins = append(p.pins, &latestPinFromLeader)
+	p.unsafe_appendPin(&latestPinFromLeader)
 
 	chMsg, _ := rec.Details[0].UnmarshalNew()
 	chIntValue := chMsg.(*wrapperspb.Int64Value)

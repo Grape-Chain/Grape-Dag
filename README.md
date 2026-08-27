@@ -40,6 +40,18 @@ This brings up the full local development stack:
 
 The leader's REST endpoint listens on `https://localhost:8010`.
 
+### Web wallet
+
+```sh
+make wallet
+```
+
+Then open `https://localhost:8010/wallet/` for a browser wallet that creates
+accounts, shows balances and history, and sends payments. Signing runs locally
+in WebAssembly built from this repository's own `crypto`/`tx` packages, so the
+browser produces exactly the bytes the node validates and the private key never
+leaves the page. See [`web/wallet/README.md`](web/wallet/README.md).
+
 A few example calls against the running stack:
 
 ```sh
@@ -57,6 +69,7 @@ image builds), `make`.
 make build      # Go binaries in ./bin/
 make test       # Go unit tests with -race
 make lint       # gofmt + go vet
+make wallet     # build the web wallet signer (WebAssembly)
 make docker     # build the peer image (deploy/Dockerfile)
 
 # build the SMC VM
@@ -82,6 +95,7 @@ grape/
 ├── vm/                  smart-contract VM client (gRPC to grape-smc)
 ├── smc/                 JVM-based smart-contract VM (Maven multi-module)
 ├── examples/            ready-to-run demo scripts
+├── web/wallet/          testnet web wallet served by the peer at /wallet/
 ├── deploy/              Dockerfile, docker-compose, sample env
 └── config/              default YAML configuration
 ```
@@ -102,6 +116,7 @@ See `deploy/.env.example` for the required environment variables.
 - Network setup notes: [`network/readme.md`](network/readme.md)
 - Database setup: [`db/postgres/README.md`](db/postgres/README.md)
 - Smart-contract VM: [`smc/README.md`](smc/README.md)
+- Web wallet: [`web/wallet/README.md`](web/wallet/README.md)
 
 A consolidated `docs/` tree (architecture, operations guide,
 contributor design notes) lands in a future release.

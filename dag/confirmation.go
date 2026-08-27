@@ -43,6 +43,27 @@ func (c *ConfirmationCounter) getTips() []*Node {
 	return tipNodes
 }
 
+// resolveSite - look a site up in the dag when the counter has lost track of it.
+// Kept separate so pop() does not depend on the dag lock being free: getById
+// takes only the lookup RWMutex, never dag.mux.
+func resolveSite(id uuid.UUID) *Node {
+	if _dag_ == nil {
+		return nil
+	}
+	return _dag_.getById(id, true)
+}
+
+// markHarvested - record that a site has been written into a pin, so it cannot
+// re-enter the tip set and be confirmed (and, once fees land, paid) twice. Used
+// for sites that reach a pin without going through pop(), i.e. genesis.
+func (c *ConfirmationCounter) markHarvested(id uuid.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.harvested[id] = struct{}{}
+	delete(c.tips, id)
+	delete(c.cache, id)
+}
+
 func newConfirmationCounter() *ConfirmationCounter {
 	return &ConfirmationCounter{
 		mu:        sync.Mutex{},
@@ -83,10 +104,18 @@ func (c *ConfirmationCounter) pop() []*Node {
 		id := i.(uuid.UUID)
 		node, ok := c.cache[id]
 		if !ok || node == nil {
-			// nothing known about this site: dropping it here keeps a nil out of
-			// the pin tx, where it would be dereferenced while sorting sites
-			logger.Warnf("[confirmation] Confirmed site %s is not in cache, skipping", id.String())
-			return
+			// Not every insert path registers a site with the counter (a site
+			// relinked by insertMissing, or an approval target resolved out of a
+			// past pin, arrives as a fresh *Node), so fall back to the dag before
+			// giving up. Returning a nil here would be dereferenced while the pin
+			// builder sorts sites by time; dropping it silently would lose a
+			// confirmed site instead.
+			if resolved := resolveSite(id); resolved != nil {
+				node = resolved
+			} else {
+				logger.Warnf("[confirmation] Confirmed site %s is in neither the counter cache nor the dag, skipping", id.String())
+				return
+			}
 		}
 		if _, done := c.harvested[id]; done {
 			return
