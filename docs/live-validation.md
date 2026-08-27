@@ -324,3 +324,60 @@ not: recovery falls back to replaying the whole chain when there is no snapshot,
 and that fallback was quietly covering for the live bug. The tests now shut down
 the way the node does, so the snapshot recovery trusts is the one the run
 produced.
+
+## Authorised commit transactions, on two peers
+
+Run after the pin-authority and deterministic-hash work, because both change
+whether a commit transaction is applied at all — a mistake there stops the chain
+rather than degrading it, and no unit test can prove the wiring.
+
+Leader A and joining peer B, as above. What the logs showed:
+
+```
+A  [pin auth] Adopting 940d33cc..ff2057e3 as the only signer whose commit
+   transactions this node will apply, learned from the chain-opening statement
+B  [pin auth] Adopting 940d33cc..ff2057e3 ...          (from A's snapshot)
+B  [No gaps detected] Process latest pin from leader as our latest pin=8
+B  [slice] Settled 9 site(s) into pin=8; live graph now holds 2 site(s),
+   0 edge(s), archive 54
+```
+
+- B adopted A's signing key from the snapshot it was given on joining, and then
+  applied every commit transaction A produced: **eight commit transactions, zero
+  refusals**.
+- Confirmation, tip selection and slicing all ran on the new rules: the live
+  graph stayed at 2 sites while the archive grew to 54.
+- `ledgercheck` on both stores reported identical chains and conserved value.
+
+The one discrepancy is the pre-existing one recorded above: the faucet wallet's
+*stated* balance is 5 below what its transactions imply, because a commit
+transaction's balance map is written from the live cache and can include
+transactions that were still unconfirmed. Nodes rebuild balances by replaying
+settled payments, so it does not affect them.
+
+### Driving load: three things that waste an afternoon
+
+`txgen` needs its own `txgenerator.yml` in the node's `~/.grap3`, and three
+settings in it are not optional even though nothing complains when they are
+missing:
+
+```yaml
+generator:
+  trader: true       # without this, genesis and trader modes both fall through
+                     # to a random-wallet generator whose payments are all
+                     # correctly rejected for insufficient funds
+  network: 2         # must match peer.network, or every tx is refused as
+                     # coming from a different network
+  wallet: 0x...      # the faucet wallet from the node's dag config, with its
+  publickey: ...     # keys - otherwise the sender has no balance
+  privatekey: ...
+```
+
+With `trader` unset the node logs a steady stream of `Invalid balance ... Ignore`
+and nothing ever enters the graph, which looks exactly like a broken node.
+
+Confirmation also needs more load than it first appears: at around 11 sites
+nothing had confirmed yet and `* [PIN] sites: 0` repeated every five seconds. By
+about 60 sites commit transactions were forming steadily with 5, 6 and 9 sites
+each. Enable debug logging (`-d`) to see those lines at all — the pin builder and
+the slicer both log at debug level.
