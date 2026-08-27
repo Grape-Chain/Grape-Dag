@@ -113,6 +113,13 @@ func chainStartCommitted(pin *pb.TxPin) {
 	if pin == nil {
 		return
 	}
+	// The opening statement decides whose commit transactions this node will
+	// apply for the rest of its life, so it is the one place where getting the
+	// signer wrong cannot be recovered from later. See dag/pinauth.go.
+	if err := authoriseChainStart(pin); err != nil {
+		logger.Errorf("[pin auth] Refusing to open a chain: %s", err.Error())
+		return
+	}
 	appendPin(pin, "chainstart")
 	applyStart := time.Now()
 	settled.applyPin(pin)

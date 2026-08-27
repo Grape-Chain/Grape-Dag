@@ -961,10 +961,15 @@ func (pin *NodeTxPin) SyncPins(recentPin *pb.TxPin) {
 		balances[grape1crypto.BytesToAddress(payment.Tx.Sender)] = senderBalance.Bytes()
 		balances[grape1crypto.BytesToAddress(payment.Tx.Recepient)] = receiverBalance.Bytes()
 	}
-	if config.GetConfig().Peer.NodeType == 0 {
+	// peerConfig, not config.GetConfig(): the package caches the peer
+	// configuration at Init and everything else here reads that copy. Reaching
+	// for the global instead is a nil dereference on any path that runs before
+	// or without a loaded configuration - which is how this function panicked
+	// the first time a test drove a commit transaction through it.
+	if peerConfig.NodeType == 0 {
 		logger.Info("Dump new balances to vm state store")
 		pin.runSmartContractStageFullNode(balances, recentPin)
-	} else if config.GetConfig().Peer.NodeType == 1 {
+	} else if peerConfig.NodeType == 1 {
 		//here balances from diffs are dumping to vm.state store
 		//We take balances from latest pin because peernode doesn't proceed smc
 		vm.SyncBalances(balances)

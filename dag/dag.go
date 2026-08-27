@@ -430,6 +430,12 @@ func Init() {
 	walletCacheConfirmed = newWalletCache()
 	dagWallet = initDagWallet(dagConfig)
 	confirmationCounter = newConfirmations(dagConfig)
+	if err := configurePinSigners(dagConfig.Pinsigners); err != nil {
+		// Starting with a misread signer list would mean starting with no
+		// authorised signer, which is the state this check exists to prevent.
+		logger.Fatalf("[pin auth] %s", err.Error())
+	}
+	logPinAuthority()
 	logTipSelection()
 	sliceArchive = newRamArchive()
 	_pins_ = newNodeTxPin()

@@ -143,7 +143,12 @@ type DagConfiguration struct {
 	// is irrevocably confirmed, in permille. 1000 is the technical paper's
 	// literal 100%.
 	Confirmshare uint16
-	Slicing      bool // Move sites settled by a commit transaction out of the live graph into the slice archive
+	// Pinsigners - public keys, hex, comma separated, whose commit transactions
+	// this node will apply. Empty means the signer is adopted from the
+	// chain-opening statement instead, which trusts whichever peer supplied the
+	// chain. See dag/pinauth.go.
+	Pinsigners string
+	Slicing    bool // Move sites settled by a commit transaction out of the live graph into the slice archive
 }
 
 type TxConfiguration struct {

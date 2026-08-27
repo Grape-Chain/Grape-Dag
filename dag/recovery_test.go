@@ -7,12 +7,18 @@ import (
 	"testing"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/store"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// testPinWallet - signs the commit transactions the recovery tests store, so
+// they carry a real signature and go through the same authorisation the node
+// applies to anything off the wire.
+var testPinWallet = grape_wallet.NewWallet()
 
 // recoveryFixture - the globals recovery touches, restored on cleanup.
 func recoveryFixture(t testing.TB, dir string) store.Store {
@@ -21,6 +27,12 @@ func recoveryFixture(t testing.TB, dir string) store.Store {
 	prevArchive, prevCounter, prevPins := sliceArchive, confirmationCounter, _pins_
 	prevCache, prevConfirmed, prevStore := walletCache, walletCacheConfirmed, ledgerStore
 	prevSettled := settled
+	prevAuth := pinAuth
+
+	pinAuth = newPinAuthority()
+	if err := configurePinSigners(hex.EncodeToString(*testPinWallet.PublicKey())); err != nil {
+		t.Fatalf("configuring the test signer: %s", err.Error())
+	}
 
 	dagConfig = config.DagConfiguration{Slicing: true, Approvetx: 2}
 	peerConfig = config.PeerConfiguration{Network: 2}
@@ -45,6 +57,7 @@ func recoveryFixture(t testing.TB, dir string) store.Store {
 		sliceArchive, confirmationCounter, _pins_ = prevArchive, prevCounter, prevPins
 		walletCache, walletCacheConfirmed, ledgerStore = prevCache, prevConfirmed, prevStore
 		settled = prevSettled
+		pinAuth = prevAuth
 	})
 	return s
 }
@@ -76,7 +89,6 @@ func paymentSite(n int, from, to byte, amount int64) *Node {
 func storedPin(number int64, prev []byte, balances map[string]string, sites ...*Node) *pb.TxPin {
 	pin := pb.NewTxPin(prev)
 	pin.PinNumber = number
-	pin.Sign = []byte{byte(number + 1)}
 	pin.Ts = timestamppb.Now()
 	for w, b := range balances {
 		v, _ := new(big.Int).SetString(b, 10)
@@ -86,6 +98,10 @@ func storedPin(number int64, prev []byte, balances map[string]string, sites ...*
 		pin.Sites = append(pin.Sites, &pb.SiteID{Id: s.id.id[:]})
 		pin.Nodes = append(pin.Nodes, s.ToPbNode())
 	}
+	// Signed last, so the signature covers everything above - which is what
+	// makes these fixtures pass the same authorisation as a commit transaction
+	// off the wire, rather than a placeholder that only the tests accept.
+	pin.SignTx(testPinWallet)
 	return pin
 }
 

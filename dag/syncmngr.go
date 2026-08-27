@@ -506,14 +506,47 @@ func (syncmgr *DagSyncMngr) syncSubscribe(ctx context.Context, pid peer.ID, wg *
 // announcements do not run overlapping downloads against the same chain.
 var pinGapSyncing atomic.Bool
 
-// applyPin - apply a pin that continues our chain. Takes the pin lock only for
-// the validation-and-mutation window, never across a wait, so REST/eth-RPC
-// reads and the pin ticker are not blocked while we catch up.
+// pinApplyMu - serialises whole applications of a commit transaction.
+//
+// Not the same job as the pin lock. The pin lock protects the chain slice, and
+// it must not be held while the settled sites are sliced out of the graph,
+// because the insert path takes the graph lock and then the pin lock to resolve
+// an approval target - holding them in the opposite order here is a deadlock.
+// But the two halves of an application still have to stay in order, since the
+// settled ledger and the store are both keyed on pin number and will refuse
+// anything that is not the next one. So the halves are serialised here and the
+// pin lock is taken only for the half that needs it.
+var pinApplyMu sync.Mutex
+
+// applyPin - apply a commit transaction that continues our chain.
 //
 // returns:
 //
 //	bool - true if the pin was applied
 func applyPin(pin *pb.TxPin) bool {
+	pinApplyMu.Lock()
+	defer pinApplyMu.Unlock()
+
+	// Before anything else: is this from a signer whose commit transactions this
+	// node applies? A commit transaction rewrites balances and discards the
+	// sites it names, so an unauthorised one is not a bad input, it is an
+	// attacker settling the ledger. See dag/pinauth.go.
+	if err := authorisePin(pin); err != nil {
+		logger.Errorf("[pin apply] Refusing a commit transaction: %s", err.Error())
+		return false
+	}
+	if !appendPinUnderLock(pin) {
+		return false
+	}
+	// Outside the pin lock, on purpose - see pinApplyMu.
+	pinCommitted(pin)
+	return true
+}
+
+// appendPinUnderLock - the half of an application that mutates the chain. Takes
+// the pin lock only for that window, never across a wait, so REST and eth-RPC
+// reads and the pin ticker are not blocked while we catch up.
+func appendPinUnderLock(pin *pb.TxPin) bool {
 	_pins_.LockPin()
 	defer _pins_.UnlockPin()
 	expected := _pins_.unsafe_currentHeight() + 1
@@ -524,7 +557,6 @@ func applyPin(pin *pb.TxPin) bool {
 	_pins_.SyncPins(pin)
 	walletCache.copyFrom(walletCacheConfirmed)
 	_pins_.unsafe_appendPin(pin)
-	pinCommitted(pin)
 	return true
 }
 

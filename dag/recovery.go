@@ -78,6 +78,19 @@ func recoverFromStore() (bool, error) {
 		}
 		lastSign = pin.Sign
 
+		// Re-establish who may settle this chain. Recovery bypasses applyPin, so
+		// without this a restarted node would come back with no authorised
+		// signer and refuse every live commit transaction that followed. The
+		// stored chain is this node's own history, so the opening statement is
+		// the right thing to take it from - and when dag.pinsigners names the
+		// signers, a stored chain that does not match them is refused here
+		// rather than quietly continued.
+		if loaded == 0 {
+			if err := authoriseChainStart(pin); err != nil {
+				return fmt.Errorf("the stored chain's opening commit transaction is not one this node may apply: %w", err)
+			}
+		}
+
 		_pins_.lock("recover")
 		_pins_.unsafe_appendPin(pin)
 		_pins_.unlock()
