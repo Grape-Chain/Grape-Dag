@@ -18,6 +18,7 @@ import (
 	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/Grape-Chain/Grape-Dag/smc"
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/utils"
@@ -434,6 +435,7 @@ func (p *NodeTxPin) getById(id uuid.UUID) *Node {
 //	error if a balancing error occurs
 
 func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
+	defer stats.Time(stats.PinBuild)()
 	p.lock("add")
 	defer p.unlock()
 	var prev []byte = []byte{}

@@ -1,6 +1,9 @@
 package dag
 
 import (
+	"time"
+
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/store"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 )
@@ -60,18 +63,42 @@ func pinCommitted(pin *pb.TxPin) {
 	if pin == nil {
 		return
 	}
-	if err := ledgerStore.AppendPin(pin, peerConfig.Network); err != nil {
-		// Worth being loud about: from here on the node's disk state is behind
-		// its memory, so a restart will resync more than it should have to.
-		logger.Errorf("[store] Failed to persist pin=%d: %s", pin.PinNumber, err.Error())
-	}
+	commitStart := time.Now()
+	appendPin(pin, "pin")
 	// Fold it into the settled balances before the sites leave the graph: this
 	// is the arithmetic a restarting node reproduces.
+	applyStart := time.Now()
 	settled.applyPin(pin)
+	stats.Since(stats.PinSettledApply, applyStart)
 	if pin.PinNumber == 0 || pin.PinNumber%snapshotEveryPins == 0 {
 		snapshotSettledBalances()
 	}
 	sliceAppliedPin(pin)
+	// Observed before the gauge sample below, which takes a lock this function
+	// does not otherwise need: a lock wait on the ingress path is not part of
+	// the cost of committing, and folding it in would show up as a commit
+	// regression whenever tip selection got slower.
+	stats.Since(stats.PinCommit, commitStart)
+
+	stats.PinsCommitted.Inc()
+	stats.PinSites.Observe(float64(len(pin.Sites)))
+	stats.SitesConfirmed.Add(float64(len(pin.Sites)))
+	stats.PinHeight.Set(float64(pin.PinNumber))
+	refreshSizeGauges()
+}
+
+// appendPin - the durability boundary, timed on its own because it is the one
+// step that waits on the disk.
+func appendPin(pin *pb.TxPin, what string) {
+	start := time.Now()
+	err := ledgerStore.AppendPin(pin, peerConfig.Network)
+	stats.Since(stats.PinStoreAppend, start)
+	if err != nil {
+		// Worth being loud about: from here on the node's disk state is behind
+		// its memory, so a restart will resync more than it should have to.
+		stats.StoreErrors.WithLabelValues("append_" + what).Inc()
+		logger.Errorf("[store] Failed to persist pin=%d: %s", pin.PinNumber, err.Error())
+	}
 }
 
 // chainStartCommitted - a commit transaction that opens this node's chain: the
@@ -86,11 +113,12 @@ func chainStartCommitted(pin *pb.TxPin) {
 	if pin == nil {
 		return
 	}
-	if err := ledgerStore.AppendPin(pin, peerConfig.Network); err != nil {
-		logger.Errorf("[store] Failed to persist the opening pin=%d: %s", pin.PinNumber, err.Error())
-	}
+	appendPin(pin, "chainstart")
+	applyStart := time.Now()
 	settled.applyPin(pin)
+	stats.Since(stats.PinSettledApply, applyStart)
 	snapshotSettledBalances()
+	stats.PinHeight.Set(float64(pin.PinNumber))
 }
 
 // snapshotSettledBalances - write the settled balances out, so recovery has a
@@ -100,7 +128,9 @@ func snapshotSettledBalances() {
 	if upTo < 0 || len(balances) == 0 {
 		return
 	}
+	defer stats.Time(stats.PinBalanceSnapshot)()
 	if err := ledgerStore.PutBalances(upTo, balances); err != nil {
+		stats.StoreErrors.WithLabelValues("put_balances").Inc()
 		logger.Errorf("[store] Failed to write the balance snapshot at pin=%d: %s", upTo, err.Error())
 	}
 }

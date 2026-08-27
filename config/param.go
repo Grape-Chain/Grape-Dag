@@ -139,17 +139,21 @@ type TxConfiguration struct {
 }
 
 type HostConfig struct {
-	Rendezvous      string
-	ProtocolID      string
-	PeerID          string
-	Bootstrap       bool
-	Seed            int64
-	Debug           bool
-	Grpc            bool
-	Leader          bool
-	NodeType        int
-	WaitConnect     bool
-	Profile         bool
+	Rendezvous  string
+	ProtocolID  string
+	PeerID      string
+	Bootstrap   bool
+	Seed        int64
+	Debug       bool
+	Grpc        bool
+	Leader      bool
+	NodeType    int
+	WaitConnect bool
+	Profile     bool
+	// Metricsaddr - where the diagnostics server (pprof and /metrics) listens.
+	// Loopback by default: it exposes profiles and internal counters, so opening
+	// it to a network has to be a decision someone makes.
+	Metricsaddr     string
 	Bootstrap_peers []multiaddr.Multiaddr
 	Port            int
 	Grpcport        int

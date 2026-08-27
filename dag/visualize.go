@@ -167,7 +167,7 @@ func (d *Dag) visualizePins(id string) {
 
 func (dag *Dag) Visualize(peerID string) {
 	if dag != nil {
-		switch dagConfig.Algorithm {
+		switch dagAlgorithm() {
 		case DAG_ALGO_MCMCP.Type():
 			logger.Info("Visualize MCMC+")
 			dag.visualizeMcmcPlus(peerID)

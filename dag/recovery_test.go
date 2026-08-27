@@ -15,7 +15,7 @@ import (
 )
 
 // recoveryFixture - the globals recovery touches, restored on cleanup.
-func recoveryFixture(t *testing.T, dir string) store.Store {
+func recoveryFixture(t testing.TB, dir string) store.Store {
 	t.Helper()
 	prevCfg, prevPeer := dagConfig, peerConfig
 	prevArchive, prevCounter, prevPins := sliceArchive, confirmationCounter, _pins_

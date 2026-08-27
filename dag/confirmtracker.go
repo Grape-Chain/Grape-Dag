@@ -150,6 +150,39 @@ func (c *ConfirmTracker) recount(id uuid.UUID, tr *siteTrack, delta int) {
 	c.bucket(id, tr.count)
 }
 
+// countApprovals - record that this site approves its targets, retiring any that
+// have reached the threshold. Called exactly once per site, at the point it
+// becomes part of the graph. Caller holds the lock.
+//
+// Duplicate targets are counted once. Nothing on the receiving side checks that
+// a peer named distinct approval targets, and two entries for the same site
+// would otherwise count as two approvals of it.
+func (c *ConfirmTracker) countApprovals(vertex *Node) {
+	var seen map[uuid.UUID]struct{}
+	if len(vertex.targets) > 1 {
+		seen = make(map[uuid.UUID]struct{}, len(vertex.targets))
+	}
+	for _, t := range vertex.targets {
+		if t == nil {
+			continue
+		}
+		if seen != nil {
+			if _, dup := seen[t.id.id]; dup {
+				continue
+			}
+			seen[t.id.id] = struct{}{}
+		}
+		ttr, ok := c.sites[t.id.id]
+		if !ok {
+			continue
+		}
+		ttr.approvers++
+		if ttr.approvers >= c.approveTx {
+			c.retireTip(t.id.id, ttr)
+		}
+	}
+}
+
 // refreshRoot - restate whether a site is an entry point for a tip-selection
 // walk: tracked, and approving nothing else still tracked. Called on every
 // change that can affect the answer - a site entering the region, a site gaining
@@ -404,21 +437,19 @@ func (c *ConfirmTracker) track(vertex *Node) {
 		tr.slot = c.takeSlot(id)
 		c.tipCount++
 		c.markAncestors(vertex.targets, tr.slot)
-	}
-
-	// The sites this one approves are one approval closer to retirement.
-	for _, t := range vertex.targets {
-		if t == nil {
-			continue
-		}
-		ttr, ok := c.sites[t.id.id]
-		if !ok {
-			continue
-		}
-		ttr.approvers++
-		if ttr.approvers >= c.approveTx {
-			c.retireTip(t.id.id, ttr)
-		}
+		// The sites this one approves are one approval closer to retirement.
+		//
+		// Counted here only for a site that is actually part of the graph. A
+		// detached site is waiting on approval targets it has never seen, so it
+		// confirms nothing; letting its approval retire a tip would take that
+		// tip out of the denominator without putting any coverage in, which is
+		// the fixed-threshold failure this rule exists to remove. Worse, the
+		// approval would then be counted a second time when the site is
+		// resolved - resolve() runs the same loop over the same targets - so a
+		// tip retired after one real approver instead of two. On a peer that is
+		// out of sync, which is the ordinary case, that made sites confirmed
+		// that the rest of the network had approved once.
+		c.countApprovals(vertex)
 	}
 
 	c.refreshRoot(id)
@@ -449,19 +480,9 @@ func (c *ConfirmTracker) resolve(tr *siteTrack, vertex *Node) {
 		c.tipCount++
 	}
 	c.markAncestors(vertex.targets, tr.slot)
-	for _, t := range vertex.targets {
-		if t == nil {
-			continue
-		}
-		ttr, ok := c.sites[t.id.id]
-		if !ok {
-			continue
-		}
-		ttr.approvers++
-		if ttr.approvers >= c.approveTx {
-			c.retireTip(t.id.id, ttr)
-		}
-	}
+	// Now that it is part of the graph, its approvals count. They were not
+	// counted while it was detached, so this is the first and only time.
+	c.countApprovals(vertex)
 	c.refreshRoot(vertex.id.id)
 	c.sweep()
 }
@@ -641,4 +662,13 @@ func (c *ConfirmTracker) walkFrom(from *Node) (bool, int, []*Node, []int) {
 		pot = append(pot, str.count)
 	}
 	return selectable, tr.count, next, pot
+}
+
+// rootCount - how many entry points a walk has to choose from, without
+// allocating the slice. A falling count means the region is narrowing to a
+// single chain.
+func (c *ConfirmTracker) rootCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.roots)
 }

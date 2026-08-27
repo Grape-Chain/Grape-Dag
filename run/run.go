@@ -2,8 +2,8 @@ package run
 
 import (
 	"context"
-	"fmt"
-	"net/http"
+	// pprof registers its handlers on http.DefaultServeMux, which is what
+	// stats.StartDiagnosticsServer serves.
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
@@ -147,21 +147,10 @@ func Start() {
 	}
 	rest.StartRestAPISrv(ctx, routingDiscovery)
 
-	// if profiling is enabled
-	if cfg.Profile {
-
-		// To generate a profiling report, in a separate terminal window run
-		//  http://localhost:6060/debug/pprof/profile?seconds=60 (generate report for 60sec); then enter png to generate
-		// a png report
-		// Note: do not forget to enabe -profile option on the command line
-		srv := &http.Server{
-			Addr:    fmt.Sprintf("localhost:%d", 6060),
-			Handler: nil,
-		}
-		go func() {
-			srv.ListenAndServe()
-		}()
-	}
+	// The diagnostics server is started once, in gearup, before anything worth
+	// profiling has run. There used to be a second one here, bound to the same
+	// address, whose ListenAndServe error was discarded - so it always failed and
+	// always failed silently.
 	utils.ColorizeInfo(logger, "%s  ~ %s %s is running with ID: %d [Ctrl-C to terminate]", emoji.CheckMarkButton, config.GRAPE, grapepeer.GetHost().ID().String(), os.Getpid())
 	postProcessId(config.GetConfig().Host.PeerID)
 	defer cleanProcessId(config.GetConfig().Host.PeerID)

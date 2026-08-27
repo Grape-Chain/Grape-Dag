@@ -15,6 +15,7 @@ import (
 	"github.com/Grape-Chain/Grape-Dag/dag"
 	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
 	"github.com/Grape-Chain/Grape-Dag/smc"
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/types"
@@ -91,7 +92,39 @@ func parseVmError(err string) error {
 	return fmt.Errorf("system VM error during tx execution: %s", err)
 }
 
+// SendRawTransaction - accept a transaction over the API.
+//
+// A thin wrapper, so that the offered load can be counted separately from the
+// accepted load: a benchmark that reports only what the node took in has no way
+// to tell a node keeping up from a node refusing work. Note that the inner
+// function panics on some inputs and its callers recover, so acceptance is
+// recorded only after it returns - a panic counts as a refusal, which is what it
+// is from the client's point of view.
+//
+// The reason label is deliberately coarse. Metric labels multiply series, and an
+// error string is unbounded, so a caller sending malformed transactions in a loop
+// could otherwise grow the metric without limit.
 func (ts *TransactionServiceImpl) SendRawTransaction(pbTx string) (ExecutionResult, error) {
+	start := time.Now()
+	outcome := "panic"
+	defer func() {
+		stats.Since(stats.TxIngress, start)
+		if outcome == "" {
+			stats.TxAccepted.Inc()
+			return
+		}
+		stats.TxRejected.WithLabelValues(outcome).Inc()
+	}()
+	res, err := ts.sendRawTransaction(pbTx)
+	if err != nil {
+		outcome = "rejected"
+	} else {
+		outcome = ""
+	}
+	return res, err
+}
+
+func (ts *TransactionServiceImpl) sendRawTransaction(pbTx string) (ExecutionResult, error) {
 	startProcessingTime := time.Now()
 	utils.ColorizeInfo(logger, "Process transaction %s", shortenString(pbTx, 16))
 	defer func() {

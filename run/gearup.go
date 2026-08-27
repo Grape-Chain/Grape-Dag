@@ -3,10 +3,10 @@ package run
 import (
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 
 	config "github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
@@ -82,10 +82,7 @@ func GearUpConfig() *config.Grapepeer {
 	grapePeerConf.Peer.Id = cfg.PeerID
 
 	if cfg.Profile {
-		fmt.Println("* Profiling is enabled")
-		go func() {
-			fmt.Println(http.ListenAndServe("localhost:6060", nil))
-		}()
+		stats.StartDiagnosticsServer(cfg.Metricsaddr)
 	}
 
 	if cfg.VmServerPort > 1023 && cfg.VmServerPort <= 65535 {

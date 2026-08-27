@@ -340,6 +340,7 @@ func (dag *Dag) addToDag(node *Node, linksTo []*Node) (*Dag, error) {
 	node.time = time.Now()
 	dag._dag_ = append(dag._dag_, node)
 	dag.sitesAdded.Add(1)
+	stats.SitesAdded.Inc()
 	// update lookup cache
 	// Node: this step is important for efficient lookups
 	dag.lookupCacheUpdate(node, goterators.Map(linksTo, func(n *Node) uuid.UUID {

@@ -1,6 +1,7 @@
 package dag
 
 import (
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/google/uuid"
 )
@@ -173,6 +174,7 @@ func sliceAppliedPin(pin *pb.TxPin) {
 	if pin == nil || _dag_ == nil || !dagConfig.Slicing {
 		return
 	}
+	defer stats.Time(stats.PinSlice)()
 	_dag_.mux.Lock()
 	defer _dag_.mux.Unlock()
 	_dag_.sliceSites(pin)

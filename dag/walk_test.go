@@ -463,15 +463,97 @@ func TestSelectTipsFallsBackWhenThereIsNoRegionToWalk(t *testing.T) {
 	}
 }
 
-func TestSelectTipsOnAnEmptyGraphOffersGenesis(t *testing.T) {
+// Selection must not offer genesis as a consolation prize. On a follower or a
+// recovered node the genesis site is held as a pointer but is in no local index
+// (adoptGenesis keeps the pointer and empties the maps), so a site that approves
+// it names an approval the local node cannot resolve: it stays detached in the
+// tracker, out of both the denominator and the tip set, and is re-requested
+// every second for the life of the process. Returning nothing instead makes
+// AddTxDag refuse the transaction, which the publisher retries.
+func TestSelectTipsOffersNothingRatherThanGenesis(t *testing.T) {
 	tr := newConfirmTracker(2, 0)
 	withTracker(t, tr)
 	genesis := tnode(0)
 	d := &Dag{genesis: genesis}
 
-	tips := d.selectTips(0.5)
-	if len(tips) != 1 || tips[0].id.id != genesis.id.id {
-		t.Fatalf("expected genesis as the only approval target on an empty graph, got %d target(s)", len(tips))
+	if tips := d.selectTips(0.5); len(tips) != 0 {
+		t.Fatalf("expected no approval target on an empty graph, got %d", len(tips))
+	}
+	if tips := d.uniformTips(); len(tips) != 0 {
+		t.Fatalf("expected no approval target from the uniform fallback on an empty graph, got %d", len(tips))
+	}
+}
+
+// dag.approvetx says how many sites a new site approves, and the confirmation
+// tracker retires a tip once that many sites reference it. Selection has to read
+// the same setting: if it emits two approvals while a tip needs three to retire,
+// no tip ever retires, the confirmation denominator only grows, and the ledger
+// confirms almost nothing.
+func TestSelectTipsHonoursTheConfiguredApprovalCount(t *testing.T) {
+	prev := dagConfig.Approvetx
+	t.Cleanup(func() { dagConfig.Approvetx = prev })
+
+	for _, want := range []uint16{2, 3, 4} {
+		dagConfig.Approvetx = want
+		tr := newConfirmTracker(int(want), 0)
+		withTracker(t, tr)
+
+		// A frontier comfortably wider than the number of approvals asked for.
+		root := tnode(0)
+		tr.add(root)
+		for i := 1; i <= 12; i++ {
+			n := tnode(i)
+			tlink(n, root)
+			tr.add(n)
+		}
+		d := &Dag{genesis: root}
+
+		tips := d.selectTips(0.5)
+		if len(tips) != int(want) {
+			t.Fatalf("approvetx=%d: expected %d approval targets, got %d", want, want, len(tips))
+		}
+		seen := map[uuid.UUID]bool{}
+		for _, tip := range tips {
+			if seen[tip.id.id] {
+				t.Fatalf("approvetx=%d: the same site was offered twice", want)
+			}
+			seen[tip.id.id] = true
+		}
+	}
+}
+
+// The confirmation threshold has to be reachable at every configured approval
+// count, not only at two.
+func TestApprovalThresholdIsReachedAtEveryConfiguredCount(t *testing.T) {
+	prev := dagConfig.Approvetx
+	t.Cleanup(func() { dagConfig.Approvetx = prev })
+
+	for _, want := range []uint16{2, 3, 4} {
+		dagConfig.Approvetx = want
+		tr := newConfirmTracker(int(want), 0)
+		withTracker(t, tr)
+
+		genesis := tnode(0)
+		d := &Dag{genesis: genesis}
+		tr.add(genesis)
+		confirmed := 0
+		for step := 1; step <= 600; step++ {
+			targets := d.selectTips(0.5)
+			if len(targets) == 0 {
+				t.Fatalf("approvetx=%d step %d: selection offered nothing to approve", want, step)
+			}
+			n := tnode(step)
+			for _, target := range targets {
+				tlink(n, target)
+			}
+			tr.add(n)
+			confirmed += len(tr.pop())
+		}
+		if confirmed < 300 {
+			_, tips, _ := tr.stats()
+			t.Fatalf("approvetx=%d: only %d of 600 sites confirmed, with %d tips still open - the frontier is not settling",
+				want, confirmed, tips)
+		}
 	}
 }
 
@@ -806,5 +888,78 @@ func TestTransitionWeightsSurviveALargeFrontier(t *testing.T) {
 	far := transitionWeights(1010, []int{1005, 1004}, alpha)
 	if math.Abs(near[1]/near[0]-far[1]/far[0]) > 1e-12 {
 		t.Fatalf("the same pair of differences gave different odds at different offsets: %v vs %v", near, far)
+	}
+}
+
+// A site's approvals must be counted once, at the point it becomes part of the
+// graph - not once when it arrives with unresolved targets and again when they
+// are resolved.
+//
+// The consequence of counting twice is not a stray number: a tip retires from
+// the denominator after one real approver instead of two, so the confirmation
+// share is measured against a denominator that has already shrunk, and sites are
+// confirmed that the rest of the network has approved once. On any peer that is
+// briefly out of sync - the ordinary case, since missing targets are reconciled
+// every second - that is the fixed-threshold failure the share rule exists to
+// remove.
+func TestAnApprovalIsCountedOnce(t *testing.T) {
+	const approveTx = 2
+	tr := newConfirmTracker(approveTx, 0)
+
+	target := tnode(0)
+	tr.add(target)
+
+	// Arrives approving target, but also names a target it has never seen.
+	late := tnode(1)
+	tlink(late, target)
+	late.missingTargets = map[string]bool{uuid.New().String(): true}
+	tr.add(late)
+
+	// While detached it confirms nothing, so its approval must not retire a tip.
+	tr.mu.Lock()
+	afterTrack := tr.sites[target.id.id].approvers
+	tr.mu.Unlock()
+	if afterTrack != 0 {
+		t.Fatalf("a detached site's approval was counted: target has %d approver(s)", afterTrack)
+	}
+
+	// The gap is filled.
+	late.missingTargets = nil
+	tr.relink(late)
+
+	tr.mu.Lock()
+	st, tracked := tr.sites[target.id.id]
+	tr.mu.Unlock()
+	if !tracked {
+		t.Fatal("the target retired from the denominator on a single approval")
+	}
+	if st.approvers != 1 {
+		t.Fatalf("one approval should be counted once, got %d", st.approvers)
+	}
+	if !tr.isTip(target.id.id) {
+		t.Fatal("a site with one approver and a threshold of two must still be approvable")
+	}
+}
+
+// Nothing on the receiving side checks that a peer named two distinct approval
+// targets, so the tracker has to.
+func TestDuplicateApprovalTargetsCountOnce(t *testing.T) {
+	tr := newConfirmTracker(2, 0)
+	target := tnode(0)
+	tr.add(target)
+
+	greedy := tnode(1)
+	tlink(greedy, target)
+	tlink(greedy, target) // the same site named twice
+	tr.add(greedy)
+
+	tr.mu.Lock()
+	st, tracked := tr.sites[target.id.id]
+	tr.mu.Unlock()
+	if !tracked {
+		t.Fatal("a site named twice by one approver was retired as if two sites had approved it")
+	}
+	if st.approvers != 1 {
+		t.Fatalf("naming the same site twice is one approval, got %d", st.approvers)
 	}
 }

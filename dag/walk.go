@@ -7,7 +7,9 @@ import (
 	"math/rand"
 	"sync"
 
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/utils"
+	"github.com/google/uuid"
 )
 
 /*
@@ -222,6 +224,7 @@ func (dag *Dag) walkToTip(start *Node, alpha float64) *Node {
 		}
 		selectable, potential, next, nextPotential := tipCache().walkFrom(particle)
 		if selectable {
+			stats.WalkSteps.Observe(float64(steps))
 			return particle
 		}
 		if len(next) == 0 {
@@ -236,50 +239,82 @@ func (dag *Dag) walkToTip(start *Node, alpha float64) *Node {
 		}
 		step := weightedChoice(next, transitionWeights(potential, nextPotential, alpha))
 		if step == nil {
+			stats.WalksAbandoned.WithLabelValues("no_step").Inc()
 			return nil
 		}
 		particle = step
 	}
+	stats.WalksAbandoned.WithLabelValues("budget").Inc()
 	logger.Warnf("[tipselect] A walk used its whole %d-step budget without reaching a tip; approving %s where it stands",
 		walkStepBudget, particle.id.id.String())
 	return particle
 }
 
-// selectTips - the sites a new site will approve: two independent walks, or one
-// site when the graph offers only one.
+// approvalsWanted - how many sites a new site approves, from dag.approvetx.
+//
+// This used to be hardcoded at two here while the confirmation tracker took the
+// same setting from config and retired a tip once approvetx sites referenced it.
+// The two have to agree: a new site supplying two approvals while a tip needs
+// three to retire means no tip ever retires, the confirmation denominator only
+// grows, and the ledger confirms almost nothing. dag.approvetx was silently a
+// two-only field.
+func approvalsWanted() int {
+	want := int(dagConfig.Approvetx)
+	if want < 1 {
+		return DAG_APPROVE_TX
+	}
+	return want
+}
+
+// selectTips - the sites a new site will approve: one independent walk per
+// approval, all landing on distinct sites.
 //
 // Never returns an empty slice while the graph holds anything approvable.
-// AddTxDag drops the site on the floor when selection comes back empty (its
-// approval gate fails, and the site is silently not added), so the fallbacks
-// below matter: a walk that finds nothing must not cost a transaction.
+// AddTxDag refuses the site when selection comes back empty, and the transaction
+// is then lost while every peer that already saw it keeps the site - so the
+// fallbacks below matter.
 func (dag *Dag) selectTips(alpha float64) []*Node {
+	want := approvalsWanted()
 	roots := tipCache().walkRoots()
+	chosen := make([]*Node, 0, want)
+	taken := make(map[uuid.UUID]struct{}, want)
 
-	first := dag.walkFromRoots(roots, alpha)
-	if first == nil {
-		// Either there is no active region to walk (the legacy confirmation
-		// rule keeps none) or every root led nowhere. Fall back to the uniform
-		// pick that selection used to do.
-		return dag.uniformTips()
-	}
-
-	for attempt := 0; attempt < walkCollisionBudget; attempt++ {
-		second := dag.walkFromRoots(roots, alpha)
-		if second == nil {
+	for len(chosen) < want {
+		var pick *Node
+		for attempt := 0; attempt < walkCollisionBudget; attempt++ {
+			cand := dag.walkFromRoots(roots, alpha)
+			if cand == nil {
+				break
+			}
+			if _, dup := taken[cand.id.id]; !dup {
+				pick = cand
+				break
+			}
+		}
+		if pick == nil {
+			// The walk found nothing, or kept landing on a site already taken.
+			// Approving one site twice is one approval, not two, so take some
+			// other tip instead. Fewer approvals than asked for is valid, so
+			// this is a last resort rather than an error.
+			pick = dag.anyTipExcept(taken)
+			if pick != nil {
+				stats.SelectionFallbacks.Inc()
+			}
+		}
+		if pick == nil {
 			break
 		}
-		if second.id.id != first.id.id {
-			return []*Node{first, second}
-		}
+		taken[pick.id.id] = struct{}{}
+		chosen = append(chosen, pick)
 	}
 
-	// Both walks keep landing in the same place. Take any other tip rather than
-	// approve one site twice; a single approval is valid, so this is a last
-	// resort and not an error.
-	if other := dag.anyTipExcept(first); other != nil {
-		return []*Node{first, other}
+	if len(chosen) == 0 {
+		// Either there is no active region to walk - the legacy confirmation
+		// rule keeps none - or every root led nowhere.
+		stats.SelectionFallbacks.Inc()
+		return dag.uniformTips()
 	}
-	return []*Node{first}
+	return chosen
 }
 
 // walkFromRoots - one walk, from a uniformly chosen root. Every root is tried
@@ -298,29 +333,39 @@ func (dag *Dag) walkFromRoots(roots []*Node, alpha float64) *Node {
 	return nil
 }
 
-// uniformTips - up to two distinct tips, chosen uniformly. The fallback when
-// there is no region to walk, and what the "random" algorithm setting means.
+// uniformTips - up to approvetx distinct tips, chosen uniformly. The fallback
+// when there is no region to walk, and what the "random" algorithm setting
+// means.
+//
+// Deliberately does not fall back to genesis. On a follower or a recovered node
+// the genesis site is held but is in no local index - adoptGenesis keeps the
+// pointer and empties the maps - so offering it as an approval target produces a
+// site naming an approval no peer can resolve, which stays detached forever and
+// is re-requested every second. Returning nothing makes AddTxDag refuse the
+// transaction, which is recoverable; the other is not.
 func (dag *Dag) uniformTips() []*Node {
 	tips := tipCache().getTips()
 	if len(tips) == 0 {
-		if g := dag.getGenesis(); g != nil {
-			return []*Node{g}
-		}
 		return nil
 	}
-	if len(tips) == 1 {
-		return []*Node{tips[0]}
+	want := approvalsWanted()
+	if want > len(tips) {
+		want = len(tips)
 	}
-	i := dagRand.Intn(len(tips))
-	j := dagRand.Intn(len(tips) - 1)
-	if j >= i {
-		j++
+	// Partial Fisher-Yates over a copy: distinct picks without rejection
+	// sampling, which matters when the tip set is barely larger than want.
+	pool := append([]*Node(nil), tips...)
+	out := make([]*Node, 0, want)
+	for i := 0; i < want; i++ {
+		j := i + dagRand.Intn(len(pool)-i)
+		pool[i], pool[j] = pool[j], pool[i]
+		out = append(out, pool[i])
 	}
-	return []*Node{tips[i], tips[j]}
+	return out
 }
 
-// anyTipExcept - a tip other than the given one, if the graph has one.
-func (dag *Dag) anyTipExcept(not *Node) *Node {
+// anyTipExcept - a tip that has not already been taken, if the graph has one.
+func (dag *Dag) anyTipExcept(taken map[uuid.UUID]struct{}) *Node {
 	tips := tipCache().getTips()
 	if len(tips) == 0 {
 		return nil
@@ -328,9 +373,13 @@ func (dag *Dag) anyTipExcept(not *Node) *Node {
 	start := dagRand.Intn(len(tips))
 	for i := 0; i < len(tips); i++ {
 		t := tips[(start+i)%len(tips)]
-		if t != nil && (not == nil || t.id.id != not.id.id) {
-			return t
+		if t == nil {
+			continue
 		}
+		if _, dup := taken[t.id.id]; dup {
+			continue
+		}
+		return t
 	}
 	return nil
 }

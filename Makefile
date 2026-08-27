@@ -45,5 +45,14 @@ compose-up: ## Bring up the local stack (peer + smc + mongo)
 compose-down: ## Tear down the local stack
 	$(DOCKER) compose -f deploy/docker-compose.yml down
 
+bench: ## Run the micro-benchmarks for tip selection and the commit path
+	go test ./dag/ -run XXXNOMATCH -bench . -benchtime 200x -benchmem
+
+bench-commit: ## Benchmark only the synchronous commit path (fsync, settled replay, slice)
+	go test ./dag/ -run XXXNOMATCH -bench 'PinCommit|StoreAppend|SettledApply|BalanceSnapshot' -benchtime 200x -benchmem
+
+bench-select: ## Benchmark only tip selection and graph growth
+	go test ./dag/ -run XXXNOMATCH -bench 'TipSelection|GraphGrowth|ConfirmTracker' -benchtime 500x -benchmem
+
 clean: ## Remove build artifacts
 	rm -rf bin/ dist/ build/ coverage.* *.out
