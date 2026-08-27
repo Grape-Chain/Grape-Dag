@@ -181,6 +181,41 @@ func authoriseChainStart(pin *pb.TxPin) error {
 	return nil
 }
 
+// authoriseStoredChain - the opening statement of a chain read back from this
+// node's own disk.
+//
+// Deliberately more forgiving than the network path, and the threat model is the
+// reason. Everything this node knows about its chain comes out of that
+// directory: anyone who can rewrite a signature there can rewrite the balances
+// next to it, so refusing to start on a signature that does not verify buys
+// nothing and costs the node its history. The signature is still checked and a
+// failure is still reported loudly, because a failure means something is wrong -
+// a chain written before the signing payload was corrected will fail here, and
+// so will a corrupted store.
+//
+// The signer is still held to configuration when there is any: a stored chain
+// opened by a key dag.pinsigners does not name is a misconfiguration worth
+// stopping for, since continuing would mean following a chain the operator did
+// not authorise.
+func authoriseStoredChain(pin *pb.TxPin) error {
+	if pin == nil {
+		return errors.New("no stored opening commit transaction to authorise")
+	}
+	if err := pin.VerifyTx(); err != nil {
+		logger.Warnf("[pin auth] The stored chain's opening commit transaction pin=%d does not verify (%s). Continuing, because the store is already trusted for the balances themselves - but a chain written before the signing payload was corrected will need to be rebuilt before it can be handed to a peer.",
+			pin.PinNumber, err.Error())
+	}
+	if pinAuth.configured {
+		if !pinAuth.allows(pin.Pk) {
+			return errors.Errorf("the stored chain was opened by %s, which dag.pinsigners does not name",
+				shortKey(hex.EncodeToString(pin.Pk)))
+		}
+		return nil
+	}
+	pinAuth.adoptChainSigner(pin.Pk)
+	return nil
+}
+
 // logPinAuthority - say at start-up whose commit transactions will be applied,
 // because "nobody has told this node yet" and "anyone" look identical from the
 // outside until something goes wrong.

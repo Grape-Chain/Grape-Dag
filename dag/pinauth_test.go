@@ -260,3 +260,47 @@ func TestApplyPinRefusesAnUnauthorisedCommitTransaction(t *testing.T) {
 		t.Fatalf("the chain did not advance on an accepted commit transaction: height %d", got)
 	}
 }
+
+// A chain on disk is trusted differently from one off the wire, and the threat
+// model is why: everything the node knows about its chain comes out of that
+// directory, so a signature there proves nothing an attacker with write access
+// could not also forge. A stored chain whose opening signature does not verify -
+// which is what a chain written before the signing payload was corrected looks
+// like - must still start, loudly.
+func TestAStoredChainStartsEvenIfItsSignatureDoesNotVerify(t *testing.T) {
+	withPinAuthority(t)
+	leader := grape_wallet.NewWallet()
+
+	stale := signedPin(t, leader, 0)
+	// Corrupt the signature the way an older signing payload would have.
+	stale.Sign[0] ^= 0xff
+
+	if err := authoriseStoredChain(stale); err != nil {
+		t.Fatalf("a stored chain must still open: %s", err.Error())
+	}
+	if got := pinAuth.known(); got != 1 {
+		t.Fatalf("the stored chain's signer should still be adopted, known=%d", got)
+	}
+	// But the network path refuses exactly the same commit transaction.
+	withPinAuthority(t)
+	if err := authoriseChainStart(stale); err == nil {
+		t.Fatal("the network path accepted an opening statement whose signature does not verify")
+	}
+}
+
+// Forgiving about the signature is not the same as forgiving about the signer: a
+// stored chain opened by a key the operator did not name is a misconfiguration,
+// and following it would mean following a chain nobody authorised.
+func TestAStoredChainFromAnUnnamedSignerIsRefused(t *testing.T) {
+	withPinAuthority(t)
+	expected := grape_wallet.NewWallet()
+	if err := configurePinSigners(hex.EncodeToString(*expected.PublicKey())); err != nil {
+		t.Fatalf("configuring the signer: %s", err.Error())
+	}
+	if err := authoriseStoredChain(signedPin(t, grape_wallet.NewWallet(), 0)); err == nil {
+		t.Fatal("a stored chain opened by an unnamed signer was accepted")
+	}
+	if err := authoriseStoredChain(signedPin(t, expected, 0)); err != nil {
+		t.Fatalf("a stored chain opened by the named signer was refused: %s", err.Error())
+	}
+}

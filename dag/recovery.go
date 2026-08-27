@@ -86,7 +86,7 @@ func recoverFromStore() (bool, error) {
 		// signers, a stored chain that does not match them is refused here
 		// rather than quietly continued.
 		if loaded == 0 {
-			if err := authoriseChainStart(pin); err != nil {
+			if err := authoriseStoredChain(pin); err != nil {
 				return fmt.Errorf("the stored chain's opening commit transaction is not one this node may apply: %w", err)
 			}
 		}
