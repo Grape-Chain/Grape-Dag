@@ -3,6 +3,7 @@ package dag
 import (
 	"math/big"
 	"math/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -98,6 +99,32 @@ const (
 
 func (a DagAlgo) Type() string {
 	return []string{"mcmc+", "mcmc++", "random"}[a]
+}
+
+const (
+	// CONSENSUS_LEADER - a commit transaction is applied because a single
+	// authorised signer asserted it. What the chain has always done.
+	CONSENSUS_LEADER = "leader"
+	// CONSENSUS_QUORUM - a commit transaction is applied because at least two
+	// thirds of the validator set agreed to it.
+	CONSENSUS_QUORUM = "quorum"
+)
+
+// consensusMode - the configured mode, normalised. An unrecognised value falls
+// back to leader rather than to quorum: falling the other way would mean a node
+// that cannot apply anything, which looks like a network outage rather than a
+// configuration mistake.
+func consensusMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case CONSENSUS_QUORUM:
+		return CONSENSUS_QUORUM
+	case CONSENSUS_LEADER, "":
+		return CONSENSUS_LEADER
+	default:
+		logger.Warnf("[consensus] dag.consensus=%q is not %q or %q; using %q",
+			raw, CONSENSUS_LEADER, CONSENSUS_QUORUM, CONSENSUS_LEADER)
+		return CONSENSUS_LEADER
+	}
 }
 
 const (
@@ -434,6 +461,13 @@ func Init() {
 		// Starting with a misread signer list would mean starting with no
 		// authorised signer, which is the state this check exists to prevent.
 		logger.Fatalf("[pin auth] %s", err.Error())
+	}
+	if consensusMode(dagConfig.Consensus) == CONSENSUS_QUORUM {
+		if err := configureValidators(dagConfig.Validators); err != nil {
+			// A misread validator list would shrink the set and lower the quorum
+			// with it, which is worse than not starting.
+			logger.Fatalf("[pin auth] %s", err.Error())
+		}
 	}
 	logPinAuthority()
 	logTipSelection()

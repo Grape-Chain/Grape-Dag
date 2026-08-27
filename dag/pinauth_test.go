@@ -304,3 +304,291 @@ func TestAStoredChainFromAnUnnamedSignerIsRefused(t *testing.T) {
 		t.Fatalf("a stored chain opened by the named signer was refused: %s", err.Error())
 	}
 }
+
+// ---------------------------------------------------------------- quorum mode
+
+func validatorKeys(t *testing.T, ws []*grape_wallet.Wallet) string {
+	t.Helper()
+	keys := make([]string, 0, len(ws))
+	for _, w := range ws {
+		keys = append(keys, hex.EncodeToString(*w.PublicKey()))
+	}
+	return strings.Join(keys, ",")
+}
+
+func newValidators(n int) []*grape_wallet.Wallet {
+	out := make([]*grape_wallet.Wallet, n)
+	for i := range out {
+		out[i] = grape_wallet.NewWallet()
+	}
+	return out
+}
+
+// The quorum is two thirds of the set plus one, which is the most faults a set
+// of that size can tolerate at all. Written down because an off-by-one here is
+// the difference between tolerating a third of the validators being faulty and
+// letting a third of them decide.
+func TestTheQuorumIsTwoThirdsPlusOne(t *testing.T) {
+	for _, tc := range []struct{ n, want int }{
+		{0, 0}, {1, 1}, {2, 2}, {3, 3}, {4, 3}, {5, 4}, {6, 5}, {7, 5}, {9, 7}, {10, 7},
+	} {
+		if got := quorumFor(tc.n); got != tc.want {
+			t.Fatalf("a set of %d needs %d agreeing validators, got %d", tc.n, tc.want, got)
+		}
+	}
+}
+
+func TestAQuorumOfValidatorsIsAccepted(t *testing.T) {
+	withPinAuthority(t)
+	vs := newValidators(4) // quorum 3
+	if err := configureValidators(validatorKeys(t, vs)); err != nil {
+		t.Fatalf("configuring validators: %s", err.Error())
+	}
+	if !pinAuth.quorumMode() {
+		t.Fatal("expected quorum mode")
+	}
+
+	pin := pb.NewTxPin(nil)
+	pin.PinNumber = 3
+	pin.Ts = timestamppb.Now()
+	pin.Balance.Balance[addrStr(0xaa)] = []byte{0x05}
+
+	// Two of four is short of the quorum.
+	for _, w := range vs[:2] {
+		if err := pin.SignAsValidator(w, 0); err != nil {
+			t.Fatalf("signing: %s", err.Error())
+		}
+	}
+	if err := authorisePin(pin); err == nil {
+		t.Fatal("two of four validators was accepted as a quorum of three")
+	}
+
+	// The third makes it.
+	if err := pin.SignAsValidator(vs[2], 0); err != nil {
+		t.Fatalf("signing: %s", err.Error())
+	}
+	if err := authorisePin(pin); err != nil {
+		t.Fatalf("three of four validators was refused: %s", err.Error())
+	}
+}
+
+// Signatures from outside the set do not count, however many there are.
+func TestOutsidersCannotMakeUpAQuorum(t *testing.T) {
+	withPinAuthority(t)
+	vs := newValidators(4)
+	if err := configureValidators(validatorKeys(t, vs)); err != nil {
+		t.Fatalf("configuring validators: %s", err.Error())
+	}
+
+	pin := pb.NewTxPin(nil)
+	pin.PinNumber = 1
+	pin.Ts = timestamppb.Now()
+	// One real validator and a crowd of impostors, all correctly signing.
+	if err := pin.SignAsValidator(vs[0], 0); err != nil {
+		t.Fatalf("signing: %s", err.Error())
+	}
+	for _, w := range newValidators(10) {
+		if err := pin.SignAsValidator(w, 0); err != nil {
+			t.Fatalf("signing: %s", err.Error())
+		}
+	}
+	if err := authorisePin(pin); err == nil {
+		t.Fatal("signatures from outside the validator set counted towards the quorum")
+	}
+}
+
+// One validator signing repeatedly is one validator.
+func TestOneValidatorCannotSignItselfIntoAQuorum(t *testing.T) {
+	withPinAuthority(t)
+	vs := newValidators(4)
+	if err := configureValidators(validatorKeys(t, vs)); err != nil {
+		t.Fatalf("configuring validators: %s", err.Error())
+	}
+	pin := pb.NewTxPin(nil)
+	pin.PinNumber = 1
+	pin.Ts = timestamppb.Now()
+	if err := pin.SignAsValidator(vs[0], 0); err != nil {
+		t.Fatalf("signing: %s", err.Error())
+	}
+	// Duplicate the one signature it has, three times over.
+	sig := pin.Quorum.Signatures[0]
+	for i := 0; i < 3; i++ {
+		pin.Quorum.Signatures = append(pin.Quorum.Signatures, &pb.ValidatorSignature{Pk: sig.Pk, Sign: sig.Sign})
+	}
+	if err := authorisePin(pin); err == nil {
+		t.Fatal("one validator's signature repeated four times was accepted as a quorum")
+	}
+}
+
+// A certificate is evidence about the exact bytes the validators saw. Changing
+// what the commit transaction settles after they signed must invalidate it.
+func TestAQuorumDoesNotCarryOverToChangedContents(t *testing.T) {
+	withPinAuthority(t)
+	vs := newValidators(3) // quorum 3
+	if err := configureValidators(validatorKeys(t, vs)); err != nil {
+		t.Fatalf("configuring validators: %s", err.Error())
+	}
+	pin := pb.NewTxPin(nil)
+	pin.PinNumber = 1
+	pin.Ts = timestamppb.Now()
+	pin.Balance.Balance[addrStr(0xaa)] = []byte{0x01}
+	for _, w := range vs {
+		if err := pin.SignAsValidator(w, 0); err != nil {
+			t.Fatalf("signing: %s", err.Error())
+		}
+	}
+	if err := authorisePin(pin); err != nil {
+		t.Fatalf("a full quorum was refused: %s", err.Error())
+	}
+
+	// Rewrite a balance, keeping every signature.
+	pin.Balance.Balance[addrStr(0xaa)] = []byte{0xff}
+	if err := authorisePin(pin); err == nil {
+		t.Fatal("a commit transaction changed after the validators signed it was still accepted")
+	}
+}
+
+// A certificate lifted from one commit transaction and pasted onto another must
+// not travel: it names the hash it certifies.
+func TestAQuorumCertificateCannotBeMovedToAnotherPin(t *testing.T) {
+	withPinAuthority(t)
+	vs := newValidators(3)
+	if err := configureValidators(validatorKeys(t, vs)); err != nil {
+		t.Fatalf("configuring validators: %s", err.Error())
+	}
+	agreed := pb.NewTxPin(nil)
+	agreed.PinNumber = 1
+	agreed.Ts = timestamppb.Now()
+	for _, w := range vs {
+		if err := agreed.SignAsValidator(w, 0); err != nil {
+			t.Fatalf("signing: %s", err.Error())
+		}
+	}
+
+	forged := pb.NewTxPin(nil)
+	forged.PinNumber = 1
+	forged.Ts = timestamppb.Now()
+	forged.Balance.Balance[addrStr(0xbb)] = []byte{0x99}
+	forged.Quorum = agreed.Quorum
+
+	if err := authorisePin(forged); err == nil {
+		t.Fatal("a quorum certificate was accepted on a commit transaction the validators never saw")
+	}
+}
+
+// In quorum mode the proposer's own signature is not what makes a commit
+// transaction applicable - otherwise the quorum would be decoration.
+func TestInQuorumModeALeaderSignatureAloneIsNotEnough(t *testing.T) {
+	withPinAuthority(t)
+	vs := newValidators(4)
+	if err := configureValidators(validatorKeys(t, vs)); err != nil {
+		t.Fatalf("configuring validators: %s", err.Error())
+	}
+	// Also name it as an authorised single signer, which must not matter.
+	if err := configurePinSigners(hex.EncodeToString(*vs[0].PublicKey())); err != nil {
+		t.Fatalf("configuring signers: %s", err.Error())
+	}
+
+	pin := pb.NewTxPin(nil)
+	pin.PinNumber = 1
+	pin.Ts = timestamppb.Now()
+	pin.SignTx(vs[0])
+
+	if err := authorisePin(pin); err == nil {
+		t.Fatal("a leader signature was accepted while the node was in quorum mode")
+	}
+}
+
+func TestABadValidatorListIsRefused(t *testing.T) {
+	withPinAuthority(t)
+	err := configureValidators("deadbeef,not-hex")
+	if err == nil {
+		t.Fatal("a validator list that is not hex was accepted")
+	}
+	if !strings.Contains(err.Error(), "dag.validators") {
+		t.Fatalf("the error should name the setting at fault, got: %s", err.Error())
+	}
+	if pinAuth.quorumMode() {
+		t.Fatal("a refused validator list left the node in quorum mode")
+	}
+}
+
+// Naming a validator is not the same as being one. A certificate full of
+// signatures that claim real validator keys but were not produced by them must
+// count for nothing.
+//
+// Every other quorum test here signs honestly, so all of them would still pass
+// with the signature check removed entirely - which a mutation confirmed. This
+// is the test that fails when it is.
+func TestAForgedValidatorSignatureCountsForNothing(t *testing.T) {
+	withPinAuthority(t)
+	vs := newValidators(3) // quorum 3
+	if err := configureValidators(validatorKeys(t, vs)); err != nil {
+		t.Fatalf("configuring validators: %s", err.Error())
+	}
+
+	pin := pb.NewTxPin(nil)
+	pin.PinNumber = 2
+	pin.Ts = timestamppb.Now()
+	pin.Balance.Balance[addrStr(0xaa)] = []byte{0x07}
+
+	payload, err := pin.PrototypeHash()
+	if err != nil {
+		t.Fatalf("hashing: %s", err.Error())
+	}
+	// A certificate that is correct in every respect except the signatures: the
+	// right pin number, the right hash, and three real validator keys.
+	junk := make([]byte, 64)
+	for i := range junk {
+		junk[i] = byte(i)
+	}
+	pin.Quorum = &pb.QuorumCert{PinNumber: pin.PinNumber, PinHash: payload}
+	for _, w := range vs {
+		pin.Quorum.Signatures = append(pin.Quorum.Signatures, &pb.ValidatorSignature{
+			Pk:   *w.PublicKey(),
+			Sign: junk,
+		})
+	}
+
+	if err := authorisePin(pin); err == nil {
+		t.Fatal("a certificate of forged signatures naming real validators was accepted")
+	}
+
+	// And a genuine quorum on the same commit transaction still is, so the check
+	// is discriminating rather than simply refusing hand-built certificates.
+	pin.Quorum = nil
+	for _, w := range vs {
+		if err := pin.SignAsValidator(w, 0); err != nil {
+			t.Fatalf("signing: %s", err.Error())
+		}
+	}
+	if err := authorisePin(pin); err != nil {
+		t.Fatalf("a genuine quorum was refused: %s", err.Error())
+	}
+}
+
+// One real signature padded out to a quorum with forgeries is still one
+// signature.
+func TestForgeriesCannotTopUpAGenuineSignature(t *testing.T) {
+	withPinAuthority(t)
+	vs := newValidators(3)
+	if err := configureValidators(validatorKeys(t, vs)); err != nil {
+		t.Fatalf("configuring validators: %s", err.Error())
+	}
+	pin := pb.NewTxPin(nil)
+	pin.PinNumber = 1
+	pin.Ts = timestamppb.Now()
+	if err := pin.SignAsValidator(vs[0], 0); err != nil {
+		t.Fatalf("signing: %s", err.Error())
+	}
+	junk := make([]byte, 64)
+	for _, w := range vs[1:] {
+		pin.Quorum.Signatures = append(pin.Quorum.Signatures, &pb.ValidatorSignature{
+			Pk:   *w.PublicKey(),
+			Sign: junk,
+		})
+	}
+	if err := authorisePin(pin); err == nil {
+		t.Fatal("one genuine signature padded with forgeries was accepted as a quorum")
+	}
+}

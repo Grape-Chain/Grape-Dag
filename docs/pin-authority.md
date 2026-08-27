@@ -70,14 +70,51 @@ signer and refuse every live commit transaction.
 - **The leader does not authorise its own commit transactions.** It signs them
   and applies them directly; the check is for what arrives over the network.
 
+## Quorum mode — the verification half
+
+`dag.consensus: "quorum"` replaces "one authorised key asserted it" with "at
+least two thirds of the validator set agreed to it".
+
+```yaml
+dag:
+  consensus: "quorum"
+  validators: "04ab...ef,04cd...12,04ef...34,0412...ab"
+```
+
+The quorum is derived from the size of the set — `⌊2n/3⌋+1`, the most faults a
+set of that size can tolerate at all — rather than configured separately, so it
+cannot drift out of step with the membership.
+
+A commit transaction then carries a `QuorumCert`: the pin number, the prototype
+hash the validators signed, the view-change round, and their signatures. The
+prototype hash excludes the signature, the public key **and** the certificate
+itself, which is what lets every validator sign the same bytes.
+
+Verification requires all of:
+
+- the certificate is for this pin number;
+- it names the hash of the commit transaction actually in hand;
+- each signature verifies against that hash, under a key **in the set**;
+- signatures from one validator count once however many times they appear;
+- at least the quorum many distinct validators remain.
+
+In quorum mode the proposer's own `SignTx` signature is not consulted at all. If
+it counted, the quorum would be decoration.
+
+### Not usable yet
+
+**Nothing produces certificates.** The t0–t4 protocol that collects validator
+agreement is not implemented, so a node in quorum mode verifies correctly and
+applies nothing — the chain stops. The node warns about exactly this at start-up.
+`dag.consensus` stays `leader` by default for that reason.
+
+What exists is the wire format, the verification, the validator set and the
+quorum arithmetic — the half where the security lives, and the half that has to
+be right before anything is built on it.
+
 ## What this is not, yet
 
-This is a set of authorised signers with an implicit quorum of one. The validator
-work replaces that with a set and a quorum count — "at least ⅔ of these keys
-signed" rather than "one of these keys signed" — and the seam is deliberate:
-nothing outside `dag/pinauth.go` cares how many keys there are or how many
-signatures are needed.
-
-Until then, a single compromised signing key is a compromised ledger. That is the
-main reason the validator quorum is the next piece of work rather than a later
+In leader mode this is a set of authorised signers with an implicit quorum of
+one, so a single compromised signing key is a compromised ledger. That is the
+main reason the validator protocol is the next piece of work rather than a later
 one.

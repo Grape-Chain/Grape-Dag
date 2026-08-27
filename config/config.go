@@ -213,6 +213,8 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("dag.walkdepth", 10)
 	viper.SetDefault("dag.confirmshare", 667)
 	viper.SetDefault("dag.pinsigners", "")
+	viper.SetDefault("dag.consensus", "leader")
+	viper.SetDefault("dag.validators", "")
 	viper.SetDefault("dag.slicing", true)
 	viper.SetDefault("store.enabled", true)
 	viper.SetDefault("store.path", "data/ledger")

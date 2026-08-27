@@ -73,6 +73,24 @@ message ExecutedSmcTx {
     TxReceipt receipt = 3;
 }
 
+// ValidatorSignature - one validator's signature over a commit transaction's
+// prototype hash (TxPin.PrototypeHash), which excludes the signatures
+// themselves so that every validator signs the same bytes.
+message ValidatorSignature {
+    bytes pk   = 1; // the validator's public key
+    bytes sign = 2; // signature over the prototype hash
+}
+
+// QuorumCert - evidence that a quorum of the validator set agreed to this exact
+// commit transaction. Replaces "the leader said so" as the reason a node applies
+// one.
+message QuorumCert {
+    int64  pinNumber = 1; // which commit transaction this certifies
+    bytes  pinHash   = 2; // the prototype hash the validators signed
+    uint32 round     = 3; // the view-change round agreement was reached in
+    repeated ValidatorSignature signatures = 4;
+}
+
 // TxPin - pinning transaction definition
 message TxPin {
     bytes prev                    = 1; // prev pin tx id
@@ -85,4 +103,6 @@ message TxPin {
     repeated ExecutedSmcTx smcTxs = 8; // executed smart contract transactions within this pin tx
     repeated Diff          diffs  = 9; // diffs on smart contract state store appeared after executing smart contract transactions
     int64   pinNumber             = 10;
+    QuorumCert quorum             = 11; // a quorum of validators agreed this pin; absent in single-leader mode
+    bytes   proposer              = 12; // the validator that built it
 }

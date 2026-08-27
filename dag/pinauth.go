@@ -58,10 +58,81 @@ type pinAuthority struct {
 	// learned from the chain and a mismatch is fatal to the chain rather than
 	// something to adopt.
 	configured bool
+
+	// validators / quorum - the quorum form. A commit transaction is applied
+	// because at least `quorum` of these keys signed it, rather than because one
+	// authorised key asserted it. Empty unless dag.consensus is "quorum".
+	validators map[string]struct{}
+	quorum     int
 }
 
 func newPinAuthority() *pinAuthority {
-	return &pinAuthority{signers: make(map[string]struct{})}
+	return &pinAuthority{
+		signers:    make(map[string]struct{}),
+		validators: make(map[string]struct{}),
+	}
+}
+
+// quorumMode - is this node applying commit transactions on the strength of a
+// validator quorum rather than a single signer?
+func (a *pinAuthority) quorumMode() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.quorum > 0 && len(a.validators) > 0
+}
+
+// validatorSet - a copy, so a verifier can read it without holding the lock
+// across the signature checks.
+func (a *pinAuthority) validatorSet() (map[string]struct{}, int) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make(map[string]struct{}, len(a.validators))
+	for k := range a.validators {
+		out[k] = struct{}{}
+	}
+	return out, a.quorum
+}
+
+// quorumFor - the number of agreeing validators a commit transaction needs out
+// of a set of n: the usual two thirds plus one, which tolerates the largest
+// number of faulty members a set of that size can tolerate at all.
+func quorumFor(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return (2*n)/3 + 1
+}
+
+// configureValidators - take the validator set from configuration and derive the
+// quorum from its size.
+func configureValidators(raw string) error {
+	keys, err := parseKeyList(raw, "dag.validators")
+	if err != nil {
+		return err
+	}
+	pinAuth.mu.Lock()
+	defer pinAuth.mu.Unlock()
+	pinAuth.validators = keys
+	pinAuth.quorum = quorumFor(len(keys))
+	return nil
+}
+
+// parseKeyList - hex public keys, comma separated, 0x optional. A key that
+// cannot be decoded is refused loudly rather than silently dropped: a typo that
+// quietly shrank the validator set would lower the quorum with it.
+func parseKeyList(raw, setting string) (map[string]struct{}, error) {
+	out := make(map[string]struct{})
+	for _, field := range strings.Split(raw, ",") {
+		key := strings.TrimPrefix(strings.TrimSpace(field), "0x")
+		if key == "" {
+			continue
+		}
+		if _, err := hex.DecodeString(key); err != nil {
+			return nil, errors.Errorf("%s contains %q, which is not hex: %s", setting, field, err.Error())
+		}
+		out[strings.ToLower(key)] = struct{}{}
+	}
+	return out, nil
 }
 
 // configurePinSigners - take the authorised set from configuration. A key that
@@ -69,22 +140,14 @@ func newPinAuthority() *pinAuthority {
 // quietly left the node trusting nobody, or trusting the first peer to talk to
 // it, is the failure this whole file exists to prevent.
 func configurePinSigners(raw string) error {
+	keys, err := parseKeyList(raw, "dag.pinsigners")
+	if err != nil {
+		return err
+	}
 	pinAuth.mu.Lock()
 	defer pinAuth.mu.Unlock()
-	pinAuth.signers = make(map[string]struct{})
-	pinAuth.configured = false
-
-	for _, field := range strings.Split(raw, ",") {
-		key := strings.TrimPrefix(strings.TrimSpace(field), "0x")
-		if key == "" {
-			continue
-		}
-		if _, err := hex.DecodeString(key); err != nil {
-			return errors.Errorf("dag.pinsigners contains %q, which is not hex: %s", field, err.Error())
-		}
-		pinAuth.signers[strings.ToLower(key)] = struct{}{}
-		pinAuth.configured = true
-	}
+	pinAuth.signers = keys
+	pinAuth.configured = len(keys) > 0
 	return nil
 }
 
@@ -133,6 +196,18 @@ func (a *pinAuthority) known() int {
 func authorisePin(pin *pb.TxPin) error {
 	if pin == nil {
 		return errors.New("no commit transaction to authorise")
+	}
+	// In quorum mode the reason to apply a commit transaction is that a quorum of
+	// the validator set agreed to it, not that one key asserted it. The
+	// proposer's own signature is not consulted: it is one validator's opinion,
+	// and it is already inside the certificate if it counts.
+	if pinAuth.quorumMode() {
+		validators, quorum := pinAuth.validatorSet()
+		if err := pin.VerifyQuorum(validators, quorum); err != nil {
+			return errors.Errorf("commit transaction pin=%d does not carry a validator quorum: %s",
+				pin.PinNumber, err.Error())
+		}
+		return nil
 	}
 	if err := pin.VerifyTx(); err != nil {
 		return errors.Errorf("commit transaction pin=%d is not correctly signed: %s", pin.PinNumber, err.Error())
@@ -223,6 +298,16 @@ func logPinAuthority() {
 	pinAuth.mu.RLock()
 	defer pinAuth.mu.RUnlock()
 	switch {
+	case pinAuth.quorum > 0 && len(pinAuth.validators) > 0:
+		utils.ColorizeInfo(logger, "[pin auth] Applying commit transactions agreed by %d of %d validator(s)",
+			pinAuth.quorum, len(pinAuth.validators))
+		// Verification is in place; the protocol that collects the agreement is
+		// not. Nothing yet builds a quorum certificate, so a node in this mode
+		// will verify correctly and apply nothing at all. Better said here than
+		// discovered as a chain that silently stopped.
+		logger.Warnf("[pin auth] dag.consensus=quorum verifies quorum certificates but nothing produces them yet: the validator protocol is not implemented, so this node will apply no commit transaction. Use dag.consensus=leader until it lands.")
+	case pinAuth.quorum > 0:
+		logger.Warnf("[pin auth] dag.consensus is quorum but dag.validators is empty, so no commit transaction can ever be applied")
 	case pinAuth.configured:
 		keys := make([]string, 0, len(pinAuth.signers))
 		for k := range pinAuth.signers {

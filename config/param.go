@@ -148,6 +148,13 @@ type DagConfiguration struct {
 	// chain-opening statement instead, which trusts whichever peer supplied the
 	// chain. See dag/pinauth.go.
 	Pinsigners string
+	// Consensus - what makes a commit transaction applicable: "leader" (a single
+	// authorised signer asserts it, the behaviour so far) or "quorum" (at least
+	// two thirds of Validators agreed to it).
+	Consensus string
+	// Validators - public keys, hex, comma separated, forming the validator set
+	// in quorum mode. The quorum is derived from the size of the set.
+	Validators string
 	Slicing    bool // Move sites settled by a commit transaction out of the live graph into the slice archive
 }
 

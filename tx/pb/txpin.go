@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
@@ -175,6 +176,10 @@ func (t *TxPin) PrototypeHash() ([]byte, error) {
 	}
 	c.Sign = nil
 	c.Pk = nil
+	// And the quorum certificate, for the same reason: the validators are
+	// signing this hash, so it cannot depend on how many of them have signed
+	// yet.
+	c.Quorum = nil
 	buf, err := deterministicMarshal(c)
 	if err != nil {
 		return nil, err
@@ -220,4 +225,103 @@ func (t *TxPin) generateSignature(pk *grape_wallet.PrivateKey) []byte {
 	}
 	// Get the signature
 	return t.Sign
+}
+
+// QuorumSigners - the distinct validators whose signatures over this commit
+// transaction's prototype hash check out, restricted to the given set.
+//
+// Returns the signers rather than a count, so a caller can say which validators
+// agreed and not merely how many - which is what makes a disagreement
+// diagnosable rather than just a number that is too small.
+func (t *TxPin) QuorumSigners(validators map[string]struct{}) ([]string, error) {
+	cert := t.GetQuorum()
+	if cert == nil {
+		return nil, errors.Errorf("commit transaction pin=%d carries no quorum certificate", t.PinNumber)
+	}
+	if cert.PinNumber != t.PinNumber {
+		return nil, errors.Errorf("quorum certificate is for pin=%d but the commit transaction is pin=%d",
+			cert.PinNumber, t.PinNumber)
+	}
+	payload, err := t.PrototypeHash()
+	if err != nil {
+		return nil, errors.Errorf("cannot hash commit transaction pin=%d: %s", t.PinNumber, err.Error())
+	}
+	if len(cert.PinHash) == 0 || !bytes.Equal(cert.PinHash, payload) {
+		// The certificate names the bytes the validators agreed to. If they are
+		// not the bytes in hand, the signatures are evidence about a different
+		// commit transaction.
+		//
+		// Defence in depth rather than the load-bearing check: each signature is
+		// verified against the recomputed hash below, so a certificate lifted
+		// from another commit transaction fails there too. This one turns that
+		// into a clear diagnosis instead of "not enough signatures".
+		return nil, errors.Errorf("quorum certificate for pin=%d certifies a different commit transaction", t.PinNumber)
+	}
+
+	dsa := grape_wallet.NewDSA()
+	seen := make(map[string]struct{}, len(cert.Signatures))
+	signers := make([]string, 0, len(cert.Signatures))
+	for _, sig := range cert.Signatures {
+		if sig == nil || len(sig.Pk) == 0 || len(sig.Sign) < 64 {
+			continue
+		}
+		key := strings.ToLower(hex.EncodeToString(sig.Pk))
+		if _, dup := seen[key]; dup {
+			// One validator signing twice is one validator.
+			continue
+		}
+		if _, isValidator := validators[key]; !isValidator {
+			continue
+		}
+		if !dsa.Verify(grape_wallet.PublicKey(sig.Pk), sig.Sign, payload) {
+			continue
+		}
+		seen[key] = struct{}{}
+		signers = append(signers, key)
+	}
+	return signers, nil
+}
+
+// VerifyQuorum - does this commit transaction carry agreement from at least
+// `quorum` distinct members of the validator set?
+func (t *TxPin) VerifyQuorum(validators map[string]struct{}, quorum int) error {
+	if quorum < 1 {
+		return errors.New("a quorum of fewer than one signature is not a quorum")
+	}
+	signers, err := t.QuorumSigners(validators)
+	if err != nil {
+		return err
+	}
+	if len(signers) < quorum {
+		return errors.Errorf("commit transaction pin=%d carries %d valid validator signature(s), quorum is %d",
+			t.PinNumber, len(signers), quorum)
+	}
+	return nil
+}
+
+// SignAsValidator - add this wallet's agreement to the commit transaction's
+// certificate, replacing any signature it had already contributed.
+func (t *TxPin) SignAsValidator(w *grape_wallet.Wallet, round uint32) error {
+	payload, err := t.PrototypeHash()
+	if err != nil {
+		return errors.Errorf("cannot hash commit transaction pin=%d: %s", t.PinNumber, err.Error())
+	}
+	if t.Quorum == nil {
+		t.Quorum = &QuorumCert{PinNumber: t.PinNumber, PinHash: payload, Round: round}
+	}
+	// The certificate has to name the same bytes every signer signed.
+	t.Quorum.PinNumber = t.PinNumber
+	t.Quorum.PinHash = payload
+	pk := *w.PublicKey()
+	kept := t.Quorum.Signatures[:0]
+	for _, sig := range t.Quorum.Signatures {
+		if sig != nil && !bytes.Equal(sig.Pk, pk) {
+			kept = append(kept, sig)
+		}
+	}
+	t.Quorum.Signatures = append(kept, &ValidatorSignature{
+		Pk:   pk,
+		Sign: grape_wallet.NewDSA().Sign(*w.PrivateKey(), payload),
+	})
+	return nil
 }
