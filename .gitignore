@@ -43,6 +43,9 @@ Thumbs.db
 *.swo
 *~
 
+# Runtime artifacts written by a running peer
+*.pid
+
 # Logs
 *.log
 logs/

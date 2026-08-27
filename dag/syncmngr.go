@@ -581,8 +581,16 @@ pinProcessing:
 				logger.Infof("[Gap detected] Start downloaded pin processing")
 				logged = true
 			}
+			// A batch can overlap what we already applied - the leader answers
+			// from the height we asked for, and we may have moved on since.
+			// Skipping those is normal; only a forward gap ends the catch-up.
+			if int(downloadedPin.PinNumber) <= _pins_.CurrentHeight() {
+				logger.Debugf("[Gap detected] Already have pin=%d, skipping", downloadedPin.PinNumber)
+				continue
+			}
 			if !applyPin(downloadedPin) {
-				logger.Errorf("[Gap detected] Downloaded pin=%d is out of order, exit downloading loop", downloadedPin.PinNumber)
+				logger.Errorf("[Gap detected] Downloaded pin=%d does not continue our chain (height=%d), exit downloading loop",
+					downloadedPin.PinNumber, _pins_.CurrentHeight())
 				break pinProcessing
 			}
 			logger.Infof("[Gap detected] Processed downloaded pin at height=%d", downloadedPin.PinNumber)

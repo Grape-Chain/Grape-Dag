@@ -400,14 +400,24 @@ func handleDownloadedPinsFromLeader(rec *tx.Syncv1) error {
 	amountOfPins := lIntValue.GetValue()
 	logger.Infof("Leader returned %d pins", amountOfPins)
 
-	offset := 1
-
+	// Details is [count, pin, pin, ...]: walk it, rather than re-reading the
+	// first entry for every pin, which delivered N copies of the same pin and
+	// left the receiver one pin further along per round trip at best.
 	for i := 0; i < int(amountOfPins); i++ {
-		pMsg, _ := rec.Details[offset].UnmarshalNew()
-		pBytesValue := pMsg.(*wrapperspb.BytesValue)
-		pin := pb.TxPin{}
-		err := proto.Unmarshal(pBytesValue.GetValue(), &pin)
+		offset := i + 1
+		if offset >= len(rec.Details) {
+			return fmt.Errorf("leader announced %d pins but sent %d", amountOfPins, len(rec.Details)-1)
+		}
+		pMsg, err := rec.Details[offset].UnmarshalNew()
 		if err != nil {
+			return fmt.Errorf("unwrapping pin %d of %d from leader: %s", i+1, amountOfPins, err.Error())
+		}
+		pBytesValue, ok := pMsg.(*wrapperspb.BytesValue)
+		if !ok {
+			return fmt.Errorf("pin %d of %d from leader has unexpected type %T", i+1, amountOfPins, pMsg)
+		}
+		pin := pb.TxPin{}
+		if err := proto.Unmarshal(pBytesValue.GetValue(), &pin); err != nil {
 			return fmt.Errorf("unmarshaling received pin from leader: %s", err.Error())
 		}
 		logger.Infof("Received pin=%d from Leader", pin.PinNumber)

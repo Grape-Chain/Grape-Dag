@@ -35,6 +35,15 @@ RUN go build -ldflags="${LDFLAGS}" -o /out/grapepeer ./cmd/grapepeer && \
     go build -ldflags="${LDFLAGS}" -o /out/txgen    ./cmd/txgen    && \
     go build -ldflags="${LDFLAGS}" -o /out/secret   ./cmd/secret
 
+# Web wallet: the signer is the same crypto/tx code compiled to WebAssembly, so
+# the browser produces exactly the bytes the node validates. Served pre-gzipped
+# (~5 MB instead of ~25 MB).
+RUN mkdir -p /out/wallet && \
+    cp web/wallet/index.html web/wallet/app.js web/wallet/units.js /out/wallet/ && \
+    cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" /out/wallet/wasm_exec.js && \
+    GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o /out/wallet/wallet.wasm ./cmd/walletwasm && \
+    gzip -9 -k /out/wallet/wallet.wasm
+
 # -----------------------------------------------------------------------------
 # Runtime
 # -----------------------------------------------------------------------------
@@ -53,6 +62,9 @@ COPY --chown=grape:grape config/bootstrap.json        /home/grape/.grap3/bootstr
 COPY --chown=grape:grape config/grapepk.json          /home/grape/.grap3/grapepk.json
 
 # Binaries.
+# Web wallet assets, served by the peer at /wallet/ (peer.walletdir).
+COPY --from=builder --chown=grape:grape /out/wallet /home/grape/wallet
+
 COPY --from=builder /out/grapepeer /usr/local/bin/grapepeer
 COPY --from=builder /out/txgen    /usr/local/bin/txgen
 COPY --from=builder /out/secret   /usr/local/bin/secret

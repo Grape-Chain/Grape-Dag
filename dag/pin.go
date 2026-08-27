@@ -16,13 +16,13 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/Grape-Chain/Grape-Dag/smc"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/vm"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
-	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/enescakir/emoji"
 	"github.com/golang-collections/collections/set"
 	"github.com/google/uuid"
@@ -43,8 +43,13 @@ type NodeTxPin struct {
 	// application, which re-executes smart contracts against the VM over gRPC
 	// and can therefore block for a long time - or indefinitely, if the VM is
 	// unreachable.
-	view           atomic.Pointer[[]*pb.TxPin]
+	view atomic.Pointer[[]*pb.TxPin]
+	// downloadedPins carries a batch of pins fetched to close a gap. dlMu and
+	// dlClosed exist because the producer closes the channel to signal the end
+	// of a batch, and a late send on a closed channel would panic the node.
 	downloadedPins chan *pb.TxPin
+	dlMu           sync.Mutex
+	dlClosed       bool
 }
 
 // chain - the current published view of the pin chain. Lock-free; the returned
@@ -216,7 +221,10 @@ func (p *NodeTxPin) getAllFrom(fromPinNumber int) []*pb.TxPin {
 }
 
 func (p *NodeTxPin) openPinDownloading() {
+	p.dlMu.Lock()
+	defer p.dlMu.Unlock()
 	p.downloadedPins = make(chan *pb.TxPin, 1000)
+	p.dlClosed = false
 }
 
 func (p *NodeTxPin) GetBalance(wallet []byte) (*big.Int, error) {
@@ -228,10 +236,26 @@ func (p *NodeTxPin) GetBalance(wallet []byte) (*big.Int, error) {
 }
 
 func (p *NodeTxPin) AddDownloadedPin(pin *pb.TxPin) {
-	p.downloadedPins <- pin
+	p.dlMu.Lock()
+	defer p.dlMu.Unlock()
+	if p.dlClosed || p.downloadedPins == nil {
+		logger.Warnf("[Gap detected] Discarding pin=%d: no download in progress", pin.PinNumber)
+		return
+	}
+	select {
+	case p.downloadedPins <- pin:
+	default:
+		logger.Warnf("[Gap detected] Download buffer full, discarding pin=%d", pin.PinNumber)
+	}
 }
 
 func (p *NodeTxPin) ClosePinDownloading() {
+	p.dlMu.Lock()
+	defer p.dlMu.Unlock()
+	if p.dlClosed || p.downloadedPins == nil {
+		return
+	}
+	p.dlClosed = true
 	close(p.downloadedPins)
 }
 
