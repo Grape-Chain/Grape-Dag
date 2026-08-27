@@ -77,6 +77,22 @@ type ConfirmTracker struct {
 	// confirmed - and, once fees land, paid - twice.
 	harvested map[uuid.UUID]struct{}
 
+	// roots - the sites in the active region that approve nothing else in it,
+	// maintained incrementally. These are where a tip-selection walk starts: a
+	// walk has to begin below the tips for the bias towards well-confirmed
+	// branches to mean anything, and the active region is exactly the part of
+	// the ledger where the choice is still open. Everything below it is
+	// confirmed and cannot be unconfirmed, so biasing among those sites would
+	// buy nothing.
+	//
+	// The set is maintained rather than scanned because the scan is O(active
+	// region), and the active region grows with throughput: at a thousand
+	// transactions a second a scan per selection would be a scan per insert.
+	// Every membership change is O(targets + sources), which is bounded by
+	// approvetx. TestWalkRootsMatchOracle checks the set against a brute-force
+	// scan after every insert.
+	roots map[uuid.UUID]struct{}
+
 	approveTx   int
 	tipTimeout  time.Duration
 	lastSweepAt time.Time
@@ -102,6 +118,7 @@ func newConfirmTracker(approveTx int, tipTimeout time.Duration) *ConfirmTracker 
 		byCount:      make(map[int]map[uuid.UUID]struct{}),
 		confirmedSet: make(map[uuid.UUID]struct{}),
 		harvested:    make(map[uuid.UUID]struct{}),
+		roots:        make(map[uuid.UUID]struct{}),
 		approveTx:    approveTx,
 		tipTimeout:   tipTimeout,
 	}
@@ -131,6 +148,45 @@ func (c *ConfirmTracker) recount(id uuid.UUID, tr *siteTrack, delta int) {
 	c.unbucket(id, tr.count)
 	tr.count += delta
 	c.bucket(id, tr.count)
+}
+
+// refreshRoot - restate whether a site is an entry point for a tip-selection
+// walk: tracked, and approving nothing else still tracked. Called on every
+// change that can affect the answer - a site entering the region, a site gaining
+// resolved targets, and a site leaving the region (which can promote the sites
+// that approve it). Caller holds the lock.
+func (c *ConfirmTracker) refreshRoot(id uuid.UUID) {
+	tr, ok := c.sites[id]
+	if !ok || tr.node == nil {
+		delete(c.roots, id)
+		return
+	}
+	for _, t := range tr.node.targets {
+		if t == nil {
+			continue
+		}
+		if _, inside := c.sites[t.id.id]; inside {
+			delete(c.roots, id)
+			return
+		}
+	}
+	c.roots[id] = struct{}{}
+}
+
+// promoteSources - a site has left the active region, so the sites that approve
+// it may now approve nothing inside it. Caller holds the lock.
+func (c *ConfirmTracker) promoteSources(node *Node) {
+	if node == nil {
+		return
+	}
+	for _, s := range node.sources {
+		if s == nil {
+			continue
+		}
+		if _, inside := c.sites[s.id.id]; inside {
+			c.refreshRoot(s.id.id)
+		}
+	}
 }
 
 func (c *ConfirmTracker) takeSlot(id uuid.UUID) int {
@@ -251,6 +307,8 @@ func (c *ConfirmTracker) sweep() {
 			}
 			c.unbucket(id, tr.count)
 			delete(c.sites, id)
+			delete(c.roots, id)
+			c.promoteSources(tr.node)
 			if _, done := c.harvested[id]; done {
 				continue
 			}
@@ -363,6 +421,19 @@ func (c *ConfirmTracker) track(vertex *Node) {
 		}
 	}
 
+	c.refreshRoot(id)
+	// A site that arrived before the one it approves (insertMissing relinks out
+	// of order) was an entry point while its target was absent; it is not one
+	// any more.
+	for _, src := range vertex.sources {
+		if src == nil {
+			continue
+		}
+		if _, inside := c.sites[src.id.id]; inside {
+			c.refreshRoot(src.id.id)
+		}
+	}
+
 	c.expireStaleTips(now)
 	c.sweep()
 }
@@ -391,6 +462,7 @@ func (c *ConfirmTracker) resolve(tr *siteTrack, vertex *Node) {
 			c.retireTip(t.id.id, ttr)
 		}
 	}
+	c.refreshRoot(vertex.id.id)
 	c.sweep()
 }
 
@@ -471,7 +543,10 @@ func (c *ConfirmTracker) markHarvested(id uuid.UUID) {
 		c.retireTip(id, tr)
 		c.unbucket(id, tr.count)
 		delete(c.sites, id)
+		delete(c.roots, id)
+		c.promoteSources(tr.node)
 	}
+	delete(c.roots, id)
 	for i, n := range c.confirmed {
 		if n != nil && n.id.id == id {
 			c.confirmed = append(c.confirmed[:i], c.confirmed[i+1:]...)
@@ -507,4 +582,63 @@ func (c *ConfirmTracker) shareOf(id uuid.UUID) (float64, bool) {
 		return 0, false
 	}
 	return float64(tr.count) / float64(c.tipCount), true
+}
+
+// ------------------------------------------------------------- tip selection
+
+// walkRoots - the entry points for a tip-selection walk: the sites in the
+// active region that approve nothing else in it. Every tip is reachable from
+// one of them by stepping forwards along approvals, because the region is a
+// finite DAG: follow any site's targets backwards and you leave the region.
+func (c *ConfirmTracker) walkRoots() []*Node {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*Node, 0, len(c.roots))
+	for id := range c.roots {
+		tr, ok := c.sites[id]
+		if !ok || tr.node == nil {
+			delete(c.roots, id)
+			continue
+		}
+		out = append(out, tr.node)
+	}
+	return out
+}
+
+// walkFrom - one step's worth of the active region as seen from a site: whether
+// it may be approved, how much of the graph confirms it, and the sites that
+// approve it and are still in the region with the same measure for each.
+//
+// Returned together because a walk takes many steps and each step would
+// otherwise take the lock several times. The potential is the site's
+// confirmation count - the number of current tips that confirm it, the same
+// quantity section 5.1 measures. It is non-increasing as the walk moves towards
+// the tips: a tip that confirms a site confirms all of that site's ancestors.
+func (c *ConfirmTracker) walkFrom(from *Node) (bool, int, []*Node, []int) {
+	if from == nil {
+		return false, 0, nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tr, ok := c.sites[from.id.id]
+	if !ok {
+		// Confirmed, pinned, or never tracked: outside the region the walk runs
+		// over, so it is neither selectable nor a place to step from.
+		return false, 0, nil, nil
+	}
+	selectable := !tr.detached && tr.approvers < c.approveTx
+	next := make([]*Node, 0, len(from.sources))
+	pot := make([]int, 0, len(from.sources))
+	for _, s := range from.sources {
+		if s == nil {
+			continue
+		}
+		str, inside := c.sites[s.id.id]
+		if !inside || str.node == nil {
+			continue
+		}
+		next = append(next, str.node)
+		pot = append(pot, str.count)
+	}
+	return selectable, tr.count, next, pot
 }

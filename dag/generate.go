@@ -156,11 +156,11 @@ func GenerateWideDag(dagWidth uint8) *Dag {
 	goterators.ForEach(dag[1:], func(node *Node) {
 		links = append(links, Link{source: node, target: genesis})
 	})
-	switch dagConfig.Algorithm {
+	switch dagAlgorithm() {
 	case DAG_ALGO_MCMCP.Type():
-		ReverseSlice(dag)
+		// See insert.go: the node slice is already in the order
+		// updateCumWeights needs.
 		dag = updateCumWeights(dag, links)
-		ReverseSlice(dag)
 	}
 	//dag = updateFwdWeights(dag, links)
 	// form our second pin tx - exodus nodes

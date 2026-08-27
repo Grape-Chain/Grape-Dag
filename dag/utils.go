@@ -1,7 +1,6 @@
 package dag
 
 import (
-	"math/rand"
 	"runtime"
 	"sort"
 
@@ -11,19 +10,6 @@ import (
 
 func __noop__() {
 	runtime.Gosched()
-}
-
-func _sort_(nodes []*Node) {
-	sort.SliceStable(nodes, func(i, j int) bool {
-		return nodes[i].txWeight < nodes[j].txWeight
-	})
-}
-
-func _shuffle_(approvers []*Node) {
-	// rand.Seed(time.Now().UnixMilli())
-	rand.Shuffle(len(approvers), func(i, j int) {
-		approvers[i], approvers[j] = approvers[j], approvers[i]
-	})
 }
 
 func (dag *Dag) GetNodeVer(node *Node) (uint64, uint32) {

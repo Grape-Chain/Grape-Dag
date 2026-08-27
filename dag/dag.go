@@ -79,6 +79,12 @@ type confirmations interface {
 	getTips() []*Node
 	isTip(id uuid.UUID) bool
 	markHarvested(id uuid.UUID)
+	// walkRoots - where a tip-selection walk starts. See dag/walk.go.
+	walkRoots() []*Node
+	// walkFrom - one step's worth of the region a tip-selection walk runs over:
+	// whether the site may be approved, its confirmation count, and the sites
+	// that approve it with theirs.
+	walkFrom(from *Node) (selectable bool, potential int, next []*Node, nextPotential []int)
 }
 
 type DagAlgo uint8
@@ -408,6 +414,7 @@ func Init() {
 	walletCacheConfirmed = newWalletCache()
 	dagWallet = initDagWallet(dagConfig)
 	confirmationCounter = newConfirmations(dagConfig)
+	logTipSelection()
 	sliceArchive = newRamArchive()
 	_pins_ = newNodeTxPin()
 	// Note: genesis node is the only node that is authorized to create the genesis tx as the starting
@@ -591,28 +598,6 @@ func (dag *Dag) logLast(pref string, node *Node, depth int) {
 			)
 		})
 	}
-}
-
-func isNodeTip(links []Link, node *Node, approvetx int) bool {
-	if len(links) == 0 {
-		return true
-	}
-
-	return tipCache().isTip(node.id.id)
-	// count := 0
-
-	// for _, link := range links {
-	// 	if link.target.Equal(node) {
-	// 		count++
-	// 		// if two other nodes ref this node as target - this is not a tip
-	// 		// @TODO: make this aa config parameter for math discovery
-	// 		if count == approvetx {
-	// 			return false
-	// 		}
-	// 	}
-	// }
-	// Otherwise, if at most 1 ref to a target node - this is a tip
-	// return true
 }
 
 // @Optimize Performance

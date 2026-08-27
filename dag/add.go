@@ -1,8 +1,6 @@
 package dag
 
 import (
-	"math/rand"
-
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/google/uuid"
 	"github.com/ledongthuc/goterators"
@@ -26,41 +24,10 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 		// into the genesis-fanout phase and link new sites to genesis again.
 		if dag.sitesAdded.Load() < uint64(dag.width) {
 			tips = append(tips, dag.getGenesis())
+		} else if dagAlgorithm() == DAG_ALGO_RANDOM.Type() {
+			tips = dag.uniformTips()
 		} else {
-			// list of nodes in dag that came before this node
-
-			candidates := tipCache().getTips()
-
-			candidateLinks := []Link{}
-
-			for _, v := range candidates {
-				for _, t := range v.targets {
-					candidateLinks = append(candidateLinks, Link{
-						source: v,
-						target: t,
-					})
-				}
-			}
-
-			rand.Shuffle(len(candidates), func(i, j int) {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			})
-			if dagConfig.Algorithm != DAG_ALGO_RANDOM.Type() {
-				tips = weightedMcmc(candidates, candidateLinks, dagConfig.Alpha)
-			} else {
-				c1 := rand.Int31n(int32(len(candidates)))
-				tips = append(tips, candidates[c1])
-				if len(candidates) > 1 {
-					var c2 int32 = 0
-					for {
-						c2 = rand.Int31n(int32(len(candidates)))
-						if c1 != c2 {
-							break
-						}
-					}
-					tips = append(tips, candidates[c2])
-				}
-			}
+			tips = dag.selectTips(dagConfig.Alpha)
 		}
 	}
 	if dag.approveTx(tips) {
@@ -89,10 +56,8 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 	}
 
 	// To speed things up, ignore cumWeights when working with MCMCPP
-	if dagConfig.Algorithm == DAG_ALGO_MCMCP.Type() {
-		// ReverseSlice(dag._dag_)
+	if dagAlgorithm() == DAG_ALGO_MCMCP.Type() {
 		dag._dag_ = updateCumWeights(dag._dag_, dag._links_)
-		// ReverseSlice(dag._dag_)
 	}
 
 	//dag.dag = updateFwdWeights(dag.dag, dag.links)

@@ -163,3 +163,21 @@ func newConfirmations(cfg config.DagConfiguration) confirmations {
 		return newConfirmTracker(approve, timeout)
 	}
 }
+
+// walkRoots - the legacy rule keeps no record of which sites are still open, so
+// it offers a tip-selection walk nowhere to start. Selection falls back to a
+// uniform pick among the tips, which is what this rule has always effectively
+// done.
+func (c *ConfirmationCounter) walkRoots() []*Node { return nil }
+
+// walkFrom - see walkRoots: with no share to measure there is nothing to bias a
+// walk with.
+func (c *ConfirmationCounter) walkFrom(from *Node) (bool, int, []*Node, []int) {
+	if from == nil {
+		return false, 0, nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.tips[from.id.id]
+	return ok, 0, nil, nil
+}
