@@ -186,6 +186,10 @@ func (p *NodeTxPin) set(genesis *Node, wallet string) {
 	pin.SignTx(_dag_.Wallet())
 
 	p.unsafe_appendPin(pin)
+	// The genesis pin is where the initial offering enters the ledger, so it is
+	// both the store's record of the chain's identity and the only statement of
+	// where the money came from.
+	chainStartCommitted(pin)
 	// The genesis site reaches a pin without going through the confirmed pool,
 	// so record it as harvested here: otherwise the first two sites to approve
 	// genesis promote it and it lands in a second pin.

@@ -66,10 +66,17 @@ const (
 )
 
 type Grapepeer struct {
-	Peer PeerConfiguration
-	Dag  DagConfiguration
-	Tx   TxConfiguration
-	Host HostConfig
+	Peer  PeerConfiguration
+	Dag   DagConfiguration
+	Tx    TxConfiguration
+	Host  HostConfig
+	Store StoreConfiguration
+}
+
+// StoreConfiguration - where the commit-transaction chain is kept on disk.
+type StoreConfiguration struct {
+	Enabled bool   // persist the chain, so a restart does not resync from scratch
+	Path    string // directory, relative to the config directory unless absolute
 }
 
 type PeerConfiguration struct {

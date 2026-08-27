@@ -38,7 +38,8 @@ func newDag(dagConfig config.DagConfiguration) *Dag {
 
 	var inDagPins []*Node = []*Node{}
 	mapped_vertices := make(map[uuid.UUID]*Node)
-	if config.GetConfig().Host.Leader {
+	// A leader with a stored chain recovers it rather than opening a new one.
+	if config.GetConfig().Host.Leader && !recoveringChain {
 		dag = append(dag, genesis)
 		mapped_vertices[genesis.id.id] = genesis
 		inDagPins = []*Node{genesis}

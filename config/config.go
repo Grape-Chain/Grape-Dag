@@ -210,6 +210,8 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("dag.confirmation", "share100")
 	viper.SetDefault("dag.tiptimeout", 30)
 	viper.SetDefault("dag.slicing", true)
+	viper.SetDefault("store.enabled", true)
+	viper.SetDefault("store.path", "data/ledger")
 	viper.SetDefault("dag.initialwidth", 5)
 	viper.SetDefault("dag.lambda", 1000)
 	viper.SetDefault("dag.totaltx", 0)

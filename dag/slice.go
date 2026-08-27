@@ -170,6 +170,15 @@ func (wc *WalletCache) remove(wallet string, txIds []string) error {
 	return nil
 }
 
+// setBalance - replace what the cache holds for a wallet, without arithmetic.
+// Used when rebuilding from the commit-transaction chain, where each pin states
+// the balance outright rather than a delta.
+func (wc *WalletCache) setBalance(wallet string, balance *big.Int) {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	wc.cache[wallet] = []*Pair[string, *big.Int]{newPair("recovered", big.NewInt(0).Set(balance))}
+}
+
 func (wc *WalletCache) copyFrom(another *WalletCache) error {
 	wc.mu.Lock()
 	defer wc.mu.Unlock()

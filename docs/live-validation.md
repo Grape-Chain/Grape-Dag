@@ -229,3 +229,98 @@ pointer breaking, the id recording, or the archiving is caught by those tests.
 The wallet flow was re-run against the sliced chain to confirm settled
 transactions are still queryable: faucet, balance, signed payment, settlement to
 the unit on both sides, and history all still pass.
+
+## Persistence (restart without resyncing)
+
+`dag/dag.go` used to log "Persisting the latest DAG state" next to a `@TODO:
+Implement DAG serialization`, and persist nothing: every restart rebuilt the
+ledger from the network. The commit-transaction chain is now written to an
+embedded Pebble store as it is formed, and a restarting node rebuilds from it.
+
+What is persisted is the chain, and only the chain. A commit transaction already
+carries the sites it settled, the balances, the executed contract transactions
+and the state diffs, so balances, the slice archive and the confirmation record
+are derived on start-up rather than stored separately — nothing can disagree
+with the chain because nothing else is stored. Unconfirmed sites are
+deliberately not persisted: no commit transaction has settled them, so they come
+back from the network, and anything the chain is behind on arrives through the
+gap-download path on the next announcement.
+
+Controlled by `store.enabled` (on) and `store.path` (`data/ledger`, relative to
+`~/.grap3`). A store belonging to another network is refused rather than
+misread.
+
+### The balance maps are not a faithful snapshot
+
+The first attempt rebuilt balances from the balance map each commit transaction
+carries. On a live restart, conservation then failed by 11 units — small, and
+stable, which is what made it worth chasing rather than dismissing.
+
+`cmd/ledgercheck` reads a stored chain without needing the node and computes the
+balances two ways: as the chain states them, and as its settled payments imply.
+On that chain:
+
+```
+opening total:  10000000000000000000000000000000
+replayed total: 10000000000000000000000000000000
+stated total:    9999999999999999999999999999984
+value is conserved: replaying every settled payment returns the opening total
+1 wallet(s) where the chain states a balance the transactions do not support
+```
+
+The map is written from the live cache at the moment the commit transaction is
+formed, so it also reflects sites that were still unconfirmed — it is not a
+statement of the ledger at that point. Receiving nodes never trusted it; their
+confirmed cache is built by replaying payments, and recovery now does the same.
+The maps are left as they are: they are consensus-visible, and correcting them
+belongs with the validator work, not here.
+
+Two further problems surfaced while getting this right:
+
+- The leader never maintained a confirmed balance cache at all — only the
+  receive path filled it — so there was no settled state to persist on the node
+  that forms the commit transactions. There is now one settled ledger,
+  maintained identically whichever side of the chain a node is on.
+- The pin that *opens* a node's chain arrives outside the ordinary commit path:
+  genesis on a node starting a ledger, the leader's snapshot on a node joining
+  one. Both state balances outright rather than as transactions, and neither was
+  being folded in, so the settled ledger seeded from a later commit transaction
+  instead. That is the bug conservation was reporting.
+
+### What the live restart showed
+
+Two peers, three waves of load, then both stopped and restarted on their
+existing data directories:
+
+```
+before restart   pins A=9 B=9, conservation exact
+after restart    [store] Seeded balances from the snapshot taken at pin 9 (286 wallets)
+                 [store] Recovered 10 commit transaction(s) from disk, chain head is pin 9
+                 [store] Continuing an existing ledger; skipping the balance snapshot handshake
+                 pins A=9 B=9, conservation exact
+then             pins advance to 14, conservation still exact
+```
+
+Neither node requested a balance snapshot from the leader: both recovered from
+disk. The chain continued from where it left off rather than renumbering, and
+the wallet flow — faucet, balance, signed payment, settlement, history — passes
+against the recovered chain. The store held 412K for 18 commit transactions and
+571 settled sites.
+
+Balances after a restart are legitimately *higher* than before it for accounts
+that had payments in flight: those sites were never settled, so their debits are
+not part of the ledger. They arrive again from the network.
+
+### On the tests
+
+Ten deliberate breakages are caught: not persisting, not folding the opening pin
+in, not updating the settled balances on commit, never snapshotting, not
+snapshotting on shutdown, replaying pins a snapshot already covers, crediting a
+recipient without debiting the sender, ignoring the opening statement, skipping
+the network check, and leaving the working cache empty.
+
+Three of those initially survived, which was worth more than the ones that did
+not: recovery falls back to replaying the whole chain when there is no snapshot,
+and that fallback was quietly covering for the live bug. The tests now shut down
+the way the node does, so the snapshot recovery trusts is the one the run
+produced.

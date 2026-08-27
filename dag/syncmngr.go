@@ -524,7 +524,7 @@ func applyPin(pin *pb.TxPin) bool {
 	_pins_.SyncPins(pin)
 	walletCache.copyFrom(walletCacheConfirmed)
 	_pins_.unsafe_appendPin(pin)
-	sliceAppliedPin(pin)
+	pinCommitted(pin)
 	return true
 }
 

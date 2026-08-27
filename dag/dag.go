@@ -258,7 +258,11 @@ func (dag *Dag) Vertex(id uuid.UUID) *Node {
 
 func (dag *Dag) Terminate() {
 	utils.ColorizeInfo(logger, "[dag] Persisting the latest DAG state")
-	utils.ColorizeWarn(logger, "[dag] @TODO: Implement DAG serialization")
+	// The commit-transaction chain is written as it is formed, so there is
+	// nothing to flush here beyond closing the store. Unconfirmed sites are
+	// deliberately not persisted: no commit transaction has settled them, so
+	// they come back from the network.
+	closeStore()
 	logger.Info("[dag] Stopping the DAG watcher")
 	dag.stopCh <- true
 	if dag.txCh != nil {
@@ -411,9 +415,35 @@ func Init() {
 	// The genesis node creates a genesis tx, all other nodes, upon start, must synchronize with the
 	// genesis node and obtain, among other tx, the genesis tx.
 	// Currently, every node that starts up, creates its own genesis tx. This must be implemented asap.
+	// Decide before any genesis is minted whether this node already has a
+	// ledger. Checking afterwards would find the genesis pin newDag just wrote
+	// and mistake a first run for a recovery.
+	hasStoredChain, err := storedChainExists()
+	if err != nil {
+		// Refusing to start beats silently forking away from our own history.
+		logger.Fatalf("[store] Cannot read the ledger store: %s", err.Error())
+	}
+	recoveringChain = hasStoredChain
+
 	_dag_ = newDag(dagConfig)
 
+	if hasStoredChain {
+		recovered, err := recoverFromStore()
+		if err != nil {
+			logger.Fatalf("[store] Cannot recover the ledger: %s", err.Error())
+		}
+		if recovered {
+			if genesis := recoveredGenesisSite(); genesis != nil {
+				_dag_.adoptGenesis(genesis)
+			}
+			utils.ColorizeInfo(logger, "[store] Continuing an existing ledger; skipping the balance snapshot handshake")
+			return
+		}
+	}
+
 	if config.GetConfig().Host.Leader {
+		// Only meaningful on a fresh chain: once the genesis wallet has spent
+		// anything, its balance is no longer the initial offering.
 		ico, err := _pins_.unsafe_getBalanceForWallet(dagWallet.WalletAddress())
 		if err != nil {
 			panic(err.Error())
@@ -421,6 +451,27 @@ func Init() {
 		if ico == nil || ico.Cmp(_dag_.getGenesis().tx.GetAmount()) != 0 {
 			panic("Genesis amount in cache is incorrect. Cannot contine initialization")
 		}
+	}
+}
+
+// adoptGenesis - take the genesis site from the recovered chain as the graph
+// root, in place of the one minted at start-up.
+func (d *Dag) adoptGenesis(genesis *Node) {
+	if d == nil || genesis == nil {
+		return
+	}
+	d.mux.Lock()
+	defer d.mux.Unlock()
+	d.genesis = genesis
+	// The recovered chain already settled it, so it belongs in the archive
+	// rather than the live graph. Keep the live graph empty of it and let
+	// sitesAdded reflect a ledger that is past its opening phase.
+	d._dag_ = []*Node{}
+	d.mapped_vertices = make(map[uuid.UUID]*Node)
+	d.mapped_edges = make(map[uuid.UUID][]uuid.UUID)
+	d._links_ = nil
+	if added := uint64(d.width) + 1; d.sitesAdded.Load() < added {
+		d.sitesAdded.Store(added)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"path/filepath"
 	"reflect"
 	"syscall"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/Grape-Chain/Grape-Dag/services"
 	"github.com/Grape-Chain/Grape-Dag/services/rest"
 	"github.com/Grape-Chain/Grape-Dag/stats"
+	"github.com/Grape-Chain/Grape-Dag/store"
 	utils "github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/vm"
 	"github.com/enescakir/emoji"
@@ -49,6 +51,11 @@ func Start() {
 		logger.Error("This node is not activated")
 		os.Exit(0)
 	}
+
+	// The ledger store has to be open before the DAG initialises: a stored
+	// commit-transaction chain is what the DAG recovers from, instead of
+	// starting a fresh one.
+	openLedgerStore()
 
 	// DAG initialization depends on successful processing of the config/cmd line arguments
 	// Let DAG init its config after we parse and process config/cmd line args.
@@ -184,4 +191,36 @@ func stopApp(cancel context.CancelFunc) {
 	grapepeer.Terminate()
 	logger.Infof("%s  ALL SERVICES STOPPED  %s", emoji.VerticalTrafficLight, emoji.HammerAndWrench)
 
+}
+
+// openLedgerStore - open the durable ledger store and hand it to the DAG.
+//
+// Persistence is on by default. When it cannot be opened the node still starts,
+// with the store turned off: it will rebuild its state from the network as it
+// always did, which is a worse start-up but not a reason to refuse to run.
+func openLedgerStore() {
+	cfg := config.GetConfig()
+	if cfg == nil || !cfg.Store.Enabled {
+		utils.ColorizeWarn(logger, "[store] Persistence is disabled; this node will resync from the network on every restart")
+		return
+	}
+	path := cfg.Store.Path
+	if path == "" {
+		path = "data/ledger"
+	}
+	if !filepath.IsAbs(path) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			logger.Errorf("[store] Cannot resolve the home directory: %s", err.Error())
+			return
+		}
+		path = filepath.Join(home, config.GRAPEONE_CFG_PATH, path)
+	}
+	s, err := store.Open(path)
+	if err != nil {
+		logger.Errorf("[store] Cannot open the ledger store at %s: %s", path, err.Error())
+		logger.Warn("[store] Continuing without persistence")
+		return
+	}
+	dag.SetStore(s)
 }

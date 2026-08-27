@@ -336,6 +336,11 @@ func handleLatestBalances(rec *tx.Syncv1) error {
 		latestPinFromLeader.Balance.Balance[walletAddress] = balanceBytes
 	}
 	p.ready = true
+	// This pin now carries the leader's full balance snapshot, which is this
+	// node's opening statement of the ledger. Record it, so a restart resumes
+	// from here instead of seeding from a later pin that only states the
+	// balances it happened to touch.
+	chainStartCommitted(&latestPinFromLeader)
 	logger.Infof("Sync of %d balances from leader's snapshot has been finished, id=%s", balanceLength, rec.Tracking_Id.String())
 	return nil
 }
@@ -754,10 +759,10 @@ func genPinTx() {
 	if len(sites) > 0 || len(smcTxs) > 0 {
 		logger.Debugf("* [PIN] Num confirmed sites %d. ADD to PinTx", len(sites))
 		_pins_.add(sites, smcTxs)
-		// Settle the sites this pin just made irrevocable, exactly as a
-		// receiving node does when it applies the same pin.
+		// Persist and settle the pin just formed, exactly as a receiving node
+		// does when it applies the same pin.
 		if latest := _pins_.GetLastPin(); latest != nil {
-			sliceAppliedPin(latest)
+			pinCommitted(latest)
 		}
 		announceNewPin()
 	}
