@@ -3,7 +3,7 @@
 The technical paper's section 5.1 confirms a site once **100% of the DAG's
 current vertices confirm it**, directly or indirectly. This document records how
 that is implemented, one correction to an earlier misreading, and one measured
-departure that needs a decision.
+departure that was taken deliberately — with the setting that reverses it.
 
 ## The rule as implemented
 
@@ -44,7 +44,7 @@ confirmed under the old reading, 5980 under the corrected one.**
 `dag.approvetx` now means only what it says — how many sites a new site approves
 — and is read only by tip selection.
 
-## Departure: `dag.confirmshare`
+## Departure: `dag.confirmshare` (default 667)
 
 Even with the corrected tip definition, the literal 100% rule does not converge
 once several sites choose their approvals against the same view of the graph.
@@ -67,28 +67,31 @@ stragglers, new tips keep arriving and joining the denominator. Below 100% the
 rule does not wait for the stragglers, and it converges.
 
 `dag.confirmshare` is the share of live tips required, in permille. **The default
-is 1000 — the paper's literal rule — so nothing changes without a decision.** The
-node warns at start-up when it is set to 1000, with these numbers, because a
-default that cannot confirm anything beyond a handful of publishers is worth
-saying out loud.
+is 667 — two thirds — which is a deliberate departure from the paper.** The node
+says so at start-up and points here.
 
-### Recommendation
+Two thirds is not arbitrary: it is the same fraction as the validator quorum the
+commit-transaction consensus uses, so a site is confirmed under exactly the share
+of the graph that a commit transaction needs of the validator set. One threshold,
+one meaning, at both layers.
 
-Set `dag.confirmshare: 667` for any network with more than a few publishing
-nodes. Two thirds is not arbitrary: it is the same fraction as the validator
-quorum the commit-transaction consensus uses, so a site is confirmed under
-exactly the share of the graph that a commit transaction needs of the validator
-set.
+Setting `dag.confirmshare: 1000` restores the paper's literal rule, and start-up
+warns with the numbers above when it is. Any other value warns too, because
+nothing else has been measured.
 
-This is a protocol-level decision and it belongs to whoever owns the
-specification. The alternatives considered:
+### Why not keep the literal rule as the default
+
+Because a default that confirms nothing is worse than a documented departure. The
+alternatives considered:
 
 - **Keep 100% and lean on `dag.tiptimeout`.** This is what the code did before
-  the share existed, and it does work — but it makes a liveness safeguard the
-  mechanism confirmation depends on, ties confirmation latency to wall-clock
-  timing rather than to the graph, and leaves the denominator size dependent on
-  load. `grape_tips_expired_total` exists to show how often it fires; a steady
-  rate means the valve is carrying the rule.
+  the share existed, and it does work — the valve drops the stragglers the rule
+  is waiting for. But it makes a liveness safeguard the mechanism confirmation
+  depends on, ties confirmation latency to wall-clock timing rather than to the
+  shape of the graph, and leaves the denominator size dependent on load rather
+  than on the protocol. `grape_tips_expired_total` exists to show how often it
+  fires; a steady rate means the valve is carrying the rule rather than
+  safeguarding it.
 - **Confirm against the tip set as of the previous commit transaction** rather
   than against the current one. A fixed denominator per epoch converges by
   construction and fits the five-second commit cadence. This is more invasive
@@ -114,3 +117,18 @@ specification. The alternatives considered:
 - `TestAnApprovalIsCountedOnce`, `TestDuplicateApprovalTargetsCountOnce` — an
   approval counts once, at the point a site becomes part of the graph.
 - `TestAbandonedTipStopsHoldingUpConfirmation` — the timeout valve.
+
+## Reversing this
+
+The departure is one setting. To run the paper's rule exactly as written:
+
+```yaml
+dag:
+  confirmshare: 1000
+```
+
+Nothing else changes — the mechanism is the same, only the threshold moves — and
+`TestConfirmationConvergesUnderConcurrentArrival` keeps a case at 1000 so that
+path stays exercised. Expect confirmation to stop beyond roughly four
+concurrently publishing nodes, and watch `grape_confirm_tips` for the tip set
+growing with the ledger.

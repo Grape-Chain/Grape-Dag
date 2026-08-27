@@ -126,9 +126,13 @@ type DagConfiguration struct {
 	FaucetPrivatekey string
 	FaucetPublickey  string
 	Coinbaseaccount  string
-	Versioncollision bool   // Enable or disable version collision in DAG, enabling is a very expensive operation!
-	Confirmation     string // Confirmation rule: "share100" (paper section 5.1) or "legacy" (two direct approvers)
-	Tiptimeout       uint32 // Seconds before an unapproved tip stops counting towards the confirmation denominator; 0 disables
+	Versioncollision bool // Enable or disable version collision in DAG, enabling is a very expensive operation!
+	// Confirmation - which rule decides a site is confirmed: the technical
+	// paper's share-of-tips measure (anything but "legacy"), or the original
+	// fixed two-direct-approver count ("legacy"). How large the share has to be
+	// is Confirmshare, below.
+	Confirmation string
+	Tiptimeout   uint32 // Seconds before an unapproved tip stops counting towards the confirmation denominator; 0 disables
 	// Walkdepth - the technical paper's W, "depth of throwing of a random walk
 	// particle": how many approvals below a tip a tip-selection walk starts.
 	// Bounds the per-transaction cost of selection by construction, and is what

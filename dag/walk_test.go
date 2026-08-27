@@ -837,7 +837,9 @@ func TestDuplicateApprovalTargetsCountOnce(t *testing.T) {
 // publishers and stops dead beyond that: it needs every one of the live tips to
 // cover a site, and the tip set grows with concurrency while new tips keep
 // arriving. A share below 100% converges because it does not wait for the
-// stragglers. Both settings are exercised here so that neither can regress.
+// stragglers, which is why the default is two thirds. Both settings are
+// exercised here so that neither can regress and so the boundary above is
+// checked rather than remembered.
 func TestConfirmationConvergesUnderConcurrentArrival(t *testing.T) {
 	prevA, prevW := dagConfig.Approvetx, dagConfig.Walkdepth
 	dagConfig.Approvetx, dagConfig.Walkdepth = 2, 10
@@ -847,10 +849,13 @@ func TestConfirmationConvergesUnderConcurrentArrival(t *testing.T) {
 		fanout int
 		share  uint16
 	}{
-		// What the default setting has to handle.
-		{1, 1000}, {2, 1000}, {4, 1000},
-		// What only a share below 100% handles.
-		{8, 667}, {16, 667},
+		// The default has to hold across the whole range.
+		{1, DAG_CONFIRM_SHARE}, {2, DAG_CONFIRM_SHARE}, {4, DAG_CONFIRM_SHARE},
+		{8, DAG_CONFIRM_SHARE}, {16, DAG_CONFIRM_SHARE},
+		// The paper's literal rule, at the only concurrency it survives. Kept so
+		// that the setting still works for anyone who needs it, and so the
+		// boundary in the table above stays honest rather than remembered.
+		{1, 1000}, {4, 1000},
 	}
 
 	for _, tc := range cases {

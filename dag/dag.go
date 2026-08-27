@@ -108,8 +108,14 @@ const (
 	// second.
 	DAG_WALK_DEPTH = 10
 	// DAG_CONFIRM_SHARE - default share of live tips that must confirm a site,
-	// in permille.
-	DAG_CONFIRM_SHARE = 1000
+	// in permille. Two thirds, not the technical paper's literal 1000, and the
+	// reasoning is in docs/confirmation.md: the literal rule stops confirming
+	// entirely once more than a handful of nodes publish concurrently, because
+	// it waits for every last tip while new tips keep joining the denominator.
+	// Two thirds is the same fraction as the validator quorum, so a site is
+	// confirmed under the share of the graph that a commit transaction needs of
+	// the validator set. Set dag.confirmshare to 1000 for the literal rule.
+	DAG_CONFIRM_SHARE = 667
 	DAG_APPROVE_TX    = 2
 	DAG_WIDTH         = 5
 	DAG_LAMBDA        = 1

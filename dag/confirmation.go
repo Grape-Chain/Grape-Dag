@@ -164,12 +164,19 @@ func newConfirmations(cfg config.DagConfiguration) confirmations {
 		}
 		utils.ColorizeInfo(logger, "[confirmation] Confirming a site once %.1f%% of live tips confirm it (tiptimeout=%s)",
 			float64(share)/10, timeout)
-		if share >= 1000 {
-			// Measured, not guessed: the literal 100% rule needs every live tip
-			// to cover a site while new tips keep arriving, and it stops
-			// confirming once several sites are chosen against a view that does
-			// not yet contain each other. See docs/confirmation.md.
-			logger.Warnf("[confirmation] dag.confirmshare=1000 is the technical paper's literal 100%%. It confirms 99.7%% of sites at four concurrent publishers and 0%% at sixteen; 667 confirms 98.1%% at sixteen. Set dag.confirmshare=667 unless the literal rule is required.")
+		switch {
+		case share >= 1000:
+			// Measured, not guessed: the literal rule needs every live tip to
+			// cover a site while new tips keep arriving, so it stops confirming
+			// once several sites are chosen against a view that does not yet
+			// contain each other. See docs/confirmation.md.
+			logger.Warnf("[confirmation] dag.confirmshare=1000 is the technical paper's literal 100%%. It confirms 99.7%% of sites at four concurrent publishers and 0%% at sixteen. Unless the literal rule is required, leave it at the default %d.",
+				DAG_CONFIRM_SHARE)
+		case share != DAG_CONFIRM_SHARE:
+			logger.Warnf("[confirmation] dag.confirmshare=%d is neither the default %d nor the paper's literal 1000. Convergence at this setting has not been measured; see docs/confirmation.md for what has.",
+				share, DAG_CONFIRM_SHARE)
+		default:
+			logger.Infof("[confirmation] This is a documented departure from the technical paper's literal 100%% rule, which does not converge under concurrent publishing. See docs/confirmation.md.")
 		}
 		return newConfirmTracker(timeout, share)
 	}
