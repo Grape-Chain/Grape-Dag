@@ -19,114 +19,16 @@ func withTracker(t *testing.T, tr confirmations) {
 	t.Cleanup(func() { confirmationCounter = prev })
 }
 
-// oracleWalkRoots - the definition of a walk root, computed the obvious way:
-// a tracked site that approves nothing else tracked.
-func oracleWalkRoots(tr *ConfirmTracker) map[uuid.UUID]bool {
-	tr.mu.Lock()
-	defer tr.mu.Unlock()
-	out := map[uuid.UUID]bool{}
-	for id, st := range tr.sites {
-		if st.node == nil {
-			continue
-		}
-		inside := false
-		for _, target := range st.node.targets {
-			if target == nil {
-				continue
-			}
-			if _, ok := tr.sites[target.id.id]; ok {
-				inside = true
-				break
-			}
-		}
-		if !inside {
-			out[id] = true
-		}
+// deepWalk - a walk from as far below the tips as the region reaches. Throwing
+// the particle with an effectively unlimited depth stops it at the region floor,
+// which is the deepest a walk can start, so this exercises the longest forward
+// path the graph allows.
+func deepWalk(d *Dag, alpha float64) *Node {
+	start := d.walkStart(1 << 20)
+	if start == nil {
+		return nil
 	}
-	return out
-}
-
-func rootIDs(tr *ConfirmTracker) map[uuid.UUID]bool {
-	tr.mu.Lock()
-	defer tr.mu.Unlock()
-	out := map[uuid.UUID]bool{}
-	for id := range tr.roots {
-		out[id] = true
-	}
-	return out
-}
-
-// The root set is maintained incrementally on every insert, confirmation and
-// harvest, so it has to agree with the definition after each one. If it drifts,
-// walks start in the wrong place - or, worse, start nowhere and selection falls
-// back to a uniform pick without anything saying so.
-func TestWalkRootsMatchTheDefinition(t *testing.T) {
-	const approveTx = 2
-	for _, seed := range []int64{1, 5, 9, 23, 101} {
-		seed := seed
-		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
-			rng := rand.New(rand.NewSource(seed))
-			tr := newConfirmTracker(approveTx, 0)
-
-			genesis := tnode(0)
-			nodes := []*Node{genesis}
-			tr.add(genesis)
-
-			width := 5
-			for step := 1; step <= 200; step++ {
-				n := tnode(step)
-				if len(nodes) <= width {
-					tlink(n, genesis)
-				} else {
-					tips := tipsOf(nodes, approveTx)
-					if len(tips) == 1 {
-						tlink(n, tips[0])
-					} else {
-						i := rng.Intn(len(tips))
-						j := rng.Intn(len(tips))
-						for j == i {
-							j = rng.Intn(len(tips))
-						}
-						tlink(n, tips[i])
-						tlink(n, tips[j])
-					}
-				}
-				nodes = append(nodes, n)
-				tr.add(n)
-
-				assertRootsMatch(t, tr, fmt.Sprintf("after insert %d", step))
-
-				// Confirmation removes sites from the region, which promotes the
-				// sites that approved them. Draining is where that shows up.
-				if step%7 == 0 {
-					tr.pop()
-					assertRootsMatch(t, tr, fmt.Sprintf("after pop at %d", step))
-				}
-			}
-
-			// Harvesting is the other way sites leave the region.
-			for _, n := range nodes[:40] {
-				tr.markHarvested(n.id.id)
-				assertRootsMatch(t, tr, "after harvest")
-			}
-		})
-	}
-}
-
-func assertRootsMatch(t *testing.T, tr *ConfirmTracker, when string) {
-	t.Helper()
-	want := oracleWalkRoots(tr)
-	got := rootIDs(tr)
-	for id := range want {
-		if !got[id] {
-			t.Fatalf("%s: %s approves nothing in the active region but is not a walk root", when, id.String())
-		}
-	}
-	for id := range got {
-		if !want[id] {
-			t.Fatalf("%s: %s is a walk root but still approves something in the active region", when, id.String())
-		}
-	}
+	return d.walkToTip(start, alpha)
 }
 
 // Every walk has to finish somewhere a new site may legitimately approve. The
@@ -134,7 +36,7 @@ func assertRootsMatch(t *testing.T, tr *ConfirmTracker, when string) {
 // that would have caught it.
 func TestWalkEndsOnAnApprovableTip(t *testing.T) {
 	const approveTx = 2
-	tr := newConfirmTracker(approveTx, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 	d := &Dag{}
 
@@ -149,7 +51,7 @@ func TestWalkEndsOnAnApprovableTip(t *testing.T) {
 		if len(nodes) <= 5 {
 			tlink(n, genesis)
 		} else {
-			tips := tipsOf(nodes, approveTx)
+			tips := tipsOf(nodes)
 			i := rng.Intn(len(tips))
 			tlink(n, tips[i])
 			if len(tips) > 1 {
@@ -164,14 +66,9 @@ func TestWalkEndsOnAnApprovableTip(t *testing.T) {
 		tr.add(n)
 	}
 
-	roots := tr.walkRoots()
-	if len(roots) == 0 {
-		t.Fatal("the active region has no walk roots, so no walk can start")
-	}
-
 	walked := 0
 	for trial := 0; trial < 400; trial++ {
-		got := d.walkFromRoots(roots, 0.5)
+		got := deepWalk(d, 0.5)
 		if got == nil {
 			continue
 		}
@@ -193,7 +90,7 @@ func TestWalkEndsOnAnApprovableTip(t *testing.T) {
 // reachable from some root.
 func TestWalkCanReachEveryTip(t *testing.T) {
 	const approveTx = 2
-	tr := newConfirmTracker(approveTx, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 	d := &Dag{}
 
@@ -202,13 +99,17 @@ func TestWalkCanReachEveryTip(t *testing.T) {
 	d.genesis = genesis
 	nodes := []*Node{genesis}
 
+	// Built in batches that each choose against the same view, because a tip is
+	// a site nothing approves: insert one at a time and the graph holds exactly
+	// one tip, which is not a graph that can test reachability.
 	rng := rand.New(rand.NewSource(31))
-	for step := 1; step <= 60; step++ {
-		n := tnode(step)
-		if len(nodes) <= 5 {
-			tlink(n, genesis)
-		} else {
-			tips := tipsOf(nodes, approveTx)
+	step := 1
+	for round := 0; round < 20; round++ {
+		tips := tipsOf(nodes)
+		batch := []*Node{}
+		for k := 0; k < 4; k++ {
+			n := tnode(step)
+			step++
 			i := rng.Intn(len(tips))
 			tlink(n, tips[i])
 			if len(tips) > 1 {
@@ -218,9 +119,12 @@ func TestWalkCanReachEveryTip(t *testing.T) {
 				}
 				tlink(n, tips[j])
 			}
+			batch = append(batch, n)
 		}
-		nodes = append(nodes, n)
-		tr.add(n)
+		for _, n := range batch {
+			nodes = append(nodes, n)
+			tr.add(n)
+		}
 	}
 
 	want := map[uuid.UUID]bool{}
@@ -231,16 +135,15 @@ func TestWalkCanReachEveryTip(t *testing.T) {
 		t.Fatalf("expected the graph to hold several tips, got %d", len(want))
 	}
 
-	roots := tr.walkRoots()
 	seen := map[uuid.UUID]bool{}
 	for trial := 0; trial < 20000 && len(seen) < len(want); trial++ {
-		if got := d.walkFromRoots(roots, 0.5); got != nil {
+		if got := deepWalk(d, 0.5); got != nil {
 			seen[got.id.id] = true
 		}
 	}
 	for id := range want {
 		if !seen[id] {
-			t.Fatalf("tip %s was never reached by any walk out of %d root(s)", id.String(), len(roots))
+			t.Fatalf("tip %s was never reached by any walk", id.String())
 		}
 	}
 }
@@ -287,7 +190,7 @@ func branchedGraph(tr *ConfirmTracker) (root, a1, a2, a3, b1, other *Node) {
 // confirms has to be more likely to be approved. alpha turns it off, which is
 // what makes the effect measurable rather than assumed.
 func TestWalkPrefersTheBranchMoreOfTheGraphConfirms(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 	d := &Dag{}
 	root, a1, _, _, b1, _ := branchedGraph(tr)
@@ -311,6 +214,8 @@ func TestWalkPrefersTheBranchMoreOfTheGraphConfirms(t *testing.T) {
 		const trials = 4000
 		light := 0
 		for i := 0; i < trials; i++ {
+			// Thrown from the shared root on purpose: this measures the step
+			// choice out of one site, not where the particle lands.
 			got := d.walkToTip(root, alpha)
 			if got == nil {
 				t.Fatal("walk found nothing to approve in a graph with three candidates")
@@ -420,7 +325,7 @@ func TestTransitionWeights(t *testing.T) {
 // AddTxDag silently drops a site when selection comes back empty, so selection
 // must not come back empty while the graph holds anything approvable.
 func TestSelectTipsAlwaysOffersSomethingToApprove(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 	root, _, _, _, _, _ := branchedGraph(tr)
 	d := &Dag{genesis: root}
@@ -471,7 +376,7 @@ func TestSelectTipsFallsBackWhenThereIsNoRegionToWalk(t *testing.T) {
 // every second for the life of the process. Returning nothing instead makes
 // AddTxDag refuse the transaction, which the publisher retries.
 func TestSelectTipsOffersNothingRatherThanGenesis(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 	genesis := tnode(0)
 	d := &Dag{genesis: genesis}
@@ -495,7 +400,7 @@ func TestSelectTipsHonoursTheConfiguredApprovalCount(t *testing.T) {
 
 	for _, want := range []uint16{2, 3, 4} {
 		dagConfig.Approvetx = want
-		tr := newConfirmTracker(int(want), 0)
+		tr := newConfirmTracker(0, 1000)
 		withTracker(t, tr)
 
 		// A frontier comfortably wider than the number of approvals asked for.
@@ -530,7 +435,7 @@ func TestApprovalThresholdIsReachedAtEveryConfiguredCount(t *testing.T) {
 
 	for _, want := range []uint16{2, 3, 4} {
 		dagConfig.Approvetx = want
-		tr := newConfirmTracker(int(want), 0)
+		tr := newConfirmTracker(0, 1000)
 		withTracker(t, tr)
 
 		genesis := tnode(0)
@@ -602,7 +507,7 @@ func TestDagAlgorithmNormalisesTheConfiguredValue(t *testing.T) {
 // would catch.
 func TestEverySiteCanReachTheApprovalThreshold(t *testing.T) {
 	const approveTx = 2
-	tr := newConfirmTracker(approveTx, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 
 	genesis := tnode(0)
@@ -617,7 +522,7 @@ func TestEverySiteCanReachTheApprovalThreshold(t *testing.T) {
 		// falls back to a uniform pick when a walk finds nothing, and that
 		// fallback is generous enough to keep the graph healthy by itself - so
 		// without this the test would pass with the walk permanently broken.
-		if step > 20 && d.walkFromRoots(tipCache().walkRoots(), 0.5) == nil {
+		if step > 20 && deepWalk(d, 0.5) == nil {
 			walkMisses++
 		}
 
@@ -659,7 +564,7 @@ func TestEverySiteCanReachTheApprovalThreshold(t *testing.T) {
 // two, and the graph would stop widening.
 func TestSelectTipsResolvesACollisionOnANarrowFrontier(t *testing.T) {
 	const approveTx = 2
-	tr := newConfirmTracker(approveTx, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 
 	// A chain of saturated sites ending in exactly two selectable ones, so both
@@ -723,7 +628,7 @@ func tdetached(n int, parent *Node) *Node {
 //	s1 ----------- other      <- a second root, so root stays unconfirmed
 func TestWalkStopsAtPartlyApprovedSites(t *testing.T) {
 	const approveTx = 2
-	tr := newConfirmTracker(approveTx, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 
 	root := tnode(0)
@@ -778,7 +683,7 @@ func TestWalkStopsAtPartlyApprovedSites(t *testing.T) {
 // would get an approval it should not have. The bias would be half as strong
 // with nothing failing.
 func TestBothApprovalsAreBiased(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 	root, _, _, _, b1, _ := branchedGraph(tr)
 	d := &Dag{genesis: root}
@@ -798,71 +703,6 @@ func TestBothApprovalsAreBiased(t *testing.T) {
 	if share > 0.08 {
 		t.Fatalf("the lightly confirmed site was approved in %.3f of selections; at alpha=2 both approvals should avoid it", share)
 	}
-}
-
-// A site leaves the active region when it is confirmed or written into a commit
-// transaction, and the sites that approved it may then approve nothing else
-// inside the region - which makes them walk roots. If that promotion is missed,
-// the region grows a part no walk can enter, and the sites in it are never
-// offered for approval.
-func TestHarvestingASitePromotesItsApprovers(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
-	withTracker(t, tr)
-
-	root := tnode(0)
-	tr.add(root)
-	approver := tnode(1)
-	tlink(approver, root)
-	tr.add(approver)
-
-	// A second root, so root is not confirmed the moment it is approved.
-	other := tnode(10)
-	tr.add(other)
-	s1 := tnode(11)
-	tlink(s1, other)
-	tr.add(s1)
-
-	if rootIDs(tr)[approver.id.id] {
-		t.Fatal("a site that approves something still in the region is not a walk root")
-	}
-
-	tr.markHarvested(root.id.id)
-
-	if !rootIDs(tr)[approver.id.id] {
-		t.Fatal("the site it approved was harvested, so it approves nothing in the region and should be a walk root")
-	}
-	assertRootsMatch(t, tr, "after harvesting an approved site")
-}
-
-// The mirror case: a site that arrived before the sites it approves was an entry
-// point only because those sites were missing. Once they are resolved it is not
-// one any more, and leaving it in the set starts walks above part of the graph.
-func TestResolvingADetachedSiteStopsItBeingARoot(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
-	withTracker(t, tr)
-
-	root := tnode(0)
-	tr.add(root)
-
-	// Arrived naming approval targets this node has never seen.
-	late := tnode(1)
-	late.missingTargets = map[string]bool{uuid.New().String(): true}
-	tr.add(late)
-
-	if !rootIDs(tr)[late.id.id] {
-		t.Fatal("a site with no resolved targets approves nothing in the region, so it is a walk root")
-	}
-	assertRootsMatch(t, tr, "while detached")
-
-	// The gap is filled and it is relinked.
-	late.missingTargets = nil
-	tlink(late, root)
-	tr.relink(late)
-
-	if rootIDs(tr)[late.id.id] {
-		t.Fatal("its targets were resolved, so it now approves something in the region and is not a walk root")
-	}
-	assertRootsMatch(t, tr, "after relinking")
 }
 
 // The bias must survive a large frontier. The difference in the exponent is a
@@ -903,8 +743,15 @@ func TestTransitionWeightsSurviveALargeFrontier(t *testing.T) {
 // every second - that is the fixed-threshold failure the share rule exists to
 // remove.
 func TestAnApprovalIsCountedOnce(t *testing.T) {
-	const approveTx = 2
-	tr := newConfirmTracker(approveTx, 0)
+	tr := newConfirmTracker(0, 1000)
+
+	// An unrelated branch, so the site under test is not confirmed and swept out
+	// of the region between assertions.
+	other := tnode(10)
+	tr.add(other)
+	spare := tnode(11)
+	tlink(spare, other)
+	tr.add(spare)
 
 	target := tnode(0)
 	tr.add(target)
@@ -915,36 +762,45 @@ func TestAnApprovalIsCountedOnce(t *testing.T) {
 	late.missingTargets = map[string]bool{uuid.New().String(): true}
 	tr.add(late)
 
-	// While detached it confirms nothing, so its approval must not retire a tip.
-	tr.mu.Lock()
-	afterTrack := tr.sites[target.id.id].approvers
-	tr.mu.Unlock()
-	if afterTrack != 0 {
-		t.Fatalf("a detached site's approval was counted: target has %d approver(s)", afterTrack)
+	// While detached it confirms nothing, so its approval must not count.
+	if got := approversOf(t, tr, target); got != 0 {
+		t.Fatalf("a detached site's approval was counted: target has %d approver(s)", got)
 	}
 
 	// The gap is filled.
 	late.missingTargets = nil
 	tr.relink(late)
 
+	if got := approversOf(t, tr, target); got != 1 {
+		t.Fatalf("one approval should be counted once, got %d", got)
+	}
+}
+
+// approversOf - the tracker's approval count for a site, or -1 if it has left
+// the active region.
+func approversOf(t *testing.T, tr *ConfirmTracker, n *Node) int {
+	t.Helper()
 	tr.mu.Lock()
-	st, tracked := tr.sites[target.id.id]
-	tr.mu.Unlock()
-	if !tracked {
-		t.Fatal("the target retired from the denominator on a single approval")
+	defer tr.mu.Unlock()
+	st, ok := tr.sites[n.id.id]
+	if !ok {
+		return -1
 	}
-	if st.approvers != 1 {
-		t.Fatalf("one approval should be counted once, got %d", st.approvers)
-	}
-	if !tr.isTip(target.id.id) {
-		t.Fatal("a site with one approver and a threshold of two must still be approvable")
-	}
+	return st.approvers
 }
 
 // Nothing on the receiving side checks that a peer named two distinct approval
 // targets, so the tracker has to.
 func TestDuplicateApprovalTargetsCountOnce(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
+	// An unrelated branch, so the site under test is not confirmed and swept out
+	// of the region before it can be inspected.
+	other := tnode(10)
+	tr.add(other)
+	spare := tnode(11)
+	tlink(spare, other)
+	tr.add(spare)
+
 	target := tnode(0)
 	tr.add(target)
 
@@ -953,13 +809,111 @@ func TestDuplicateApprovalTargetsCountOnce(t *testing.T) {
 	tlink(greedy, target) // the same site named twice
 	tr.add(greedy)
 
-	tr.mu.Lock()
-	st, tracked := tr.sites[target.id.id]
-	tr.mu.Unlock()
-	if !tracked {
-		t.Fatal("a site named twice by one approver was retired as if two sites had approved it")
+	if got := approversOf(t, tr, target); got != 1 {
+		t.Fatalf("naming the same site twice is one approval, got %d", got)
 	}
-	if st.approvers != 1 {
-		t.Fatalf("naming the same site twice is one approval, got %d", st.approvers)
+}
+
+// The test the whole selection design rests on, and the one whose absence let
+// two different broken designs look healthy.
+//
+// Every other test drives the graph one site at a time, each choosing its
+// approvals against a graph that already contains every site before it. A real
+// network never does that: sites are published concurrently, so several choose
+// against the same view and none of them approves another. The difference is not
+// a detail - it is the difference between confirming everything and confirming
+// nothing, and it is invisible to sequential tests.
+//
+// The measured boundary, 6000 inserts per setting, tip timeout off so the
+// liveness valve cannot be what makes it pass:
+//
+//	concurrent publishers   share 1000   share 667
+//	1                          100.0%      100.0%
+//	4                           99.7%       99.8%
+//	16                           0.0%       98.1%
+//	64                           0.0%       32.5%
+//
+// So the technical paper's literal 100% rule works for a handful of concurrent
+// publishers and stops dead beyond that: it needs every one of the live tips to
+// cover a site, and the tip set grows with concurrency while new tips keep
+// arriving. A share below 100% converges because it does not wait for the
+// stragglers. Both settings are exercised here so that neither can regress.
+func TestConfirmationConvergesUnderConcurrentArrival(t *testing.T) {
+	prevA, prevW := dagConfig.Approvetx, dagConfig.Walkdepth
+	dagConfig.Approvetx, dagConfig.Walkdepth = 2, 10
+	t.Cleanup(func() { dagConfig.Approvetx, dagConfig.Walkdepth = prevA, prevW })
+
+	cases := []struct {
+		fanout int
+		share  uint16
+	}{
+		// What the default setting has to handle.
+		{1, 1000}, {2, 1000}, {4, 1000},
+		// What only a share below 100% handles.
+		{8, 667}, {16, 667},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(fmt.Sprintf("fanout%d_share%d", tc.fanout, tc.share), func(t *testing.T) {
+			// tiptimeout 0: the expiry valve is a liveness safeguard for
+			// abandoned tips, and if convergence depended on it then the
+			// confirmation rule would not work - it would just be hidden.
+			tr := newConfirmTracker(0, tc.share)
+			withTracker(t, tr)
+
+			genesis := tnode(0)
+			d := &Dag{genesis: genesis}
+			tr.add(genesis)
+
+			const inserts = 4000
+			rounds := inserts / tc.fanout
+			confirmed, id := 0, 1
+			for round := 0; round < rounds; round++ {
+				// Every site in the batch chooses against the same view.
+				batch := make([][]*Node, 0, tc.fanout)
+				for k := 0; k < tc.fanout; k++ {
+					targets := d.selectTips(0.5)
+					if len(targets) == 0 {
+						t.Fatalf("round %d: selection offered nothing to approve", round)
+					}
+					batch = append(batch, targets)
+				}
+				for _, targets := range batch {
+					n := tnode(id)
+					id++
+					for _, target := range targets {
+						tlink(n, target)
+					}
+					tr.add(n)
+				}
+				confirmed += len(tr.pop())
+			}
+
+			inserted := id - 1
+			active, tips, _ := tr.stats()
+			t.Logf("fanout=%d share=%d inserted=%d confirmed=%d (%.1f%%) active=%d tips=%d",
+				tc.fanout, tc.share, inserted, confirmed,
+				100*float64(confirmed)/float64(inserted), active, tips)
+
+			// Most of what went in has to settle. The last rounds are
+			// legitimately still open and a batch cannot confirm its own
+			// members, so this is deliberately not "all of it".
+			if want := inserted * 3 / 4; confirmed < want {
+				t.Fatalf("only %d of %d sites confirmed (wanted at least %d): the frontier is not settling",
+					confirmed, inserted, want)
+			}
+			// The denominator has to stay bounded by the arrival pattern rather
+			// than growing with the ledger. Unbounded growth is the failure
+			// mode, and it shows as a tip count that tracks the insert count.
+			if tips > 20*tc.fanout+20 {
+				t.Fatalf("the tip set grew to %d after %d inserts at fanout %d: new tips are not being approved",
+					tips, inserted, tc.fanout)
+			}
+			if active > inserted/4 {
+				t.Fatalf("the active region holds %d of %d sites: confirmation is not keeping up",
+					active, inserted)
+			}
+		})
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/stats"
+
 	"github.com/google/uuid"
 )
 
@@ -23,14 +25,26 @@ How the share is maintained without walking the graph on every insert:
 
   - Every tip owns a slot, an index into a bit vector. Each tracked site carries
     one bit per slot, set when that tip confirms the site.
+
   - A new site is a tip, so it takes a fresh slot, and every one of its
     ancestors gains that bit. Marking walks backwards from its approval targets
     and stops as soon as it meets a site that already carries the bit - if a
     site has it, so do all of its ancestors, because bits are always set over a
     complete backward closure.
-  - A site stops being a tip once approvetx other sites reference it. Its slot
-    is then cleared from its ancestors the same way (stopping where the bit is
-    already clear) and returned to the free list.
+
+  - A site stops being a tip the moment anything approves it. Its slot is then
+    cleared from its ancestors the same way (stopping where the bit is already
+    clear) and returned to the free list.
+
+    This is the ordinary meaning of "tip" - a vertex nothing points at - and it
+    is not the same as dag.approvetx, which says how many sites a new site
+    approves. Treating a site as a tip until approvetx sites referenced it,
+    which is what this did first, kept partly approved sites in the denominator
+    and made them the sites selection kept landing on, so the genuinely new tips
+    were never approved and never left. Measured, with sites arriving
+    concurrently: 10 of 6000 confirmed against 5980 once the definitions were
+    separated.
+
   - A site is confirmed when its bit count equals the number of live tips.
     Sites are bucketed by bit count, so the check is a lookup rather than a scan.
 
@@ -77,25 +91,20 @@ type ConfirmTracker struct {
 	// confirmed - and, once fees land, paid - twice.
 	harvested map[uuid.UUID]struct{}
 
-	// roots - the sites in the active region that approve nothing else in it,
-	// maintained incrementally. These are where a tip-selection walk starts: a
-	// walk has to begin below the tips for the bias towards well-confirmed
-	// branches to mean anything, and the active region is exactly the part of
-	// the ledger where the choice is still open. Everything below it is
-	// confirmed and cannot be unconfirmed, so biasing among those sites would
-	// buy nothing.
+	// confirmShare - the share of live tips that must confirm a site before it
+	// is irrevocably confirmed, in permille. 1000 is the technical paper's
+	// literal 100%.
 	//
-	// The set is maintained rather than scanned because the scan is O(active
-	// region), and the active region grows with throughput: at a thousand
-	// transactions a second a scan per selection would be a scan per insert.
-	// Every membership change is O(targets + sources), which is bounded by
-	// approvetx. TestWalkRootsMatchOracle checks the set against a brute-force
-	// scan after every insert.
-	roots map[uuid.UUID]struct{}
-
-	approveTx   int
-	tipTimeout  time.Duration
-	lastSweepAt time.Time
+	// Below 1000 this is a deliberate departure, and the reason is measured
+	// rather than assumed: the 100% rule cannot converge once the tip set is
+	// large, because it needs every one of the live tips to cover a site while
+	// new tips keep arriving. With sites arriving concurrently - several chosen
+	// against a view that does not yet contain each other, which is what any
+	// real network produces - the tip set grows and confirmation stops. See
+	// TestConfirmationConvergesUnderConcurrentArrival.
+	confirmShare uint16
+	tipTimeout   time.Duration
+	lastSweepAt  time.Time
 }
 
 type siteTrack struct {
@@ -109,17 +118,16 @@ type siteTrack struct {
 	tipSince  time.Time
 }
 
-func newConfirmTracker(approveTx int, tipTimeout time.Duration) *ConfirmTracker {
-	if approveTx < 1 {
-		approveTx = DAG_APPROVE_TX
+func newConfirmTracker(tipTimeout time.Duration, share uint16) *ConfirmTracker {
+	if share == 0 || share > 1000 {
+		share = DAG_CONFIRM_SHARE
 	}
 	return &ConfirmTracker{
 		sites:        make(map[uuid.UUID]*siteTrack),
 		byCount:      make(map[int]map[uuid.UUID]struct{}),
 		confirmedSet: make(map[uuid.UUID]struct{}),
 		harvested:    make(map[uuid.UUID]struct{}),
-		roots:        make(map[uuid.UUID]struct{}),
-		approveTx:    approveTx,
+		confirmShare: share,
 		tipTimeout:   tipTimeout,
 	}
 }
@@ -177,47 +185,9 @@ func (c *ConfirmTracker) countApprovals(vertex *Node) {
 			continue
 		}
 		ttr.approvers++
-		if ttr.approvers >= c.approveTx {
+		if ttr.approvers >= 1 {
+			// One approval is enough: a tip is a site nothing approves.
 			c.retireTip(t.id.id, ttr)
-		}
-	}
-}
-
-// refreshRoot - restate whether a site is an entry point for a tip-selection
-// walk: tracked, and approving nothing else still tracked. Called on every
-// change that can affect the answer - a site entering the region, a site gaining
-// resolved targets, and a site leaving the region (which can promote the sites
-// that approve it). Caller holds the lock.
-func (c *ConfirmTracker) refreshRoot(id uuid.UUID) {
-	tr, ok := c.sites[id]
-	if !ok || tr.node == nil {
-		delete(c.roots, id)
-		return
-	}
-	for _, t := range tr.node.targets {
-		if t == nil {
-			continue
-		}
-		if _, inside := c.sites[t.id.id]; inside {
-			delete(c.roots, id)
-			return
-		}
-	}
-	c.roots[id] = struct{}{}
-}
-
-// promoteSources - a site has left the active region, so the sites that approve
-// it may now approve nothing inside it. Caller holds the lock.
-func (c *ConfirmTracker) promoteSources(node *Node) {
-	if node == nil {
-		return
-	}
-	for _, s := range node.sources {
-		if s == nil {
-			continue
-		}
-		if _, inside := c.sites[s.id.id]; inside {
-			c.refreshRoot(s.id.id)
 		}
 	}
 }
@@ -312,19 +282,43 @@ func (c *ConfirmTracker) retireTip(id uuid.UUID, tr *siteTrack) {
 // sweep - move every site now confirmed by all live tips into the confirmed
 // queue. Confirmation is closed downwards, so a confirmed site can leave the
 // tracker: later marking walks stop there.
+// confirmationThreshold - how many of the live tips must confirm a site before
+// it counts as confirmed. Caller holds the lock.
+func (c *ConfirmTracker) confirmationThreshold() int {
+	if c.tipCount <= 0 {
+		return 0
+	}
+	if c.confirmShare >= 1000 {
+		return c.tipCount
+	}
+	// Round up, so a share below 100% never means "fewer tips than the share
+	// asks for", and never means zero while any tip exists.
+	need := (c.tipCount*int(c.confirmShare) + 999) / 1000
+	if need < 1 {
+		need = 1
+	}
+	return need
+}
+
 func (c *ConfirmTracker) sweep() {
 	for {
-		ids, ok := c.byCount[c.tipCount]
-		if !ok || len(ids) == 0 {
-			return
-		}
-		if c.tipCount == 0 {
+		need := c.confirmationThreshold()
+		if need == 0 {
 			// No live tips means no denominator: nothing is confirmed yet.
 			return
 		}
-		promoted := make([]uuid.UUID, 0, len(ids))
-		for id := range ids {
-			promoted = append(promoted, id)
+		// At 100% this is the single bucket the count has to land in. Below it,
+		// every bucket from the threshold up qualifies - bounded by the number
+		// of live tips, and only walked when a bucket at or above the threshold
+		// is actually occupied.
+		promoted := make([]uuid.UUID, 0)
+		for count := need; count <= c.tipCount; count++ {
+			for id := range c.byCount[count] {
+				promoted = append(promoted, id)
+			}
+		}
+		if len(promoted) == 0 {
+			return
 		}
 		progressed := false
 		for _, id := range promoted {
@@ -334,14 +328,14 @@ func (c *ConfirmTracker) sweep() {
 			}
 			if tr.detached || tr.slot >= 0 {
 				// A detached site has unresolved targets, so its coverage is not
-				// yet meaningful. A tip cannot be confirmed: it does not confirm
-				// itself, so its count is always short of the denominator.
+				// yet meaningful. A tip is excluded outright: it does not confirm
+				// itself, and below a 100% share its count can reach the
+				// threshold anyway, so this is what keeps a tip from confirming
+				// itself into a commit transaction.
 				continue
 			}
 			c.unbucket(id, tr.count)
 			delete(c.sites, id)
-			delete(c.roots, id)
-			c.promoteSources(tr.node)
 			if _, done := c.harvested[id]; done {
 				continue
 			}
@@ -387,6 +381,7 @@ func (c *ConfirmTracker) expireStaleTips(now time.Time) {
 			logger.Debugf("[confirmation] Tip %s unapproved for %s, dropping it from the denominator",
 				id.String(), now.Sub(tr.tipSince).Truncate(time.Second))
 			tr.expired = true
+			stats.TipsExpired.Inc()
 			c.retireTip(id, tr)
 		}
 	}
@@ -452,19 +447,6 @@ func (c *ConfirmTracker) track(vertex *Node) {
 		c.countApprovals(vertex)
 	}
 
-	c.refreshRoot(id)
-	// A site that arrived before the one it approves (insertMissing relinks out
-	// of order) was an entry point while its target was absent; it is not one
-	// any more.
-	for _, src := range vertex.sources {
-		if src == nil {
-			continue
-		}
-		if _, inside := c.sites[src.id.id]; inside {
-			c.refreshRoot(src.id.id)
-		}
-	}
-
 	c.expireStaleTips(now)
 	c.sweep()
 }
@@ -483,7 +465,6 @@ func (c *ConfirmTracker) resolve(tr *siteTrack, vertex *Node) {
 	// Now that it is part of the graph, its approvals count. They were not
 	// counted while it was detached, so this is the first and only time.
 	c.countApprovals(vertex)
-	c.refreshRoot(vertex.id.id)
 	c.sweep()
 }
 
@@ -528,15 +509,15 @@ func (c *ConfirmTracker) pop() []*Node {
 	return out
 }
 
-// isTip - whether a site may still be picked as an approval target. That is a
-// question about approvals, not about the denominator: a tip dropped for going
-// unapproved stays selectable, which is how it eventually gets approved and
-// confirmed rather than stranding its transaction.
+// isTip - whether a site may still be picked as an approval target: nothing
+// approves it yet. A tip dropped from the denominator for going unapproved stays
+// selectable, which is how it eventually gets approved and confirmed rather than
+// stranding its transaction.
 func (c *ConfirmTracker) isTip(id uuid.UUID) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	tr, ok := c.sites[id]
-	return ok && !tr.detached && tr.approvers < c.approveTx
+	return ok && !tr.detached && tr.approvers == 0
 }
 
 func (c *ConfirmTracker) getTips() []*Node {
@@ -545,7 +526,7 @@ func (c *ConfirmTracker) getTips() []*Node {
 	c.expireStaleTips(time.Now())
 	tips := make([]*Node, 0, c.tipCount)
 	for _, tr := range c.sites {
-		if tr.node == nil || tr.detached || tr.approvers >= c.approveTx {
+		if tr.node == nil || tr.detached || tr.approvers != 0 {
 			continue
 		}
 		tips = append(tips, tr.node)
@@ -564,10 +545,7 @@ func (c *ConfirmTracker) markHarvested(id uuid.UUID) {
 		c.retireTip(id, tr)
 		c.unbucket(id, tr.count)
 		delete(c.sites, id)
-		delete(c.roots, id)
-		c.promoteSources(tr.node)
 	}
-	delete(c.roots, id)
 	for i, n := range c.confirmed {
 		if n != nil && n.id.id == id {
 			c.confirmed = append(c.confirmed[:i], c.confirmed[i+1:]...)
@@ -607,25 +585,6 @@ func (c *ConfirmTracker) shareOf(id uuid.UUID) (float64, bool) {
 
 // ------------------------------------------------------------- tip selection
 
-// walkRoots - the entry points for a tip-selection walk: the sites in the
-// active region that approve nothing else in it. Every tip is reachable from
-// one of them by stepping forwards along approvals, because the region is a
-// finite DAG: follow any site's targets backwards and you leave the region.
-func (c *ConfirmTracker) walkRoots() []*Node {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]*Node, 0, len(c.roots))
-	for id := range c.roots {
-		tr, ok := c.sites[id]
-		if !ok || tr.node == nil {
-			delete(c.roots, id)
-			continue
-		}
-		out = append(out, tr.node)
-	}
-	return out
-}
-
 // walkFrom - one step's worth of the active region as seen from a site: whether
 // it may be approved, how much of the graph confirms it, and the sites that
 // approve it and are still in the region with the same measure for each.
@@ -647,7 +606,7 @@ func (c *ConfirmTracker) walkFrom(from *Node) (bool, int, []*Node, []int) {
 		// over, so it is neither selectable nor a place to step from.
 		return false, 0, nil, nil
 	}
-	selectable := !tr.detached && tr.approvers < c.approveTx
+	selectable := !tr.detached && tr.approvers == 0
 	next := make([]*Node, 0, len(from.sources))
 	pot := make([]int, 0, len(from.sources))
 	for _, s := range from.sources {
@@ -664,11 +623,26 @@ func (c *ConfirmTracker) walkFrom(from *Node) (bool, int, []*Node, []int) {
 	return selectable, tr.count, next, pot
 }
 
-// rootCount - how many entry points a walk has to choose from, without
-// allocating the slice. A falling count means the region is narrowing to a
-// single chain.
-func (c *ConfirmTracker) rootCount() int {
+// walkBack - the sites this one approves that are still in the active region.
+// Stepping backwards along these is how a walk particle is thrown a bounded
+// depth below the tips; running out of them means the region floor, which is
+// where the particle stops.
+func (c *ConfirmTracker) walkBack(from *Node) []*Node {
+	if from == nil {
+		return nil
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.roots)
+	out := make([]*Node, 0, len(from.targets))
+	for _, t := range from.targets {
+		if t == nil {
+			continue
+		}
+		tr, inside := c.sites[t.id.id]
+		if !inside || tr.node == nil {
+			continue
+		}
+		out = append(out, tr.node)
+	}
+	return out
 }

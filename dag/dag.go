@@ -79,12 +79,13 @@ type confirmations interface {
 	getTips() []*Node
 	isTip(id uuid.UUID) bool
 	markHarvested(id uuid.UUID)
-	// walkRoots - where a tip-selection walk starts. See dag/walk.go.
-	walkRoots() []*Node
 	// walkFrom - one step's worth of the region a tip-selection walk runs over:
 	// whether the site may be approved, its confirmation count, and the sites
 	// that approve it with theirs.
 	walkFrom(from *Node) (selectable bool, potential int, next []*Node, nextPotential []int)
+	// walkBack - the sites this one approves that are still in the region, for
+	// throwing a walk particle a bounded depth below the tips.
+	walkBack(from *Node) []*Node
 }
 
 type DagAlgo uint8
@@ -100,15 +101,23 @@ func (a DagAlgo) Type() string {
 }
 
 const (
-	DAG_ALPHA      = 0.5
-	DAG_APPROVE_TX = 2
-	DAG_WIDTH      = 5
-	DAG_LAMBDA     = 1
-	DAG_TOTAL_TX   = 75
-	UUID_TEMPLATE  = "6d89b2ad-9e07-46c4-8484-33c10b2dd6f%x"
-	TX_MAXFUEL     = 999
-	TX_MAXPRICE    = 10000000
-	TX_NEUTRINO    = 0.00000001
+	DAG_ALPHA = 0.5
+	// DAG_WALK_DEPTH - default for the paper's W. Deep enough that the forward
+	// walk passes through several sites and the bias has somewhere to act,
+	// shallow enough that selection stays cheap at a thousand transactions a
+	// second.
+	DAG_WALK_DEPTH = 10
+	// DAG_CONFIRM_SHARE - default share of live tips that must confirm a site,
+	// in permille.
+	DAG_CONFIRM_SHARE = 1000
+	DAG_APPROVE_TX    = 2
+	DAG_WIDTH         = 5
+	DAG_LAMBDA        = 1
+	DAG_TOTAL_TX      = 75
+	UUID_TEMPLATE     = "6d89b2ad-9e07-46c4-8484-33c10b2dd6f%x"
+	TX_MAXFUEL        = 999
+	TX_MAXPRICE       = 10000000
+	TX_NEUTRINO       = 0.00000001
 )
 
 var logger golog.EventLogger = golog.Logger("dag")

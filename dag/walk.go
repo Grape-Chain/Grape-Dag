@@ -36,11 +36,12 @@ same sequence of choices and a restart repeated it.
 
 Three things are fixed here:
 
-  - The walk starts at the root frontier of the active region - the sites still
-    open that approve nothing else still open - and steps forwards along
-    approvals to the first site with room for another approval. The region is a
-    finite DAG, so every such site is reachable from some root, and the region is
-    bounded by confirmation rather than by the size of the ledger.
+  - The particle is thrown a bounded depth below a randomly chosen tip - the
+    paper's W - and then steps forwards along approvals to the first site with
+    room for another approval. The depth is what bounds the cost of selection,
+    and what keeps the walk working on the recent frontier; starting at the
+    region's floor instead starves the newest tips, and the measurements in
+    walkStart show what that does to confirmation.
 
   - The step probability is exp(-alpha * (W(from) - W(to))), where W is the
     number of the graph's current tips that confirm a site: the very quantity
@@ -266,6 +267,50 @@ func approvalsWanted() int {
 	return want
 }
 
+// walkDepth - the paper's W, from config.
+func walkDepth() int {
+	if d := int(dagConfig.Walkdepth); d > 0 {
+		return d
+	}
+	return DAG_WALK_DEPTH
+}
+
+// walkStart - where to throw the walk particle: a random tip, stepped back down
+// its own approvals up to walkdepth times.
+//
+// This is the paper's W, "depth of throwing of a random walk particle", and it
+// is load-bearing rather than a tuning knob. Starting instead at the region's
+// floor - the oldest sites still open - starves the newest tips, because the
+// forward walk stops at the first site with room for another approval and the
+// floor is where the partly-approved sites collect. Measured, with several sites
+// selecting against one view of the graph as any real network produces: 4
+// concurrent selections confirmed 28 of 1600 sites, 8 confirmed 1 of 3200, and
+// the tip set grew without bound because new tips were never reached. Starting a
+// bounded depth below a random tip puts the recent frontier in reach and makes
+// the cost of selection O(W) by construction instead of proportional to however
+// far confirmation has fallen behind.
+//
+// Running out of in-region targets before reaching the depth means the region is
+// shallower than W, and the particle stops at its floor - which is the right
+// place when there is nothing older still open.
+func (dag *Dag) walkStart(depth int) *Node {
+	tips := tipCache().getTips()
+	if len(tips) == 0 {
+		return nil
+	}
+	particle := tips[dagRand.Intn(len(tips))]
+	thrown := 0
+	for ; thrown < depth; thrown++ {
+		back := tipCache().walkBack(particle)
+		if len(back) == 0 {
+			break
+		}
+		particle = back[dagRand.Intn(len(back))]
+	}
+	stats.WalkThrowDepth.Observe(float64(thrown))
+	return particle
+}
+
 // selectTips - the sites a new site will approve: one independent walk per
 // approval, all landing on distinct sites.
 //
@@ -275,16 +320,20 @@ func approvalsWanted() int {
 // fallbacks below matter.
 func (dag *Dag) selectTips(alpha float64) []*Node {
 	want := approvalsWanted()
-	roots := tipCache().walkRoots()
+	depth := walkDepth()
 	chosen := make([]*Node, 0, want)
 	taken := make(map[uuid.UUID]struct{}, want)
 
 	for len(chosen) < want {
 		var pick *Node
 		for attempt := 0; attempt < walkCollisionBudget; attempt++ {
-			cand := dag.walkFromRoots(roots, alpha)
-			if cand == nil {
+			start := dag.walkStart(depth)
+			if start == nil {
 				break
+			}
+			cand := dag.walkToTip(start, alpha)
+			if cand == nil {
+				continue
 			}
 			if _, dup := taken[cand.id.id]; !dup {
 				pick = cand
@@ -310,27 +359,11 @@ func (dag *Dag) selectTips(alpha float64) []*Node {
 
 	if len(chosen) == 0 {
 		// Either there is no active region to walk - the legacy confirmation
-		// rule keeps none - or every root led nowhere.
+		// rule keeps none - or every start led nowhere.
 		stats.SelectionFallbacks.Inc()
 		return dag.uniformTips()
 	}
 	return chosen
-}
-
-// walkFromRoots - one walk, from a uniformly chosen root. Every root is tried
-// before giving up, because a root that is detached and unapproved is a dead
-// end and there is no reason to let it stall selection.
-func (dag *Dag) walkFromRoots(roots []*Node, alpha float64) *Node {
-	if len(roots) == 0 {
-		return nil
-	}
-	start := dagRand.Intn(len(roots))
-	for i := 0; i < len(roots); i++ {
-		if tip := dag.walkToTip(roots[(start+i)%len(roots)], alpha); tip != nil {
-			return tip
-		}
-	}
-	return nil
 }
 
 // uniformTips - up to approvetx distinct tips, chosen uniformly. The fallback

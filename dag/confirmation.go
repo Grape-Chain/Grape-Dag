@@ -157,18 +157,23 @@ func newConfirmations(cfg config.DagConfiguration) confirmations {
 		logger.Warn("[confirmation] Using the legacy two-approver rule; a site can be confirmed without the rest of the DAG having seen it")
 		return newConfirmationCounter()
 	default:
-		approve := int(cfg.Approvetx)
 		timeout := time.Duration(cfg.Tiptimeout) * time.Second
-		utils.ColorizeInfo(logger, "[confirmation] Using 100%% tip-share confirmation (approvetx=%d, tiptimeout=%s)", approve, timeout)
-		return newConfirmTracker(approve, timeout)
+		share := cfg.Confirmshare
+		if share == 0 || share > 1000 {
+			share = DAG_CONFIRM_SHARE
+		}
+		utils.ColorizeInfo(logger, "[confirmation] Confirming a site once %.1f%% of live tips confirm it (tiptimeout=%s)",
+			float64(share)/10, timeout)
+		if share >= 1000 {
+			// Measured, not guessed: the literal 100% rule needs every live tip
+			// to cover a site while new tips keep arriving, and it stops
+			// confirming once several sites are chosen against a view that does
+			// not yet contain each other. See docs/confirmation.md.
+			logger.Warnf("[confirmation] dag.confirmshare=1000 is the technical paper's literal 100%%. It confirms 99.7%% of sites at four concurrent publishers and 0%% at sixteen; 667 confirms 98.1%% at sixteen. Set dag.confirmshare=667 unless the literal rule is required.")
+		}
+		return newConfirmTracker(timeout, share)
 	}
 }
-
-// walkRoots - the legacy rule keeps no record of which sites are still open, so
-// it offers a tip-selection walk nowhere to start. Selection falls back to a
-// uniform pick among the tips, which is what this rule has always effectively
-// done.
-func (c *ConfirmationCounter) walkRoots() []*Node { return nil }
 
 // walkFrom - see walkRoots: with no share to measure there is nothing to bias a
 // walk with.
@@ -181,3 +186,7 @@ func (c *ConfirmationCounter) walkFrom(from *Node) (bool, int, []*Node, []int) {
 	_, ok := c.tips[from.id.id]
 	return ok, 0, nil, nil
 }
+
+// walkBack - the legacy rule keeps no region, so there is no depth to throw a
+// particle into. Selection falls back to a uniform pick.
+func (c *ConfirmationCounter) walkBack(from *Node) []*Node { return nil }

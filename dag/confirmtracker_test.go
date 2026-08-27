@@ -24,13 +24,11 @@ func tlink(child, parent *Node) {
 // oracleConfirmed - the definition, computed the slow and obvious way: walk
 // backwards from every current tip and mark what it reaches, then a site is
 // confirmed when every tip reached it. Used to check the incremental tracker.
-func oracleConfirmed(nodes []*Node, approveTx int) map[uuid.UUID]bool {
-	tips := []*Node{}
-	for _, n := range nodes {
-		if len(n.sources) < approveTx {
-			tips = append(tips, n)
-		}
-	}
+//
+// A tip is a site nothing approves. That is the ordinary meaning and it is not
+// dag.approvetx, which says how many sites a new site approves.
+func oracleConfirmed(nodes []*Node, share uint16) map[uuid.UUID]bool {
+	tips := tipsOf(nodes)
 	if len(tips) == 0 {
 		return map[uuid.UUID]bool{}
 	}
@@ -49,19 +47,28 @@ func oracleConfirmed(nodes []*Node, approveTx int) map[uuid.UUID]bool {
 			stack = append(stack, n.targets...)
 		}
 	}
+	need := (len(tips)*int(share) + 999) / 1000
+	if need < 1 {
+		need = 1
+	}
 	out := map[uuid.UUID]bool{}
 	for _, n := range nodes {
-		if reached[n.id.id] == len(tips) {
+		// A tip never confirms itself, so it can reach the threshold below a
+		// 100% share without being confirmable.
+		if len(n.sources) == 0 {
+			continue
+		}
+		if reached[n.id.id] >= need {
 			out[n.id.id] = true
 		}
 	}
 	return out
 }
 
-func tipsOf(nodes []*Node, approveTx int) []*Node {
+func tipsOf(nodes []*Node) []*Node {
 	tips := []*Node{}
 	for _, n := range nodes {
-		if len(n.sources) < approveTx {
+		if len(n.sources) == 0 {
 			tips = append(tips, n)
 		}
 	}
@@ -81,7 +88,7 @@ func TestTrackerAgreesWithTheDefinition(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
 			// tiptimeout 0: the expiry valve would legitimately diverge from the
 			// definition, and it is exercised separately.
-			tr := newConfirmTracker(approveTx, 0)
+			tr := newConfirmTracker(0, 1000)
 
 			genesis := tnode(0)
 			nodes := []*Node{genesis}
@@ -95,7 +102,7 @@ func TestTrackerAgreesWithTheDefinition(t *testing.T) {
 				if len(nodes) <= width {
 					tlink(n, genesis)
 				} else {
-					tips := tipsOf(nodes, approveTx)
+					tips := tipsOf(nodes)
 					if len(tips) == 1 {
 						tlink(n, tips[0])
 					} else {
@@ -111,7 +118,7 @@ func TestTrackerAgreesWithTheDefinition(t *testing.T) {
 				nodes = append(nodes, n)
 				tr.add(n)
 
-				oracle := oracleConfirmed(nodes, approveTx)
+				oracle := oracleConfirmed(nodes, 1000)
 
 				// Invariant the sweep relies on: a tip never confirms itself, so
 				// its coverage is always short of the denominator and a tip can
@@ -166,7 +173,7 @@ func TestTrackerAgreesWithTheDefinition(t *testing.T) {
 // The whole point of the change: two direct approvals are not enough on their
 // own. A site is confirmed when the tips that exist all confirm it.
 func TestTwoApprovalsAloneDoNotConfirm(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 
 	genesis := tnode(0)
 	tr.add(genesis)
@@ -221,7 +228,7 @@ func TestTwoApprovalsAloneDoNotConfirm(t *testing.T) {
 }
 
 func TestConfirmedSitesLeaveTheActiveRegion(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	genesis := tnode(0)
 	tr.add(genesis)
 	nodes := []*Node{genesis}
@@ -229,7 +236,7 @@ func TestConfirmedSitesLeaveTheActiveRegion(t *testing.T) {
 
 	for step := 1; step <= 400; step++ {
 		n := tnode(step)
-		tips := tipsOf(nodes, 2)
+		tips := tipsOf(nodes)
 		if len(tips) < 2 {
 			tlink(n, tips[0])
 		} else {
@@ -255,7 +262,7 @@ func TestConfirmedSitesLeaveTheActiveRegion(t *testing.T) {
 }
 
 func TestHarvestedSitesAreNotConfirmedAgain(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	genesis := tnode(0)
 	tr.add(genesis)
 	tr.markHarvested(genesis.id.id)
@@ -286,7 +293,7 @@ func TestHarvestedSitesAreNotConfirmedAgain(t *testing.T) {
 // A site inserted before its approval targets have arrived cannot be trusted to
 // confirm anything, and must not count towards the denominator.
 func TestDetachedSitesDoNotCountOrConfirm(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	genesis := tnode(0)
 	tr.add(genesis)
 
@@ -317,15 +324,17 @@ func TestDetachedSitesDoNotCountOrConfirm(t *testing.T) {
 	if !tr.isTip(orphan.id.id) {
 		t.Fatalf("a relinked site did not become a tip")
 	}
-	if _, tipsAfter, _ := tr.stats(); tipsAfter != tipsBefore+1 {
-		t.Fatalf("denominator is %d after relink, want %d", tipsAfter, tipsBefore+1)
+	// The relinked site joins the denominator and the site it approves leaves
+	// it, because a tip is a site nothing approves. Net zero.
+	if _, tipsAfter, _ := tr.stats(); tipsAfter != tipsBefore {
+		t.Fatalf("denominator is %d after relink, want %d", tipsAfter, tipsBefore)
 	}
 }
 
 // One tip that is never approved would otherwise hold the denominator hostage
 // and stall confirmation for the whole ledger.
 func TestAbandonedTipStopsHoldingUpConfirmation(t *testing.T) {
-	tr := newConfirmTracker(2, 50*time.Millisecond)
+	tr := newConfirmTracker(50*time.Millisecond, 1000)
 	genesis := tnode(0)
 	tr.add(genesis)
 
@@ -374,7 +383,7 @@ func TestAbandonedTipStopsHoldingUpConfirmation(t *testing.T) {
 // If it disappeared from tip selection it could never gain approvals, would
 // never be confirmed, and its transaction would never reach a commit tx.
 func TestExpiredTipStaysSelectable(t *testing.T) {
-	tr := newConfirmTracker(2, 40*time.Millisecond)
+	tr := newConfirmTracker(40*time.Millisecond, 1000)
 	genesis := tnode(0)
 	tr.add(genesis)
 
@@ -449,7 +458,7 @@ func TestExpiredTipStaysSelectable(t *testing.T) {
 }
 
 func TestShareIsTheFractionOfTipsThatConfirm(t *testing.T) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	genesis := tnode(0)
 	tr.add(genesis)
 	a, b := tnode(1), tnode(2)
@@ -471,7 +480,9 @@ func TestShareIsTheFractionOfTipsThatConfirm(t *testing.T) {
 		t.Fatalf("genesis was not handed over as confirmed")
 	}
 
-	// One more site: a now has a single approver out of three tips (a, b, c).
+	// One more site approving a. That takes a out of the tip set - a tip is a
+	// site nothing approves - leaving b and c as the two tips, and only c
+	// confirms a.
 	c := tnode(3)
 	tlink(c, a)
 	tr.add(c)
@@ -480,8 +491,8 @@ func TestShareIsTheFractionOfTipsThatConfirm(t *testing.T) {
 	if !ok {
 		t.Fatalf("a should still be in the active region")
 	}
-	if want := 1.0 / 3.0; share < want-1e-9 || share > want+1e-9 {
-		t.Fatalf("share of a = %v, want %v (one of three tips confirms it)", share, want)
+	if want := 0.5; share < want-1e-9 || share > want+1e-9 {
+		t.Fatalf("share of a = %v, want %v (one of two tips confirms it)", share, want)
 	}
 }
 

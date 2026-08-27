@@ -71,6 +71,16 @@ var (
 	// one-step walk.
 	WalkSteps = newHistogram2("walk_steps", "Steps taken by one tip-selection walk that reached a site to approve.",
 		append([]float64{0.5}, prometheus.ExponentialBuckets(1, 2, 13)...))
+	// WalkThrowDepth - how far below a tip the particle was actually thrown.
+	// Consistently short of the configured depth means the unconfirmed region is
+	// shallower than W, which is healthy; it is the reading that says whether W
+	// is doing anything at all.
+	WalkThrowDepth = newHistogram2("walk_throw_depth", "Approvals stepped back from a tip before a walk starts.",
+		append([]float64{0.5}, prometheus.ExponentialBuckets(1, 2, 10)...))
+	// TipsExpired - tips dropped from the confirmation denominator for going
+	// unapproved. The valve is a liveness safeguard, not a throughput mechanism:
+	// a steady rate here means selection is not reaching the tips it should.
+	TipsExpired = newCounter("tips_expired_total", "Tips dropped from the confirmation denominator for going unapproved.")
 	// WalksAbandoned - walks that ended without anything to approve, by reason.
 	// Observed nowhere in WalkSteps, so without this they are invisible.
 	WalksAbandoned = newCounterVec("walks_abandoned_total", "Tip-selection walks that found nothing to approve.", "reason")
@@ -113,7 +123,6 @@ var (
 	ConfirmActive  = newGauge("confirm_active_sites", "Sites in the confirmation frontier.")
 	ConfirmTips    = newGauge("confirm_tips", "Sites counting towards the confirmation denominator.")
 	ConfirmPending = newGauge("confirm_pending", "Confirmed sites waiting for a commit transaction.")
-	WalkRoots      = newGauge("walk_roots", "Entry points for a tip-selection walk.")
 	PinHeight      = newGauge("pin_height", "Number of the newest commit transaction.")
 )
 

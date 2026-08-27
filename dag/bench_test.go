@@ -28,7 +28,7 @@ Run: go test ./dag/ -run XXX -bench . -benchtime 200x
 // is the shape the walk produces rather than one chosen to be convenient.
 func growFrontier(b testing.TB, sites int) (*Dag, *ConfirmTracker) {
 	b.Helper()
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	prev := confirmationCounter
 	confirmationCounter = tr
 	b.Cleanup(func() { confirmationCounter = prev })
@@ -66,7 +66,6 @@ func BenchmarkTipSelection(b *testing.B) {
 			active, tips, _ := tr.stats()
 			b.ReportMetric(float64(active), "frontier")
 			b.ReportMetric(float64(tips), "tips")
-			b.ReportMetric(float64(tr.rootCount()), "roots")
 		})
 	}
 }
@@ -91,14 +90,14 @@ func BenchmarkGraphGrowth(b *testing.B) {
 }
 
 func BenchmarkConfirmTrackerAdd(b *testing.B) {
-	tr := newConfirmTracker(2, 0)
+	tr := newConfirmTracker(0, 1000)
 	genesis := tnode(0)
 	tr.add(genesis)
 	nodes := []*Node{genesis}
 	b.ResetTimer()
 	for i := 1; i <= b.N; i++ {
 		n := tnode(i)
-		tips := tipsOf(nodes, 2)
+		tips := tipsOf(nodes)
 		tlink(n, tips[len(tips)-1])
 		if len(tips) > 1 {
 			tlink(n, tips[len(tips)-2])

@@ -19,7 +19,7 @@ func sliceFixture(t *testing.T) (*Dag, func()) {
 
 	dagConfig = config.DagConfiguration{Slicing: true, Approvetx: 2}
 	sliceArchive = newRamArchive()
-	confirmationCounter = newConfirmTracker(2, 0)
+	confirmationCounter = newConfirmTracker(0, 1000)
 
 	d := &Dag{
 		mapped_vertices: make(map[uuid.UUID]*Node),

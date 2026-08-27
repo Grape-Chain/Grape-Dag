@@ -40,6 +40,5 @@ func refreshSizeGauges() {
 		stats.ConfirmActive.Set(float64(active))
 		stats.ConfirmTips.Set(float64(tips))
 		stats.ConfirmPending.Set(float64(pending))
-		stats.WalkRoots.Set(float64(tr.rootCount()))
 	}
 }

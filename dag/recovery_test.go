@@ -25,7 +25,7 @@ func recoveryFixture(t testing.TB, dir string) store.Store {
 	dagConfig = config.DagConfiguration{Slicing: true, Approvetx: 2}
 	peerConfig = config.PeerConfiguration{Network: 2}
 	sliceArchive = newRamArchive()
-	confirmationCounter = newConfirmTracker(2, 0)
+	confirmationCounter = newConfirmTracker(0, 1000)
 	_pins_ = newNodeTxPin()
 	walletCache = newWalletCache()
 	walletCacheConfirmed = newWalletCache()

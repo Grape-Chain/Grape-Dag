@@ -129,7 +129,17 @@ type DagConfiguration struct {
 	Versioncollision bool   // Enable or disable version collision in DAG, enabling is a very expensive operation!
 	Confirmation     string // Confirmation rule: "share100" (paper section 5.1) or "legacy" (two direct approvers)
 	Tiptimeout       uint32 // Seconds before an unapproved tip stops counting towards the confirmation denominator; 0 disables
-	Slicing          bool   // Move sites settled by a commit transaction out of the live graph into the slice archive
+	// Walkdepth - the technical paper's W, "depth of throwing of a random walk
+	// particle": how many approvals below a tip a tip-selection walk starts.
+	// Bounds the per-transaction cost of selection by construction, and is what
+	// keeps the walk working on the recent frontier instead of on the oldest
+	// part of the unconfirmed region. 0 falls back to the default.
+	Walkdepth uint16
+	// Confirmshare - share of the live tips that must confirm a site before it
+	// is irrevocably confirmed, in permille. 1000 is the technical paper's
+	// literal 100%.
+	Confirmshare uint16
+	Slicing      bool // Move sites settled by a commit transaction out of the live graph into the slice archive
 }
 
 type TxConfiguration struct {
