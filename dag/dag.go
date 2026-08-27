@@ -139,6 +139,17 @@ func (d *Dag) AvgDelay() int64 {
 	return 0.
 }
 
+// SnapshotNodes - a shallow copy of the current site slice, taken under the dag
+// lock. Readers iterate the copy so that an append (which may reallocate the
+// backing array) cannot race them.
+func (d *Dag) SnapshotNodes() []*Node {
+	d.mux.Lock()
+	defer d.mux.Unlock()
+	out := make([]*Node, len(d._dag_))
+	copy(out, d._dag_)
+	return out
+}
+
 func (d *Dag) lookupCache(id uuid.UUID) bool {
 	_, ok := d.mapped_vertices[id]
 	return ok

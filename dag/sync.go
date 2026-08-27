@@ -312,9 +312,11 @@ func handleLatestBalances(rec *tx.Syncv1) error {
 	chIntValue := chMsg.(*wrapperspb.Int64Value)
 	currentHeightAnnounced := chIntValue.GetValue()
 	logger.Infof("Leader's snapshot height is %d, id=%s", currentHeightAnnounced, rec.Tracking_Id.String())
-	if p.CurrentHeight() != int(currentHeightAnnounced) {
+	// p.LockPin() is held for the duration of this handler, so use the
+	// lock-free accessor here.
+	if p.unsafe_currentHeight() != int(currentHeightAnnounced) {
 		return fmt.Errorf("announced and current height mismatch"+
-			"on node when applying balances snapshot: current: %d, announced: %d", p.CurrentHeight(), currentHeightAnnounced)
+			"on node when applying balances snapshot: current: %d, announced: %d", p.unsafe_currentHeight(), currentHeightAnnounced)
 	}
 	lMsg, _ := rec.Details[1].UnmarshalNew()
 	lIntValue := lMsg.(*wrapperspb.Int32Value)

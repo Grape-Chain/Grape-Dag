@@ -502,55 +502,79 @@ func (syncmgr *DagSyncMngr) syncSubscribe(ctx context.Context, pid peer.ID, wg *
 	logger.Infof("%s  ~ Sync Subscriber stopped", emoji.VerticalTrafficLight)
 }
 
-func processPin(pin *pb.TxPin) {
+// pinGapSyncing guards the gap-download catch-up loop so that concurrent pin
+// announcements do not run overlapping downloads against the same chain.
+var pinGapSyncing atomic.Bool
+
+// applyPin - apply a pin that continues our chain. Takes the pin lock only for
+// the validation-and-mutation window, never across a wait, so REST/eth-RPC
+// reads and the pin ticker are not blocked while we catch up.
+//
+// returns:
+//
+//	bool - true if the pin was applied
+func applyPin(pin *pb.TxPin) bool {
 	_pins_.LockPin()
 	defer _pins_.UnlockPin()
+	expected := _pins_.unsafe_currentHeight() + 1
+	if int(pin.PinNumber) != expected {
+		logger.Warnf("[pin apply] Skipping pin=%d, expected pin=%d", pin.PinNumber, expected)
+		return false
+	}
+	_pins_.SyncPins(pin)
+	walletCache.copyFrom(walletCacheConfirmed)
+	_pins_.pins = append(_pins_.pins, pin)
+	return true
+}
+
+func processPin(pin *pb.TxPin) {
 	pinJson, _ := pin.MarshalJSONShort()
 	logger.Infof("=> [dag sync sub] Received a new pin tx : \n%s\n", string(pinJson))
+
 	currentHeight := _pins_.CurrentHeight()
 	if int(currentHeight+1) == int(pin.PinNumber) {
 		logger.Infof("[No gaps detected] Process latest pin from leader as our latest pin=%d", pin.PinNumber)
-		_pins_.SyncPins(pin)
-		walletCache.copyFrom(walletCacheConfirmed)
-		_pins_.pins = append(_pins_.pins, pin)
-	} else {
-		logger.Warnf("[Gap detected] Our current latest pin=%d, but got pin=%d from leader, pin downloading required", currentHeight, pin.PinNumber)
-		_pins_.openPinDownloading()
-		err := sendPindDownloadRequest(int(currentHeight) + 1)
-		if err != nil {
-			logger.Errorf("[Gap detected] downloading missing pins to catch up with leader: %s, will try again on next leader's new pin announce", err.Error())
-		} else {
-			timer := time.After(time.Second * 120)
-			loggedWhenFirstDownloadedPinReceived := false
-		pinProcessing:
-			for {
-				select {
-				case downloadedPin, closed := <-_pins_.downloadedPins:
-					if closed {
-						logger.Infof("[Gap detected] No downloaded pins left to process")
-						break pinProcessing
-					}
-					if !loggedWhenFirstDownloadedPinReceived {
-						logger.Infof("[Gap detected] Start downloaded pin processing")
-						loggedWhenFirstDownloadedPinReceived = true
-					}
-					if int(downloadedPin.PinNumber) == int(currentHeight+1) {
-						logger.Infof("[Gap detected] Process downloaded pin at height=%d", currentHeight+1)
-						_pins_.SyncPins(downloadedPin)
-						_pins_.pins = append(_pins_.pins, downloadedPin)
-						currentHeight = currentHeight + 1
-					} else {
-						logger.Errorf("[Gap detected] Downloaded pin=%d is out of order, required %d, exit downloading loop", downloadedPin.PinNumber, currentHeight+1)
-						break pinProcessing
-					}
-				case <-timer:
-					logger.Errorf("Gap detected] Timeout waiting for missing pin response from leader")
-					break pinProcessing
-				}
-			}
-			logger.Infof("[Gap detected] Processed pins up to %d height", currentHeight)
-			walletCache.copyFrom(walletCacheConfirmed)
-		}
+		applyPin(pin)
+		return
 	}
 
+	logger.Warnf("[Gap detected] Our current latest pin=%d, but got pin=%d from leader, pin downloading required", currentHeight, pin.PinNumber)
+	// Only one catch-up at a time; later announcements re-trigger it if needed.
+	if !pinGapSyncing.CompareAndSwap(false, true) {
+		logger.Infof("[Gap detected] Pin catch-up already in progress, ignoring this announce")
+		return
+	}
+	defer pinGapSyncing.Store(false)
+
+	_pins_.openPinDownloading()
+	if err := sendPindDownloadRequest(int(currentHeight) + 1); err != nil {
+		logger.Errorf("[Gap detected] downloading missing pins to catch up with leader: %s, will try again on next leader's new pin announce", err.Error())
+		return
+	}
+
+	timer := time.After(time.Second * 120)
+	loggedWhenFirstDownloadedPinReceived := false
+pinProcessing:
+	for {
+		select {
+		case downloadedPin, ok := <-_pins_.downloadedPins:
+			if !ok {
+				logger.Infof("[Gap detected] No downloaded pins left to process")
+				break pinProcessing
+			}
+			if !loggedWhenFirstDownloadedPinReceived {
+				logger.Infof("[Gap detected] Start downloaded pin processing")
+				loggedWhenFirstDownloadedPinReceived = true
+			}
+			if !applyPin(downloadedPin) {
+				logger.Errorf("[Gap detected] Downloaded pin=%d is out of order, exit downloading loop", downloadedPin.PinNumber)
+				break pinProcessing
+			}
+			logger.Infof("[Gap detected] Processed downloaded pin at height=%d", downloadedPin.PinNumber)
+		case <-timer:
+			logger.Errorf("[Gap detected] Timeout waiting for missing pin response from leader")
+			break pinProcessing
+		}
+	}
+	logger.Infof("[Gap detected] Processed pins up to %d height", _pins_.CurrentHeight())
 }

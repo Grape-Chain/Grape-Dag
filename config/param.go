@@ -59,6 +59,10 @@ const (
 	STATE_CHANGE_WAIT              = 1000
 	RELAY_SRV_1                    = "/dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1"
 	RELAY_SRV_2                    = "/dns4/bootstrap2/udp/43431/quic-v1/p2p/12D3KooWQYaGFAHo5zSsJR4Sgdpv9AoCWU9y6aTdAvmVjg6rcmzf"
+	// ADDRESS_BYTE_LEN - length in bytes of an account address
+	ADDRESS_BYTE_LEN = 20
+	// ZERO_ADDRESS - the all-zero account address; used as a burn destination
+	ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 )
 
 type Grapepeer struct {
@@ -87,6 +91,7 @@ type PeerConfiguration struct {
 	ApiTlsEnabled   bool   // whether enable TLS on API or not
 	Apikey          string //private key location and name for tls on api (if enabled)
 	Apicert         string // cert location and name for tls on api (if enabled)
+	ApiAuthDisabled bool   // run the REST API with no authentication (local development only)
 	StateServerPort int    // port of the gRPC server serving state for SMC VM
 	VmServerPort    int    // port of the smart contract vm server where send contracts to
 	Logging         int    // Log level: -1 Debug (through CLI only), 0 - Info, 1 - Warn, 2 - Error

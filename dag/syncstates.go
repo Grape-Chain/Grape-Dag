@@ -85,16 +85,17 @@ func (sm *SyncSM) existsSM(id uuid.UUID) bool {
 }
 
 func (s *SyncSM) waitForSM(id uuid.UUID, state sm.State, t int64) (sm.State, error) {
+	// Resolve the state machine under the registry lock, then release it before
+	// waiting. Holding s.mx across the wait would block changeToSM (which needs
+	// the same lock) from ever recording the transition we are waiting for, so
+	// every wait would time out unless the state already matched.
 	s.mx.Lock()
-	defer s.mx.Unlock()
-	var err error = nil
-	var st sm.State = sm.SYNC_ZERO_STATE
-	if v, ok := s.machines[id]; ok {
-		st, err = v.WaitForState(state, time.Millisecond*time.Duration(t))
-	} else {
-		err = fmt.Errorf("Failed to find a statemachine with id %s", id.String())
+	v, ok := s.machines[id]
+	s.mx.Unlock()
+	if !ok {
+		return sm.SYNC_ZERO_STATE, fmt.Errorf("Failed to find a statemachine with id %s", id.String())
 	}
-	return st, err
+	return v.WaitForState(state, time.Millisecond*time.Duration(t))
 }
 
 func (s *SyncSM) waitForSMInLoop(id uuid.UUID, state sm.State, t time.Duration) (sm.State, error) {

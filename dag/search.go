@@ -38,14 +38,14 @@ var accountFilter = func(transaction tx.Transaction, accounts []string, txType i
 }
 
 func SearchTx(hash types.Hex) (*tx.ConfirmedTx, error) {
-	for pinTxNumber, pin := range _pins_.pins { // select confirmed Payments
+	for _, pin := range _pins_.snapshotPins() { // select confirmed Payments
 		pinHash, _ := pin.Hash(crypto.SHA256)
 		pinHashStr := "0x" + hex.EncodeToString(pinHash)
 		for nodeIdx, node := range pin.Nodes { // confirmed payment
 			realTx := tx.UnmarshalBinary(node.Tx)
 			txHash := realTx.GetHash()
 			if bytes.Equal(txHash, hash) {
-				paymentTx, err := tx.NewPaymentConfirmedTx(realTx, pinTxNumber, pinHashStr, nodeIdx)
+				paymentTx, err := tx.NewPaymentConfirmedTx(realTx, int(pin.PinNumber), pinHashStr, nodeIdx)
 				return &paymentTx, err
 			}
 		}
@@ -63,7 +63,7 @@ func SearchAnyTx(hash types.Hex) (*tx.UnifiedTx, error) {
 		return tx.NewUnifiedConfirmedTx(*confirmedTx), nil
 	}
 
-	for _, node := range _dag_._dag_ { // select unconfirmed Payments
+	for _, node := range _dag_.SnapshotNodes() { // select unconfirmed Payments
 		realTx := node.tx
 		txHash := realTx.GetHash()
 		if bytes.Equal(txHash, hash) {
@@ -81,7 +81,12 @@ func SearchAnyTx(hash types.Hex) (*tx.UnifiedTx, error) {
 func SearchTxs(accounts []string, txType int, limit int, offset int, ascSort bool, confirmed *bool, directionIsSent *bool) []*tx.UnifiedTx {
 	var accTxs []*tx.UnifiedTx
 	processedPayments := map[string]bool{}
-	for pinTxNumber, pin := range _pins_.pins { // select confirmed SMC txs and Payments
+	// Snapshot the shared collections under their own locks, sequentially, then
+	// iterate the copies. Nesting the two locks here would invert the order used
+	// by the insert path (dag lock first) and could deadlock.
+	pinsSnapshot := _pins_.snapshotPins()
+	for _, pin := range pinsSnapshot { // select confirmed SMC txs and Payments
+		pinTxNumber := int(pin.PinNumber)
 		pinHashStr := pin.GetHash().String()
 		if confirmed == nil || *confirmed {
 			gasUsed := 0
@@ -141,7 +146,7 @@ func SearchTxs(accounts []string, txType int, limit int, offset int, ascSort boo
 				big.NewInt(0).SetBytes(uSc.GetAmount().Bytes()).String(), hex.EncodeToString(uSc.GetData()))
 		}
 
-		for _, n := range _dag_._dag_ { // unconfirmed payments
+		for _, n := range _dag_.SnapshotNodes() { // unconfirmed payments
 			if processedPayments[n.Id()] { // skip confirmed txs collected before
 				continue
 			}

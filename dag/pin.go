@@ -29,7 +29,6 @@ import (
 )
 
 var storageNode NodeTxPin
-var pinsQuantity int64
 
 type NodeTxPin struct {
 	NodeType       int
@@ -41,6 +40,13 @@ type NodeTxPin struct {
 }
 
 func (p *NodeTxPin) GetPin(number int) *pb.TxPin {
+	p.lock("GetPin")
+	defer p.unlock()
+	return p.unsafe_getPin(number)
+}
+
+// unsafe_getPin - caller must hold p.mu
+func (p *NodeTxPin) unsafe_getPin(number int) *pb.TxPin {
 	if len(p.pins) > 0 {
 		if number >= len(p.pins) || number < 0 {
 			return nil
@@ -63,10 +69,27 @@ func (p *NodeTxPin) GetPin(number int) *pb.TxPin {
 }
 
 func (p *NodeTxPin) GetLastPin() *pb.TxPin {
+	p.lock("GetLastPin")
+	defer p.unlock()
+	return p.unsafe_getLastPin()
+}
+
+// unsafe_getLastPin - caller must hold p.mu
+func (p *NodeTxPin) unsafe_getLastPin() *pb.TxPin {
 	if len(p.pins) > 0 {
 		return p.pins[len(p.pins)-1]
 	}
 	return nil
+}
+
+// unsafe_nextPinNumber - the number the next pin appended to the chain must
+// carry: one past the current head, or 0 for an empty chain (the genesis pin).
+// Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_nextPinNumber() int64 {
+	if last := p.unsafe_getLastPin(); last != nil {
+		return last.PinNumber + 1
+	}
+	return 0
 }
 
 func (p *NodeTxPin) unlock() {
@@ -129,9 +152,23 @@ func (p *NodeTxPin) set(genesis *Node, wallet string) {
 	}
 	pin.Balance.Balance[wallet] = genesis.tx.GetAmount().Bytes()
 	pin.Sites = append(pin.Sites, s)
+	// The genesis pin is number 0. This must be set before signing: the
+	// signature covers the marshalled pin, PinNumber included.
+	pin.PinNumber = p.unsafe_nextPinNumber()
 	pin.SignTx(_dag_.Wallet())
 
 	p.pins = append(p.pins, pin)
+}
+
+// snapshotPins - a shallow copy of the pin chain, taken under the pin lock.
+// Readers iterate the copy so that an append (which may reallocate the backing
+// array) cannot race them.
+func (p *NodeTxPin) snapshotPins() []*pb.TxPin {
+	p.lock("snapshotPins")
+	defer p.unlock()
+	out := make([]*pb.TxPin, len(p.pins))
+	copy(out, p.pins)
+	return out
 }
 
 func (p *NodeTxPin) getLast() *pb.TxPin {
@@ -422,8 +459,11 @@ func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
 		walletCache.remove(grape1crypto.BytesToAddress(val.tx.GetSender()), []string{val.Id()})
 		walletCache.remove(grape1crypto.BytesToAddress(val.tx.GetRecipient()), []string{val.Id()})
 	}
-	pin.PinNumber = pinsQuantity
-	pinsQuantity++
+	// Derive the number from the chain head rather than a process-local counter,
+	// so it stays correct across restarts and after syncing pins from a peer.
+	// Set before signing and before the smart-contract stage, which reports it
+	// to the VM as the block number.
+	pin.PinNumber = p.unsafe_nextPinNumber()
 	p.runSmartContractStage(pin, smcTxs)
 
 	// now that all the information has been collected, sign it and store
@@ -444,7 +484,7 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 	// Fourth step - synchronize balances affected during sc execution back to pin.Balance.Balace
 	// Fifth step - remove temporary cached balances within wallet_cache (affected during sc execution)
 	// to force it to update balance on next lookup
-	logger.Infof("Smart contract stage started, pin=%d, txs=%d", len(p.pins), len(smcTxs))
+	logger.Infof("Smart contract stage started, pin=%d, txs=%d", pin.PinNumber, len(smcTxs))
 	startTime := time.Now()
 	vm.SyncBalances(pin.Balance.Balance)   // sync balances to storage
 	vm.CaptureStateStoreDiffs()            // enable state store changes capture
@@ -461,7 +501,7 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 	}
 	for smcTxIdx, smcTx := range smcTxs {
 
-		execResult, err := p.executeSMCTx(smcTx, int64(timestamp))
+		execResult, err := p.executeSMCTx(smcTx, int64(timestamp), pin.PinNumber)
 		if err != nil {
 			hash := smcTx.GetHash()
 			logger.Warnf("Transaction %s is invalid (during execution), removing from smc pool", "0x"+hex.EncodeToString(hash))
@@ -474,7 +514,7 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 		}
 		gasUsed += int(execResult.GasUsed)
 		smc.AddConfirmed(tx.ConfirmedTx{IdentifiableTx: tx.IdentifiableTx{Transaction: smcTx},
-			Status: status, StatusMessage: execResult.Output, PinTxNumber: len(p.pins), UsedFuel: int(execResult.GasUsed),
+			Status: status, StatusMessage: execResult.Output, PinTxNumber: int(pin.PinNumber), UsedFuel: int(execResult.GasUsed),
 			PinTxHash: pinHashStr, TxIndex: len(pin.Nodes) + smcTxIdx, CumulativeGasUsed: gasUsed})
 		receipt := execResultToReceipt(execResult)
 		execSmc := pb.ExecutedSmcTx{Tx: smcTx.MarshalBinary(), Receipt: receipt}
@@ -498,7 +538,7 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 }
 
 func (pin *NodeTxPin) runSmartContractStageFullNode(balances map[string][]byte, recentPin *pb.TxPin) error {
-	logger.Infof("Smart contract stage started at full node, pin=%d, txs=%d", len(pin.pins), len(recentPin.SmcTxs))
+	logger.Infof("Smart contract stage started at full node, pin=%d, txs=%d", recentPin.PinNumber, len(recentPin.SmcTxs))
 	vm.SyncBalances(balances)
 	vm.CaptureStateStoreDiffs()
 	defer vm.ResetCaptureStateStoreDiffs()
@@ -509,7 +549,7 @@ func (pin *NodeTxPin) runSmartContractStageFullNode(balances map[string][]byte, 
 		realTx := tx.UnmarshalBinary(smcTx.Tx)
 		realJson := realTx.String()
 		logger.Infof("Transaction info:  %s", realJson)
-		execResult, err := pin.executeSMCTx(realTx, int64(timestamp))
+		execResult, err := pin.executeSMCTx(realTx, int64(timestamp), recentPin.PinNumber)
 		if err != nil {
 			hash := realTx.GetHash()
 			logger.Warnf("Synchronization failed! Transaction %s is invalid (during execution)", "0x"+hex.EncodeToString(hash))
@@ -568,14 +608,23 @@ func (pin *NodeTxPin) runSmartContractStageFullNode(balances map[string][]byte, 
 }
 
 func (p *NodeTxPin) CurrentHeight() int {
+	p.lock("CurrentHeight")
+	defer p.unlock()
+	return p.unsafe_currentHeight()
+}
+
+// unsafe_currentHeight - the pin number at the head of the chain.
+// Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_currentHeight() int {
 	if len(p.pins) == 0 {
 		return 0
-	} else {
-		return int(p.pins[len(p.pins)-1].PinNumber)
 	}
+	return int(p.pins[len(p.pins)-1].PinNumber)
 }
 
 func (p *NodeTxPin) CurrentTS() int64 {
+	p.lock("CurrentTS")
+	defer p.unlock()
 	if len(p.pins) == 0 {
 		return 0
 	}
@@ -811,7 +860,9 @@ type ExecutionResult struct {
 	GasUsed    int64
 }
 
-func (p *NodeTxPin) executeSMCTx(transaction tx.Transaction, timestamp int64) (ExecutionResult, error) {
+// executeSMCTx - run one smart-contract tx on the VM in the context of the pin
+// identified by pinNumber (reported to the VM as the block number).
+func (p *NodeTxPin) executeSMCTx(transaction tx.Transaction, timestamp int64, pinNumber int64) (ExecutionResult, error) {
 	hash := transaction.GetHash()
 	execResult := ExecutionResult{}
 	client, err := vm.ConnectToVm()
@@ -821,10 +872,11 @@ func (p *NodeTxPin) executeSMCTx(transaction tx.Transaction, timestamp int64) (E
 	}
 	coinbaseAddrBytes, err := eth.ParseEthAddress(config.GetConfig().Dag.Coinbaseaccount)
 	if err != nil {
-		panic(err)
+		return execResult, fmt.Errorf("invalid coinbase account %q in configuration: %w",
+			config.GetConfig().Dag.Coinbaseaccount, err)
 	}
 	txPin := &pb.PinTxHeader{CoinbaseAccountAddress: &pb.Address{AddBytes: coinbaseAddrBytes},
-		Timestamp: timestamp, TxNumber: int32(p.CurrentHeight() + 1)}
+		Timestamp: timestamp, TxNumber: int32(pinNumber)}
 	response, vmErr := client.RunCall(context.TODO(), &pb.WriteContractRequest{Tx: transaction.MarshalBinary(), Header: txPin})
 	if vmErr != nil {
 		logger.Errorf("VM error occurred during tx=%v execution: %s", transaction, vmErr.Error())

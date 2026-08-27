@@ -40,11 +40,31 @@ type NodeApiServer struct {
 	config *RestAPIConfig
 }
 
+// Defaults documented in api/openapi.yml for the shared optional query params.
+// oapi-codegen v1.11 does not materialize a schema `default:` into the generated
+// server, so an omitted param arrives as a nil pointer and must be defaulted
+// here rather than dereferenced.
+const (
+	defaultPage      = 0
+	defaultPageSize  = 15
+	defaultSortOrder = "DESC"
+)
+
+// derefOr - the value p points to, or def when p is nil.
+func derefOr[T any](p *T, def T) T {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
 func (nas NodeApiServer) GetAccounts(w http.ResponseWriter, r *http.Request, params api.GetAccountsParams) {
-	accounts := accService.GetAccounts(services.Sort(*params.SortOrder), services.Page{
-		Size:   *params.PageSize,
-		Number: *params.Page,
-	})
+	accounts := accService.GetAccounts(
+		services.Sort(derefOr(params.SortOrder, api.GetAccountsParamsSortOrder(defaultSortOrder))),
+		services.Page{
+			Size:   derefOr(params.PageSize, defaultPageSize),
+			Number: derefOr(params.Page, defaultPage),
+		})
 	var responseAccounts []api.Account
 	for _, account := range accounts {
 		responseAccounts = append(responseAccounts, mapper.AccountToDto(account))
@@ -65,6 +85,9 @@ func (nas NodeApiServer) GetAccountsAccountId(w http.ResponseWriter, r *http.Req
 
 func (nas NodeApiServer) GetContractsContractId(w http.ResponseWriter, r *http.Request, contractId string, params api.GetContractsContractIdParams) {
 	contractId = requireHexWithPrefixOfSize(contractId, 20, "Contract Address")
+	if params.Params == nil {
+		panic(errors.New("params is required: packed calldata (method hash and arguments)"))
+	}
 	allParams := requireHexWithPrefixOfMinSize(*params.Params, 4, "Hash of method without params")
 	methodId := allParams[0:8]
 	inParams := allParams[8:]
@@ -86,10 +109,12 @@ func (nas NodeApiServer) GetContractsContractIdMethodsMethodId(w http.ResponseWr
 	contractId = requireHexWithPrefixOfSize(contractId, 20, "Contract Address")
 	methodId = requireHexWithPrefixOfSize(methodId, 4, "Method Id")
 	allParamsMerged := ""
-	if len(*params.Params) == 1 && len((*params.Params)[0]) >= 66 {
-		allParamsMerged = requireHex((*params.Params)[0], "Param")
+	// params is optional: a method taking no arguments is called without it.
+	methodParams := derefOr(params.Params, []string{})
+	if len(methodParams) == 1 && len(methodParams[0]) >= 66 {
+		allParamsMerged = requireHex(methodParams[0], "Param")
 	} else {
-		for _, param := range *params.Params {
+		for _, param := range methodParams {
 			param = requireHex(param, "Param")
 			allParamsMerged += pad32(param)
 		}
@@ -236,10 +261,12 @@ func (nas NodeApiServer) GetFilteredTransactions(w http.ResponseWriter, r *http.
 	if params.Accounts != nil {
 		accounts = *params.Accounts
 	}
-	foundTxs := txService.GetTransactions(accounts, txType, services.Sort(*params.SortOrder), services.Page{
-		Number: *params.Page,
-		Size:   *params.PageSize,
-	}, confirmed, directionIsSent)
+	foundTxs := txService.GetTransactions(accounts, txType,
+		services.Sort(derefOr(params.SortOrder, api.GetFilteredTransactionsParamsSortOrder(defaultSortOrder))),
+		services.Page{
+			Number: derefOr(params.Page, defaultPage),
+			Size:   derefOr(params.PageSize, defaultPageSize),
+		}, confirmed, directionIsSent)
 
 	dtoTxs := make([]api.UnifiedTransaction, 0)
 
@@ -416,10 +443,25 @@ type ErrorRecovery struct {
 	next http.Handler
 }
 
+// panicMessage - render a recovered panic value as a string. Not every panic in
+// the handlers carries an error value (some panic with a plain string), and a
+// bare type assertion here would panic again inside the recover, escaping this
+// middleware and dropping the connection with no response at all.
+func panicMessage(r interface{}) string {
+	switch v := r.(type) {
+	case error:
+		return v.Error()
+	case string:
+		return v
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 func (e *ErrorRecovery) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	defer func() {
 		if r := recover(); r != nil {
-			apiErrorString := r.(error).Error()
+			apiErrorString := panicMessage(r)
 			debug.PrintStack()
 			logger.Infof("Error handling request %s - %s: %s", req.Method, req.URL.RequestURI(), apiErrorString)
 			if strings.Contains(apiErrorString, "not found") {

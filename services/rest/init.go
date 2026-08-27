@@ -32,8 +32,18 @@ var logger golog.EventLogger = golog.Logger("node-api")
 var apiConfig *RestAPIConfig
 
 // This is a temporary solution to protect our rest api hosted in the cloud
-// until we decide which api access model to use for production
+// until we decide which api access model to use for production.
+// Credentials come from GRAPE_REST_API_USERNAME / GRAPE_REST_API_PASSWORD; when
+// they are unset the API refuses to serve unless peer.apiauthdisabled is set
+// explicitly (see authCredentials).
 var users map[string]string = map[string]string{config.REST_API_USERNAME: config.REST_API_PASSWORD}
+
+// authCredentialsConfigured - true when a non-empty user and password are set.
+// An empty pair would otherwise build the map {"": ""}, which makes
+// `Authorization: Basic Og==` (a bare ":") a valid credential for every route.
+func authCredentialsConfigured() bool {
+	return config.REST_API_USERNAME != "" && config.REST_API_PASSWORD != ""
+}
 
 // Account service required for account querying operations from state
 var accService services.AccountService
@@ -46,6 +56,16 @@ var txService services.TransactionService
 func StartRestAPISrv(ctx context.Context, rd *routing.RoutingDiscovery) {
 
 	cfg := config.GetConfig().Peer
+	if !authCredentialsConfigured() {
+		if !cfg.ApiAuthDisabled {
+			logger.Fatalf("[rest api] Refusing to start: no API credentials configured. " +
+				"Set GRAPE_REST_API_USERNAME and GRAPE_REST_API_PASSWORD, or set " +
+				"peer.apiauthdisabled: true to run the API unauthenticated (local development only).")
+			return
+		}
+		logger.Warnf("[rest api] %s API AUTHENTICATION IS DISABLED - every endpoint is open. "+
+			"Do not use this configuration outside local development.", "⚠")
+	}
 	var tlsConfig *tls.Config
 	if cfg.ApiTlsEnabled {
 		logger.Infof("Trying to load TLS cert=%s and key=%s", cfg.Apicert, cfg.Apikey)
@@ -115,21 +135,18 @@ func (app *RestAPIConfig) routes() http.Handler {
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
-	mux.Use(middleware.BasicAuth("grape-1", users))
+	if authCredentialsConfigured() {
+		mux.Use(middleware.BasicAuth("grape-1", users))
+	}
 	mux.Use(middleware.Heartbeat("/heartbeat"))
 	mux.Use(func(h http.Handler) http.Handler { // configure general error handling on API endpoints
 		return &ErrorRecovery{h}
 	})
+	// @Note: these share the middleware chain above (chi applies mux-level
+	// middleware to every route registered on the mux, groups included).
 	mux.HandleFunc("/faucet", Faucet)
 	mux.HandleFunc("/events", ws.EventsEndpoint)
-
-	mux.Group(func(r chi.Router) {
-		logger.Infof("Handling incoming ETH RPC request")
-	}).HandleFunc("/eth/rpc", rpc.RpcHandler())
-
-	mux.Group(func(r chi.Router) {
-		logger.Info("Register WS endpoint without middleware")
-	}).HandleFunc("/events", ws.EventsEndpoint)
+	mux.HandleFunc("/eth/rpc", rpc.RpcHandler())
 
 	finalHandler := api.HandlerFromMuxWithBaseURL(s, mux, "/api/rest")
 	logger.Info("[rest api] Successfully configured route handlers")

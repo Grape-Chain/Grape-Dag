@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,6 +21,20 @@ var logger golog.EventLogger
 
 func init() {
 	logger = golog.Logger("p2p-config")
+}
+
+// validateAddress - check that addr is a full-length hex account address.
+// Kept local to avoid a config -> crypto dependency.
+func validateAddress(addr string) error {
+	trimmed := strings.TrimPrefix(strings.TrimPrefix(addr, "0x"), "0X")
+	b, err := hex.DecodeString(trimmed)
+	if err != nil {
+		return fmt.Errorf("not a hex address: %s", err.Error())
+	}
+	if len(b) != ADDRESS_BYTE_LEN {
+		return fmt.Errorf("address must be %d bytes, got %d", ADDRESS_BYTE_LEN, len(b))
+	}
+	return nil
 }
 
 var grapepeer *Grapepeer
@@ -187,6 +202,7 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("peer.qsync", true)
 	viper.SetDefault("peer.network", 2)
 	viper.SetDefault("peer.snapshotsync", true)
+	viper.SetDefault("peer.apiauthdisabled", false)
 	viper.SetDefault("dag.algorithm", "default")
 	viper.SetDefault("dag.alpha", 0.5)
 	viper.SetDefault("dag.approvetx", 2)
@@ -197,7 +213,10 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("dag.wallet", "0x1a6c77929698e36981b9b0e0486a253ae33185e6")
 	viper.SetDefault("dag.publickey", "4608a6e0c0c512c7d3a00a7c7dc54202a7c3965cdad16f010eca4647aebe1c28")
 	viper.SetDefault("dag.privatekey", "f43e4ede273453d86183aed3442d69e0052bbe5776b4200f1354277da9f6be29")
-	viper.SetDefault("dag.coinbaseaccount", "0xac1214a3c58090a516ade112cf1198")
+	// Must be a full 20-byte address: the smart-contract stage parses it as one
+	// when building every pin. Defaults to the zero address, i.e. fees collected
+	// by the VM are burned until an operator configures a real account.
+	viper.SetDefault("dag.coinbaseaccount", ZERO_ADDRESS)
 	viper.SetDefault("dag.pinthreshold", TX_PIN_DEPTH_THRESHOLD)
 	viper.SetDefault("dag.versioncollision", false)
 	viper.SetDefault("tx.maxfuellimit", 10000000)
@@ -207,6 +226,10 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	err = viper.Unmarshal(&peerConfig)
 	if err != nil {
 		logger.Errorf("Unable to decode into Grapepeer, %v", err)
+		return nil
+	}
+	if err := validateAddress(peerConfig.Dag.Coinbaseaccount); err != nil {
+		logger.Errorf("Invalid dag.coinbaseaccount %q: %s", peerConfig.Dag.Coinbaseaccount, err.Error())
 		return nil
 	}
 	peerConfig.Peer.Apikey = filepath.Join(configPath, peerConfig.Peer.Apikey)
