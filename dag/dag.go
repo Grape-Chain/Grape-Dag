@@ -43,6 +43,14 @@ type Dag struct {
 	pins            []*Node
 	width           uint8
 	exodusWallets   []*grape1crypto.Wallet
+	// genesis - held explicitly. The live node slice no longer holds the whole
+	// ledger once settled sites are sliced out of it, so its first element is
+	// not necessarily the genesis site.
+	genesis *Node
+	// sitesAdded - how many sites have ever been added, as opposed to how many
+	// are still resident. The width checks below are about how far the ledger
+	// has come, not about how much of it is currently in memory.
+	sitesAdded atomic.Uint64
 }
 
 var (
@@ -54,6 +62,8 @@ var (
 	confirmationCounter  confirmations        = nil
 	walletCache          *WalletCache         = nil // keep track of the current balances
 	walletCacheConfirmed *WalletCache         = nil // keep track of the current balances without unconfirmed payment tx
+	// sliceArchive - settled sites, out of the live graph but still findable.
+	sliceArchive SliceArchive = nil
 )
 
 // confirmations - how the DAG decides a site is confirmed and ready for a
@@ -277,6 +287,7 @@ func (d *Dag) countConfirmed(vertex *Node) {
 
 func (d *Dag) insertMissing(vertex *Node) error {
 	d._dag_ = append(d._dag_, vertex)
+	d.sitesAdded.Add(1)
 	// update lookup cache
 	// Node: this step is important for efficient lookups
 	d.lookupCacheUpdate(vertex, goterators.Map(vertex.targets, func(v *Node) uuid.UUID {
@@ -318,6 +329,7 @@ func (dag *Dag) addToDag(node *Node, linksTo []*Node) (*Dag, error) {
 	})
 	node.time = time.Now()
 	dag._dag_ = append(dag._dag_, node)
+	dag.sitesAdded.Add(1)
 	// update lookup cache
 	// Node: this step is important for efficient lookups
 	dag.lookupCacheUpdate(node, goterators.Map(linksTo, func(n *Node) uuid.UUID {
@@ -338,7 +350,13 @@ func (dag *Dag) addToDag(node *Node, linksTo []*Node) (*Dag, error) {
 }
 
 func (d *Dag) getGenesis() *Node {
-	if d != nil {
+	if d == nil {
+		return nil
+	}
+	if d.genesis != nil {
+		return d.genesis
+	}
+	if len(d._dag_) > 0 {
 		return d._dag_[0]
 	}
 	return nil
@@ -386,6 +404,7 @@ func Init() {
 	walletCacheConfirmed = newWalletCache()
 	dagWallet = initDagWallet(dagConfig)
 	confirmationCounter = newConfirmations(dagConfig)
+	sliceArchive = newRamArchive()
 	_pins_ = newNodeTxPin()
 	// Note: genesis node is the only node that is authorized to create the genesis tx as the starting
 	// point in dag. This is not currently implemented.
@@ -579,7 +598,8 @@ func getTargetLists(nodes []*Node, links []Link) map[uint64][]*Node {
 }
 
 func (d *Dag) SyncUp() {
-	if len(d._dag_[1:]) == int(d.width) || (len(d._dag_[1:]) > int(d.width) && !__leaderReady__.Load()) {
+	added := int(d.sitesAdded.Load())
+	if added == int(d.width) || (added > int(d.width) && !__leaderReady__.Load()) {
 		// when we reach this condition we form yet another pin tx with exodus sites
 		// exodus sites are sites that directly link to genesis
 		genPinTx()

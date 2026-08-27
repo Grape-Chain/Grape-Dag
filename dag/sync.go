@@ -754,6 +754,11 @@ func genPinTx() {
 	if len(sites) > 0 || len(smcTxs) > 0 {
 		logger.Debugf("* [PIN] Num confirmed sites %d. ADD to PinTx", len(sites))
 		_pins_.add(sites, smcTxs)
+		// Settle the sites this pin just made irrevocable, exactly as a
+		// receiving node does when it applies the same pin.
+		if latest := _pins_.GetLastPin(); latest != nil {
+			sliceAppliedPin(latest)
+		}
 		announceNewPin()
 	}
 }

@@ -122,6 +122,7 @@ type DagConfiguration struct {
 	Versioncollision bool   // Enable or disable version collision in DAG, enabling is a very expensive operation!
 	Confirmation     string // Confirmation rule: "share100" (paper section 5.1) or "legacy" (two direct approvers)
 	Tiptimeout       uint32 // Seconds before an unapproved tip stops counting towards the confirmation denominator; 0 disables
+	Slicing          bool   // Move sites settled by a commit transaction out of the live graph into the slice archive
 }
 
 type TxConfiguration struct {

@@ -183,3 +183,49 @@ one abandoned tip would otherwise stall confirmation for everything newer. It
 keeps being offered for approval — an earlier version dropped it from selection
 too, which would have stranded its transaction outside every commit transaction.
 That path is now covered by a test.
+
+## Slicing (technical paper section 6)
+
+Confirmation bounds its own working set, but the DAG itself did not: the node
+slice, the edge list and both lookup maps grew for the life of the process, and
+every site kept its neighbours alive through its edge pointers, so nothing could
+be collected. Tip selection, weight updates and every fallback lookup walked that
+ever-growing structure.
+
+Sites settled by a commit transaction now leave the live graph and go to a slice
+archive, which keeps the protobuf form the commit transaction already holds plus
+an index. Controlled by `dag.slicing` (on by default).
+
+The subtlety is incoming edges. A site still in the graph may approve one that
+has just been settled; leaving that pointer in place would pull the settled site
+— and transitively its neighbours — back into memory. The pointer is dropped and
+the id recorded on the approving site, which still reports it on the wire, so a
+peer rebuilding those edges sees every approval. Confirmation is unaffected: it
+is closed downwards, so a walk that stops at a settled site has stopped somewhere
+everything below is already settled.
+
+Slicing also invalidated three assumptions elsewhere, all now fixed: the live
+slice's first element was taken to be the genesis site (it is held explicitly
+now), and both the tip-selection warm-up and the leader-ready check measured
+`len(live graph)` against the configured width — which, once slicing shrinks the
+graph, would have dropped the node back into the genesis-fanout phase and linked
+new sites straight to genesis. Both now measure how many sites have ever been
+added.
+
+Same load as the run above, with slicing on:
+
+```
+pins: A=9 B=9
+live graph: 14 sites          (301 before slicing, same traffic and same pins)
+supply: conserved exactly
+```
+
+The unit tests cover it from the other side: 300 inserts across 30 commit
+transactions leave 31 sites and 0 edges resident with 270 archived, settled sites
+stay findable through the archive with their commit-transaction number, and
+settled sites cannot be confirmed a second time. Removing the node filter, the
+pointer breaking, the id recording, or the archiving is caught by those tests.
+
+The wallet flow was re-run against the sliced chain to confirm settled
+transactions are still queryable: faucet, balance, signed payment, settlement to
+the unit on both sides, and history all still pass.

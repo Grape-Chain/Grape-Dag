@@ -7,9 +7,9 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/google/uuid"
 	"go.uber.org/atomic"
 
@@ -57,6 +57,10 @@ type Node struct {
 	sources        []*Node // nodes in the dag that point to this node
 	targets        []*Node // nodes in the dag this node points to
 	missingTargets map[string]bool
+	// slicedTargets - approvals this site made whose sites have since been
+	// settled into a slice. The edge pointer is dropped so the settled site can
+	// be collected, but the id is kept so the approval is still reported.
+	slicedTargets []uuid.UUID
 	// [earlier nodes] <==targets== [this node] <==sources== [later nodes]
 }
 
@@ -98,6 +102,11 @@ func (n *Node) ToPbNode() *pb.Node {
 	pbn.MissingTargets = make(map[string]bool)
 	for _, v := range n.targets {
 		pbn.MissingTargets[v.id.id.String()] = true
+	}
+	// Approvals whose sites have been settled still have to be reported, or a
+	// peer rebuilding this site's edges would come up short.
+	for _, id := range n.slicedTargets {
+		pbn.MissingTargets[id.String()] = true
 	}
 	return pbn
 }

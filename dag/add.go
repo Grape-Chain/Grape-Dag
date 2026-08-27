@@ -21,8 +21,11 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 	var signatures map[string][]byte = map[string][]byte{}
 	var tips []*Node
 	if node.tx.GetTransactionType() == tx.PAYMENT {
-		if len(dag._dag_[1:]) < int(dag.width) {
-			tips = append(tips, dag._dag_[0])
+		// How far the ledger has come, not how much of it is resident: slicing
+		// shrinks the live graph, and measuring that would drop the node back
+		// into the genesis-fanout phase and link new sites to genesis again.
+		if dag.sitesAdded.Load() < uint64(dag.width) {
+			tips = append(tips, dag.getGenesis())
 		} else {
 			// list of nodes in dag that came before this node
 

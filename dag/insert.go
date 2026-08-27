@@ -75,6 +75,7 @@ func (dag *Dag) InsertTxDag(
 	// wait till the next pin tx, and check if the tx after it can be
 	// linked to either dag or pin tx
 	candidates := []*Node{}
+	settledIds := []uuid.UUID{}
 	idsNotFound := []uuid.UUID{}
 	for _, id := range ids {
 		// first, check dag cache (and more thorough search if required)
@@ -82,14 +83,23 @@ func (dag *Dag) InsertTxDag(
 		// already approved elsewhere
 		if n := dag.getById(id.Id, true); n != nil {
 			candidates = append(candidates, n)
+		} else if _, ok := settledSite(id.Id); ok {
+			// The approved site has been settled by a commit transaction. It is
+			// resolved - not missing - but it gets no edge: keeping one would
+			// pull a settled site back into the live graph and stop it, and its
+			// neighbours, from ever being collected.
+			settledIds = append(settledIds, id.Id)
 		} else if n = _pins_.getById(id.Id); n != nil {
 			candidates = append(candidates, n)
 		} else {
 			idsNotFound = append(idsNotFound, id.Id)
 		}
 	}
+	if len(settledIds) > 0 {
+		inVertex.slicedTargets = append(inVertex.slicedTargets, settledIds...)
+	}
 	// let's see if we have the approvees [aka candidates for local approval]
-	if len(candidates) != len(ids) {
+	if len(candidates)+len(settledIds) != len(ids) {
 		// In order to relink later, need to preserve target Ids
 		// store in dag without trying to approve target sites it references
 		// this node

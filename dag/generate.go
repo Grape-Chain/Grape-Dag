@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/vm"
 	"github.com/Grape-Chain/Grape-Dag/wallet"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/ledongthuc/goterators"
 
 	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
@@ -60,8 +60,14 @@ func newDag(dagConfig config.DagConfiguration) *Dag {
 		mu_map:          sync.RWMutex{},
 		pins:            inDagPins,
 		exodusWallets:   nil,
+		genesis:         genesis,
 		width:           uint8(dagConfig.Initialwidth), // this param determines the num of direct links to genesis before we
 		// start using the random walk algo for linking sites
+	}
+	// The leader starts with genesis already in the graph; a joining node picks
+	// it up from the network. Either way the count reflects what has been added.
+	if len(dag) > 0 {
+		__dag__.sitesAdded.Store(uint64(len(dag)))
 	}
 
 	//	__dag__.addToDag(genesis, []*Node{})
