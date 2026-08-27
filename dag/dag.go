@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
 	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/utils"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
-	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/enescakir/emoji"
 	"github.com/google/uuid"
 	golog "github.com/ipfs/go-log/v2"
@@ -50,11 +50,26 @@ var (
 	_pins_               *NodeTxPin           = nil
 	__leaderReady__      atomic.Bool          = atomic.Bool{}
 	chaintype            tx.ChainType         = tx.PRIVATE_TESTNET
-	dagWallet            *grape_wallet.Wallet  = nil // node's wallet with its own set of encr keys
-	confirmationCounter  *ConfirmationCounter = nil
+	dagWallet            *grape_wallet.Wallet = nil // node's wallet with its own set of encr keys
+	confirmationCounter  confirmations        = nil
 	walletCache          *WalletCache         = nil // keep track of the current balances
 	walletCacheConfirmed *WalletCache         = nil // keep track of the current balances without unconfirmed payment tx
 )
+
+// confirmations - how the DAG decides a site is confirmed and ready for a
+// commit transaction. Two implementations exist: ConfirmTracker, which measures
+// the share of current tips that confirm each site (the technical paper's
+// section 5.1), and ConfirmationCounter, the original fixed two-approver rule,
+// kept selectable while the new one earns trust.
+type confirmations interface {
+	add(vertex *Node)
+	relink(vertex *Node)
+	pop() []*Node
+	tip() []*Node
+	getTips() []*Node
+	isTip(id uuid.UUID) bool
+	markHarvested(id uuid.UUID)
+}
 
 type DagAlgo uint8
 
@@ -89,7 +104,7 @@ func (dag *Dag) Genesis() *Node {
 	return dag.getGenesis()
 }
 
-func tipCache() *ConfirmationCounter {
+func tipCache() confirmations {
 	return confirmationCounter
 }
 
@@ -370,7 +385,7 @@ func Init() {
 	walletCache = newWalletCache()
 	walletCacheConfirmed = newWalletCache()
 	dagWallet = initDagWallet(dagConfig)
-	confirmationCounter = newConfirmationCounter()
+	confirmationCounter = newConfirmations(dagConfig)
 	_pins_ = newNodeTxPin()
 	// Note: genesis node is the only node that is authorized to create the genesis tx as the starting
 	// point in dag. This is not currently implemented.
@@ -417,7 +432,6 @@ func GetDag() *Dag {
 func GetPin() *NodeTxPin {
 	return _pins_
 }
-
 
 func genRandomTxWeight() float64 {
 	txWeight := rand.NormFloat64() + config.TX_WEIGHT_MEAN
@@ -616,6 +630,12 @@ func (d *Dag) ReconcileMissingTargets() {
 		})
 		if len(v1.missingTargets) == 0 {
 			v1.missingTargets = nil
+			// Now that its approval targets are linked, this site can take part
+			// in confirmation. Without this it stayed invisible to the tracker
+			// and could never be confirmed.
+			if confirmationCounter != nil {
+				confirmationCounter.relink(v1)
+			}
 		} else {
 			for k := range v1.missingTargets {
 				requestVertices = append(requestVertices, k)

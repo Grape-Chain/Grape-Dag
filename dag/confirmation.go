@@ -1,8 +1,12 @@
 package dag
 
 import (
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/golang-collections/collections/set"
 	"github.com/google/uuid"
 )
@@ -138,4 +142,24 @@ func (c *ConfirmationCounter) tip() []*Node {
 		}
 	}
 	return tips
+}
+
+// relink - the legacy rule has nothing to reconsider when a site's targets are
+// resolved: it counts direct approvals as they arrive.
+func (c *ConfirmationCounter) relink(vertex *Node) {}
+
+// newConfirmations - build the confirmation rule named by dag.confirmation.
+// "share100" (default) is the technical paper's section 5.1 share-of-tips rule;
+// "legacy" is the original fixed two-approver count.
+func newConfirmations(cfg config.DagConfiguration) confirmations {
+	switch strings.ToLower(strings.TrimSpace(cfg.Confirmation)) {
+	case "legacy", "approvers":
+		logger.Warn("[confirmation] Using the legacy two-approver rule; a site can be confirmed without the rest of the DAG having seen it")
+		return newConfirmationCounter()
+	default:
+		approve := int(cfg.Approvetx)
+		timeout := time.Duration(cfg.Tiptimeout) * time.Second
+		utils.ColorizeInfo(logger, "[confirmation] Using 100%% tip-share confirmation (approvetx=%d, tiptimeout=%s)", approve, timeout)
+		return newConfirmTracker(approve, timeout)
+	}
 }

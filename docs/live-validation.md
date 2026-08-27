@@ -140,3 +140,46 @@ Not regressions — pre-existing, and worth knowing:
   sources do not always agree.
 - The faucet response reports `chainId: TESTNET0` where `/network-info` reports
   `TESTNET2`, and `TESTNET0` is not in the generated enum.
+
+## Confirmation by tip share (technical paper section 5.1)
+
+The two-approver rule was replaced by the paper's actual definition: a site is
+confirmed when every current tip confirms it, directly or indirectly. Selected
+with `dag.confirmation` (`share100`, the default, or `legacy` for the old rule).
+
+Checked the same way — against the definition, then against a live network.
+
+`dag/confirmtracker_test.go` computes the answer the slow, obvious way (walk
+backwards from every tip, mark what it reaches, confirm what all of them reached)
+and compares that to the incremental tracker after **every** insert across
+several seeded random DAGs, in both directions: the tracker may never confirm a
+site the definition does not, and may never miss one it does. It also asserts the
+invariant the implementation leans on — no tip ever reaches the denominator,
+because a tip does not confirm itself.
+
+Deliberately breaking each mechanism shows the tests are load-bearing: not
+unmarking a retired tip's bit, confirming at 99% instead of 100%, counting
+detached sites in the denominator, and not following the backward closure were
+all caught. One survived — allowing tips to be confirmed — because it is provably
+unreachable, which is why the invariant above is asserted directly instead.
+
+On the live two-node network, with three waves of load:
+
+```
+pins: A=9 B=9
+dag sites: 301
+sites pinned: 286        -> 95% confirmed, the remaining 15 being the frontier
+```
+
+Supply still conserved exactly, no panics, no races, and no site reported as
+stranded. Memory behaves as designed: after 400 inserts in the unit test the
+active region holds **2 sites**, because confirmation is closed downwards and
+confirmed sites leave the tracker — what stays resident is the frontier, not the
+ledger.
+
+One departure from the paper, for liveness: a tip that goes unapproved for
+`dag.tiptimeout` (30s by default) stops counting towards the denominator, since
+one abandoned tip would otherwise stall confirmation for everything newer. It
+keeps being offered for approval — an earlier version dropped it from selection
+too, which would have stranded its transaction outside every commit transaction.
+That path is now covered by a test.

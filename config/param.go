@@ -8,26 +8,26 @@ import (
 )
 
 const (
-	PRE_RENDEZVOUS_ID              = "/GrapeOne/43312633-80cf-429d-bc92-a17ca501aa5b"
-	PRE_DAGSYNC_ID                 = "/dagsync/0.0.1" // identify the subscription topic for synchronization
-	APP_NAME                       = "Grape Node"
-	LOG_FILE_PREFIX                = "%s.log"
-	GOLOG_FILE                     = "GOLOG_FILE"
-	GOLOG_OUTPUT                   = "GOLOG_OUTPUT"
-	GOLOG_DEFAULT_OUTPUT_MODE      = "file"
-	GRAPEONE_CFG_PATH               = ".grap3"
-	BOOTSTRAP_FILE                 = "bootstrap.json"
-	GENERATOR_NAME                 = "txgenerator"
-	GENERATOR_EXT                  = "yml"
-	GENERATOR_FILE                 = GENERATOR_NAME + "." + GENERATOR_EXT
-	GRAPEPEER_FILE                  = "grapepeer.yml"
-	MAX_CONN_LIMIT                 = 100
-	DB_CTX_TIMEOUT                 = 5
-	STATS_DB                       = "mongo"
-	TX_WEIGHT_MEAN                 = 3.0 // tx weight mean value
-	TX_WEIGHT_UPPER_LIMIT          = 6.0 //
-	TX_WEIGHT_LOWER_LIMIT          = 0.6 // tx weigth bounds used when generating transactions
-	TX_PIN_DEPTH_THRESHOLD         = 100 // threshold value for generating a pinning transaction
+	PRE_RENDEZVOUS_ID         = "/GrapeOne/43312633-80cf-429d-bc92-a17ca501aa5b"
+	PRE_DAGSYNC_ID            = "/dagsync/0.0.1" // identify the subscription topic for synchronization
+	APP_NAME                  = "Grape Node"
+	LOG_FILE_PREFIX           = "%s.log"
+	GOLOG_FILE                = "GOLOG_FILE"
+	GOLOG_OUTPUT              = "GOLOG_OUTPUT"
+	GOLOG_DEFAULT_OUTPUT_MODE = "file"
+	GRAPEONE_CFG_PATH         = ".grap3"
+	BOOTSTRAP_FILE            = "bootstrap.json"
+	GENERATOR_NAME            = "txgenerator"
+	GENERATOR_EXT             = "yml"
+	GENERATOR_FILE            = GENERATOR_NAME + "." + GENERATOR_EXT
+	GRAPEPEER_FILE            = "grapepeer.yml"
+	MAX_CONN_LIMIT            = 100
+	DB_CTX_TIMEOUT            = 5
+	STATS_DB                  = "mongo"
+	TX_WEIGHT_MEAN            = 3.0 // tx weight mean value
+	TX_WEIGHT_UPPER_LIMIT     = 6.0 //
+	TX_WEIGHT_LOWER_LIMIT     = 0.6 // tx weigth bounds used when generating transactions
+	TX_PIN_DEPTH_THRESHOLD    = 100 // threshold value for generating a pinning transaction
 	// REST_API_USERNAME and REST_API_PASSWORD are exported as vars below
 	// (read from the GRAPE_REST_API_USERNAME and GRAPE_REST_API_PASSWORD
 	// environment variables). They are not constants because we want
@@ -54,7 +54,7 @@ const (
 	LOGGER_FN                      = "grape-%s"
 	ACTIVATION_OK                  = 0x10
 	USE_ACTIVATION                 = false
-	GRAPEPEER_ID                    = "GRAPEPEER_ID"
+	GRAPEPEER_ID                   = "GRAPEPEER_ID"
 	ROUTING_TABLE_REFRESH          = 30
 	STATE_CHANGE_WAIT              = 1000
 	RELAY_SRV_1                    = "/dns4/bootstrap1/udp/43431/quic-v1/p2p/12D3KooWLMy6TucfkW55NmYH9FGwfSnLPZPiEEicqyJzfubfLob1"
@@ -119,7 +119,9 @@ type DagConfiguration struct {
 	FaucetPrivatekey string
 	FaucetPublickey  string
 	Coinbaseaccount  string
-	Versioncollision bool // Enable or disable version collision in DAG, enabling is a very expensive operation!
+	Versioncollision bool   // Enable or disable version collision in DAG, enabling is a very expensive operation!
+	Confirmation     string // Confirmation rule: "share100" (paper section 5.1) or "legacy" (two direct approvers)
+	Tiptimeout       uint32 // Seconds before an unapproved tip stops counting towards the confirmation denominator; 0 disables
 }
 
 type TxConfiguration struct {
