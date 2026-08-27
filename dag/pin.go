@@ -10,7 +10,6 @@ import (
 	"math/big"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -841,68 +840,19 @@ func execResultToReceipt(r ExecutionResult) *pb.TxReceipt {
 	return &receipt
 }
 
+// parseVmError - a revert payload from the VM carries an ABI-encoded reason;
+// anything else is a message from the VM itself.
+//
+// This used to be parsed inline here, with a panic on every unexpected shape -
+// a short payload, unparseable hex, an offset that did not fit. That turned
+// malformed contract output into a dead node, on the pin path of all places.
+// The decoding now lives in crypto/eth, is shared with the REST layer, and
+// returns a value for input it cannot read.
 func parseVmError(err string) error {
-	if strings.HasPrefix(err, "0x") {
-		return newSolidityError(err)
+	if eth.IsRevertPayload(err) {
+		return eth.ParseRevert(err)
 	}
 	return fmt.Errorf("system VM error during tx execution: %s", err)
-}
-
-type solidityError struct {
-	signature string
-	offset    uint64
-	dataLen   uint64
-	data      string
-	raw       string
-}
-
-func (err solidityError) Error() string {
-	return err.data
-}
-
-func newSolidityError(hexErr string) solidityError {
-	if !strings.HasPrefix(hexErr, "0x") {
-		panic(fmt.Errorf("solidity error must be in hex format starting with 0x, got %s", hexErr))
-	}
-	trimmedErr := strings.TrimPrefix(hexErr, "0x")
-	bytes, err := hex.DecodeString(trimmedErr)
-	if err != nil {
-		panic(fmt.Errorf("solidity error must be in hex format got %s", hexErr))
-	}
-	if len(bytes) < 4 {
-		panic(fmt.Errorf("hex error has size %d, but solidity error has minimum size 4 bytes", len(bytes)))
-	}
-	sErr := solidityError{}
-	if len(bytes) < 100 {
-		//no parameters
-		sErr.signature = trimmedErr[:8]
-		sErr.offset = 0
-		sErr.dataLen = 0
-		//panic(fmt.Errorf("hex error has size %d, but solidity error has minimum size %d (signature 4 bytes, offset 32 bytes, length min 32 bytes, data min 32 bytes)", len(bytes), 100))
-	} else {
-		offset, offsetParseErr := strconv.ParseUint(trimmedErr[8:72], 16, 64)
-		if offsetParseErr != nil {
-			panic(fmt.Errorf("unable to convert value %s to uint64 for solidity error offset, hexErr=%s", trimmedErr[8:72], hexErr))
-		}
-		length, lengthParseErr := strconv.ParseUint(trimmedErr[72:72+offset*2], 16, 64)
-		if lengthParseErr != nil {
-			panic(fmt.Errorf("unable to convert value %s to uint64 for solidity error offset, hexErr=%s", trimmedErr[72:72+offset*2], hexErr))
-		}
-
-		errData, dataParseErr := hex.DecodeString(trimmedErr[72+offset*2 : 72+offset*2+length*2])
-		if dataParseErr != nil {
-			// mustn't reach this line
-			panic(fmt.Errorf("program logic error! Unexpected error happened, %s is not a hex for solidity error", hexErr))
-		}
-		errDataString := string(errData)
-
-		sErr.signature = trimmedErr[:8]
-		sErr.offset = offset
-		sErr.dataLen = length
-		sErr.data = errDataString
-		sErr.raw = hexErr
-	}
-	return sErr
 }
 
 func emptyHex(hex string) bool {

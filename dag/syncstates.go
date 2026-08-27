@@ -134,5 +134,5 @@ func (s *SyncSM) waitForSMInLoop(id uuid.UUID, state sm.State, t time.Duration) 
 			return sm.SYNC_ZERO_STATE, errors.New("state of the state machine isn't equal to required")
 		}
 	}
-	
+
 }

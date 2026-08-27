@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/types"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
 	golog "github.com/ipfs/go-log/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -339,10 +339,20 @@ func (sa StoredAccount) IsEmpty() bool {
 	return sa.Nonce == ""
 }
 
+// AddressBytes - the account address as raw bytes.
+//
+// Addresses reach this type both with and without the 0x prefix: putAccount
+// strips it when storing, so a caller holding the value it passed in still has
+// the prefix. Decoding used to panic on that - and on any other malformed
+// address - which is a poor trade in a type reached from gRPC handlers that run
+// without a recovery interceptor. Unreadable addresses now come back nil, which
+// callers see as a lookup miss.
 func (sa StoredAccount) AddressBytes() []byte {
-	bytes, err := hex.DecodeString(sa.Address)
+	address := strings.TrimPrefix(strings.TrimPrefix(sa.Address, "0x"), "0X")
+	bytes, err := hex.DecodeString(address)
 	if err != nil {
-		panic(err)
+		slogger.Warnf("Account address %q is not hex, treating it as empty", sa.Address)
+		return nil
 	}
 	return bytes
 }

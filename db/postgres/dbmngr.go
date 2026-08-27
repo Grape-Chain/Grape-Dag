@@ -28,15 +28,22 @@ func (m *PostgresManager) Connect() error {
 	}
 	ctxPool, cancelPool := context.WithTimeout(context.Background(), config.DB_CTX_TIMEOUT*time.Second)
 	defer cancelPool()
-	p, err := pgxpool.New(ctxPool, os.Getenv("POSTGRES_URL"))
+	url := os.Getenv("POSTGRES_URL")
+	if url == "" {
+		return errors.New("POSTGRES_URL is not set")
+	}
+	p, err := pgxpool.New(ctxPool, url)
 	if err != nil {
+		// Returning here matters: the pool is nil on error, and carrying on
+		// used to dereference it a few lines below.
 		logger.Errorf("Failed to create pgx pool: %v", err)
+		return err
 	}
 
 	ctxPing, cancelPing := context.WithTimeout(context.Background(), config.DB_CTX_TIMEOUT*time.Second)
 	defer cancelPing()
-	err = m.pool.Ping(ctxPing)
-	if err != nil {
+	// Ping the pool just created, not m.pool, which is still nil.
+	if err = p.Ping(ctxPing); err != nil {
 		p.Close()
 		logger.Errorf("Failed to ping database: %v", err)
 		return err

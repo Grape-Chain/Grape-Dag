@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/Grape-Chain/Grape-Dag/dag"
 	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
 	"github.com/Grape-Chain/Grape-Dag/smc"
@@ -18,8 +20,6 @@ import (
 	"github.com/Grape-Chain/Grape-Dag/types"
 	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/vm"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
-	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/golang/protobuf/ptypes/timestamp"
 	"google.golang.org/protobuf/proto"
 )
@@ -82,7 +82,12 @@ func (ts *TransactionServiceImpl) CallReadContract(contractAddress string, contr
 	return response.Msg, nil
 }
 
+// parseVmError - a revert payload from the VM carries an ABI-encoded reason;
+// anything else is a message from the VM itself.
 func parseVmError(err string) error {
+	if eth.IsRevertPayload(err) {
+		return eth.ParseRevert(err)
+	}
 	return fmt.Errorf("system VM error during tx execution: %s", err)
 }
 
