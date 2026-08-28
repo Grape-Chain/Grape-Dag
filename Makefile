@@ -6,7 +6,8 @@ LDFLAGS := -X $(MODULE)/version.Version=$(VERSION)
 
 WALLET_DIR := web/wallet
 
-.PHONY: help build test lint vet fmt docker compose-up compose-down clean wallet wallet-clean
+.PHONY: help build test lint vet fmt docker compose-up compose-down clean wallet wallet-clean \
+	txgen bench-node-max bench-node-rate bench-txgen
 
 help:  ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -53,6 +54,25 @@ bench-commit: ## Benchmark only the synchronous commit path (fsync, settled repl
 
 bench-select: ## Benchmark only tip selection and graph growth
 	go test ./dag/ -run XXXNOMATCH -bench 'TipSelection|GraphGrowth|ConfirmTracker' -benchtime 500x -benchmem
+
+# ---------------------------------------------------------------- load testing
+# TXGEN_PORT is the gRPC port of the node under test. TXGEN_ARGS passes anything
+# else through, e.g. TXGEN_ARGS="-bench_workers 64 -bench_duration 60s".
+TXGEN_PORT ?= 50333
+TXGEN_ARGS ?=
+
+txgen: ## Build only the transaction generator into ./bin/
+	$(GO) build -ldflags="$(LDFLAGS)" -o bin/ ./cmd/txgen
+
+bench-node-max: txgen ## Saturate the node at TXGEN_PORT to find its maximum sustained throughput
+	./bin/txgen -mode bench -grpc_port $(TXGEN_PORT) -bench_max $(TXGEN_ARGS)
+
+bench-node-rate: txgen ## Offer a fixed rate to the node at TXGEN_PORT: make bench-node-rate RATE=5000
+	@test -n "$(RATE)" || (echo "set RATE, e.g. make bench-node-rate RATE=5000"; exit 1)
+	./bin/txgen -mode bench -grpc_port $(TXGEN_PORT) -bench_rate $(RATE) $(TXGEN_ARGS)
+
+bench-txgen: ## Run the txgen unit tests, pacing and metrics included
+	$(GO) test -race -count=1 ./tools/txgen/
 
 clean: ## Remove build artifacts
 	rm -rf bin/ dist/ build/ coverage.* *.out

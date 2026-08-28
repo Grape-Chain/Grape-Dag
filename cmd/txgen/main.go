@@ -30,10 +30,15 @@ const banner = `
 
 var grpc_port int = 0
 
+// benchOpts is filled by the bench-mode flags. They are declared by the txgen
+// package so that a new bench setting does not mean editing this file.
+var benchOpts *txgen.BenchOptions
+
 func ParseCmdArgs() (*txgen.CommandArgs, error) {
 	conf := &txgen.CommandArgs{}
 
-	flag.StringVar(&conf.Mode, "mode", "trader", "TxGen mode: genesis, trader, local, balance, payment, count, check, wallet, watchdog")
+	flag.StringVar(&conf.Mode, "mode", "trader", "TxGen mode: genesis, trader, local, balance, payment, count, check, wallet, watchdog, bench")
+	benchOpts = txgen.RegisterBenchFlags(flag.CommandLine)
 	flag.IntVar(&grpc_port, "grpc_port", 0, "GRPC Port to use when publishing tx")
 	flag.StringVar(&conf.To, "to", "", "Wallet address(es) to send coins to: e.g. -to 0x12..,0x34...,0x56...")
 	flag.StringVar(&conf.To, "from", "", "Wallet address(es) to send coins to: e.g. -to 0x12..,0x34...,0x56...")
@@ -140,6 +145,18 @@ func main() {
 		txGenerator.Balances[genesisWallet.WalletAddress()] = big.NewInt(0).SetBytes(genesisBalance.Balances[0])
 
 	}
+	if m == txgen.GEN_MODE_BENCH {
+		// Bench mode runs in the foreground and handles its own signals, so that
+		// <Ctrl-C> still prints the report. The tail the other modes run after
+		// stopping - settle, fetch every wallet, reconcile balances - would add
+		// minutes to a measurement that is already finished.
+		if err := txGenerator.Bench(&cltService, benchOpts); err != nil {
+			fmt.Printf("%s  ~ %s\n", emoji.Warning, err.Error())
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	var (
 		stop chan bool
 		s    *spinner.Spinner = spinner.New(spinner.CharSets[36], 100*time.Millisecond)
