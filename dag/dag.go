@@ -338,7 +338,7 @@ func (d *Dag) runlock() { d.mux.RUnlock() }
 // dag.mux, which is what keeps the answer true for long enough to act on it.
 func (d *Dag) liveOnly(nodes []*Node) []*Node {
 	for i, n := range nodes {
-		if n != nil && d.getById(n.id.id, true) != nil {
+		if n != nil && d.getById(n.id.id) != nil {
 			continue
 		}
 		// A site went between selection and here. Rare, so it is the only
@@ -346,7 +346,7 @@ func (d *Dag) liveOnly(nodes []*Node) []*Node {
 		kept := make([]*Node, 0, len(nodes)-1)
 		kept = append(kept, nodes[:i]...)
 		for _, rest := range nodes[i+1:] {
-			if rest != nil && d.getById(rest.id.id, true) != nil {
+			if rest != nil && d.getById(rest.id.id) != nil {
 				kept = append(kept, rest)
 			}
 		}
@@ -355,48 +355,27 @@ func (d *Dag) liveOnly(nodes []*Node) []*Node {
 	return nodes
 }
 
-// getById - get a node by its UUID
-// Arguments:
+// getById - a site by its id, from the lookup map.
 //
-//	id - site unique id
-//	cacheOnly - check inly in cache if true, full search otherwise
+// It used to take a cacheOnly flag, and with it false it fell through to a
+// linear scan of the whole live graph. That branch is gone along with its last
+// caller, and both halves of it were wrong rather than merely slow.
 //
-// Returns:
+// It could not be made safe as written. It guarded the scan with TryLock and
+// carried on unlocked when the lock was held - which is exactly when the scan
+// was racing an append to _dag_ - and taking the lock unconditionally instead
+// would have deadlocked every caller that already held it. It was also the only
+// path in the package that took mu_map before dag.mux, the reverse of every
+// other, which is a deadlock waiting for a second writer.
 //
-//	*Node - if found, nil otherwise
-func (d *Dag) getById(id uuid.UUID, cacheOnly bool) *Node {
+// And it could not answer differently from the map. Every path that appends to
+// dag._dag_ registers the site in mapped_vertices inside the same locked
+// section, so a site the map does not hold is not in the graph. The scan cost
+// O(live graph) per call to confirm what the map had already said.
+func (d *Dag) getById(id uuid.UUID) *Node {
 	d.mu_map.RLock()
 	defer d.mu_map.RUnlock()
-	v, ok := d.mapped_vertices[id]
-	if !ok && !cacheOnly {
-		v = _dag_._getById_(id)
-	}
-	return v
-}
-
-// getById - get a *Node by its id (uuid)
-// returns *Node if found, nil otherwise
-//
-// No callers left: InsertIfNotExist was the only one and now asks the lookup map
-// alone, which cannot answer differently - see the note there. Kept rather than
-// deleted because getById's cacheOnly parameter is called from files this change
-// does not own, but it should go with them. It cannot be made safe as written:
-// TryLock carries on unlocked when the lock is held, which is precisely when the
-// scan below is racing an append to _dag_, and taking the lock unconditionally
-// instead would deadlock the callers that already hold it.
-func (d *Dag) _getById_(id uuid.UUID) *Node {
-	if d.mux.TryLock() {
-		defer d.mux.Unlock()
-	}
-	// the lookup can be optimized
-	node, _, err := goterators.Find(d._dag_, func(n *Node) bool {
-		return n.id.id == id
-	})
-	if err != nil {
-		logger.Warnf("Site with id=%s not found in dag", id.String())
-		return nil
-	}
-	return node
+	return d.mapped_vertices[id]
 }
 
 func (dag *Dag) updateMappedVertices() {
@@ -641,7 +620,7 @@ func (d *Dag) dropSettledTargets(node *Node) bool {
 		if t == nil {
 			continue
 		}
-		if d.getById(t.id.id, true) == nil {
+		if d.getById(t.id.id) == nil {
 			node.slicedTargets = append(node.slicedTargets, t.id.id)
 			dropped = true
 			continue

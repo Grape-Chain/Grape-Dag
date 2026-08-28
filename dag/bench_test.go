@@ -26,68 +26,32 @@ Run: go test ./dag/ -run XXX -bench . -benchtime 200x
 
 // growFrontier - a graph grown by real tip selection, so the shape the walk sees
 // is the shape the walk produces rather than one chosen to be convenient.
-func growFrontier(b testing.TB, sites int) (*Dag, *ConfirmTracker) {
-	b.Helper()
-	tr := newConfirmTracker(0, 1000)
-	prev := confirmationCounter
-	confirmationCounter = tr
-	b.Cleanup(func() { confirmationCounter = prev })
+/*
+BenchmarkTipSelection and BenchmarkGraphGrowth used to live here, on a fixture
+called growFrontier. Both are deleted rather than repaired, and it is worth
+saying why so that nobody reinstates them.
 
-	genesis := tnode(0)
-	d := &Dag{genesis: genesis}
-	tr.add(genesis)
-	for i := 1; i <= sites; i++ {
-		n := tnode(i)
-		for _, target := range d.selectTips(0.5) {
-			tlink(n, target)
-		}
-		tr.add(n)
-		// Left undrained on purpose: confirmed sites leaving the region is what
-		// keeps it small, so draining here would benchmark the easy case. The
-		// reported frontier size below says which case this actually is.
-	}
-	return d, tr
-}
+growFrontier inserted sites one at a time, each one selecting against the graph
+the previous insert had just left. With two approvals per site and no
+concurrency, that builds a chain: one tip at a hundred sites, one at a thousand,
+one at five thousand. Tip selection over a single tip is O(1) whatever the graph
+is doing, so both benchmarks reported the same ~2.9 microseconds at every size
+and would have kept reporting it with the tip-set scan they were meant to be
+watching left fully O(N). The flatness read as "this path does not degrade"; it
+actually meant "this fixture never built the thing that degrades".
 
-func BenchmarkTipSelection(b *testing.B) {
-	for _, sites := range []int{100, 1000, 5000} {
-		b.Run(fmt.Sprintf("sites=%d", sites), func(b *testing.B) {
-			d, tr := growFrontier(b, sites)
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				if got := d.selectTips(0.5); len(got) == 0 {
-					b.Fatal("selection offered nothing to approve")
-				}
-			}
-			b.StopTimer()
-			// ResetTimer discards user metrics, so these are reported at the
-			// end. They are the reason the timings do not grow with the graph:
-			// what selection walks is the unconfirmed frontier, not the ledger.
-			active, tips, _ := tr.stats()
-			b.ReportMetric(float64(active), "frontier")
-			b.ReportMetric(float64(tips), "tips")
-		})
-	}
-}
+It also left the confirmed queue undrained, so the first timed iteration paid to
+empty a backlog the fixture had accumulated. That, and not per-insert cost, was
+the apparent 2x rise between a hundred sites and five thousand - the one number
+in the pair that looked like a real signal.
 
-// BenchmarkGraphGrowth - selection and confirmation together, which is the pair
-// that runs once per transaction.
-func BenchmarkGraphGrowth(b *testing.B) {
-	for _, sites := range []int{100, 1000, 5000} {
-		b.Run(fmt.Sprintf("sites=%d", sites), func(b *testing.B) {
-			d, tr := growFrontier(b, sites)
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				n := tnode(sites + i + 1)
-				for _, target := range d.selectTips(0.5) {
-					tlink(n, target)
-				}
-				tr.add(n)
-				tr.pop()
-			}
-		})
-	}
-}
+The replacements are BenchmarkTipSelectionOnAFrontier and
+BenchmarkGraphGrowthOnAFrontier in dag/confirmtracker_test.go, same package.
+They insert in batches against one view, which is the only way a tip set widens;
+they drain; and reportFrontier fails the benchmark outright if the frontier
+collapses to a chain, so a fixture that stops measuring says so instead of
+reporting a fast, meaningless number.
+*/
 
 func BenchmarkConfirmTrackerAdd(b *testing.B) {
 	tr := newConfirmTracker(0, 1000)

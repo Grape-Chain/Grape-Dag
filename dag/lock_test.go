@@ -520,7 +520,7 @@ func TestAnApprovalTargetSettledWhileSigningIsRecordedById(t *testing.T) {
 	recorded := d.mapped_edges[site.id.id]
 	d.mu_map.RUnlock()
 	for _, id := range recorded {
-		if d.getById(id, true) == nil {
+		if d.getById(id) == nil {
 			t.Fatalf("mapped_edges records an approval of %s, which is not in the graph", id.String())
 		}
 	}
@@ -755,7 +755,7 @@ func TestAClaimStillVerifiesAfterAMissingApprovalTargetIsRelinked(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected the insert to report the missing approval target")
 	}
-	if d.getById(site.id.id, true) == nil {
+	if d.getById(site.id.id) == nil {
 		t.Fatal("the site was not added, so there is nothing to relink")
 	}
 	if len(site.missingTargets) != 1 {
@@ -814,7 +814,7 @@ func TestAnUnusableClaimIsStrippedAndAnHonestOneIsKept(t *testing.T) {
 	if len(forged.processorSig) != 0 {
 		t.Fatal("a claim whose signature does not check out was kept, so a liar gets paid")
 	}
-	if d.getById(forged.id.id, true) == nil {
+	if d.getById(forged.id.id) == nil {
 		t.Fatal("the site itself was refused; a bad claim must not deny the network a transaction")
 	}
 
@@ -837,7 +837,7 @@ func TestAnUnusableClaimIsStrippedAndAnHonestOneIsKept(t *testing.T) {
 	if err := d.InsertTxDag(detached, detached.id.id, detached.id.idMajor, detached.id.idMinor, detachedIds...); err == nil {
 		t.Fatal("expected the insert to report the unresolved approval target")
 	}
-	if d.getById(detached.id.id, true) == nil {
+	if d.getById(detached.id.id) == nil {
 		t.Fatal("the detached site was not added, so there is nothing to check")
 	}
 	if len(detached.processorSig) != 0 {
@@ -848,7 +848,7 @@ func TestAnUnusableClaimIsStrippedAndAnHonestOneIsKept(t *testing.T) {
 	if len(unattributed.processorSig) != 0 || len(unattributed.processorAddress) != 0 {
 		t.Fatal("a site that claims nothing came back with a claim")
 	}
-	if d.getById(unattributed.id.id, true) == nil {
+	if d.getById(unattributed.id.id) == nil {
 		t.Fatal("a site from a peer predating attribution was refused")
 	}
 }
@@ -927,7 +927,7 @@ func TestAClaimIsLeftAloneOnASiteSettledWhileItWasBeingChecked(t *testing.T) {
 
 	// The commit transaction lands in the window.
 	sliceAppliedPin(storedPin(1, nil, nil, site))
-	if d.getById(site.id.id, true) != nil {
+	if d.getById(site.id.id) != nil {
 		t.Fatal("the site was not taken out of the live graph, so the test proves nothing")
 	}
 
@@ -1022,7 +1022,7 @@ func TestConcurrentReceivedInsertsDoNotRaceWithClaimChecking(t *testing.T) {
 	// in the graph must be gone, and no honest claim may be touched at all.
 	for w := 0; w < writers; w++ {
 		for i, site := range batches[w] {
-			live := d.getById(site.id.id, true) != nil
+			live := d.getById(site.id.id) != nil
 			if _, settled := settledSite(site.id.id); !live && !settled {
 				t.Fatalf("received site %s is neither in the graph nor in the archive", site.id.id.String())
 			}
@@ -1067,7 +1067,7 @@ func TestAVersionCollidingReceivedSiteStillEntersTheGraph(t *testing.T) {
 		t.Fatalf("a version-colliding site was refused: %s", err.Error())
 	}
 
-	if d.getById(colliding.id.id, true) == nil {
+	if d.getById(colliding.id.id) == nil {
 		t.Fatal("the colliding site is not in the lookup map, so nothing can find it")
 	}
 	if got := d.sitesAdded.Load(); got != before+1 {

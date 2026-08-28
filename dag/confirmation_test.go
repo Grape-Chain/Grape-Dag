@@ -136,10 +136,24 @@ func TestConfirmationCounterConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
+	// The writer is bounded as well as stoppable, and the bound is the point.
+	//
+	// It used to add sites until the readers finished, and getTips is linear in
+	// the number of tips the writer is creating - so reader throughput fell as
+	// the writer ran, which let the writer run longer, which lowered reader
+	// throughput again. Normally that resolved in 0.18s; under -race it took
+	// about five seconds; on a loaded machine running the whole suite it did not
+	// resolve at all and took Go's ten-minute timeout with it. A test whose
+	// runtime depends on the ratio between two goroutines' speeds is a test that
+	// will eventually hang in CI, and it hung here.
+	//
+	// Ten thousand sites is far more than the readers can exhaust and keeps every
+	// interleaving the test was written for, while making the work finite.
+	const writerSites = 10000
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
+		for i := 0; i < writerSites; i++ {
 			select {
 			case <-stop:
 				return
@@ -167,10 +181,9 @@ func TestConfirmationCounterConcurrentAccess(t *testing.T) {
 		}
 	}()
 
-	// let the reader/popper finish, then stop the writer
-	go func() {
-		wg.Wait()
-	}()
+	// Read from this goroutine too, then stop the writer and collect everyone.
+	// There used to be a detached `go wg.Wait()` here whose result nothing read;
+	// it did nothing except look like synchronisation.
 	for i := 0; i < 2000; i++ {
 		c.getTips()
 	}

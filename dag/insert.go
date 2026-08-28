@@ -21,7 +21,7 @@ func (d *Dag) InsertIfNotExist(vertices []*Node) error {
 		if v == nil {
 			continue
 		}
-		// Asks the lookup map only. The full search behind getById(_, false) was
+		// Asks the lookup map only. The full search behind getById(_, false) is gone entirely; it was
 		// a linear scan of the entire live graph per site in the batch, and it
 		// cannot answer differently: every path that appends to dag._dag_
 		// registers the site in the same map inside the same locked section
@@ -30,7 +30,7 @@ func (d *Dag) InsertIfNotExist(vertices []*Node) error {
 		// without it when the attempt fails, which here it always does, because
 		// the caller is already holding it - so the scan read a slice that
 		// another goroutine may have been appending to.
-		if d.getById(v.id.id, true) != nil {
+		if d.getById(v.id.id) != nil {
 			continue
 		}
 		// A site that has already been settled must not come back into the live
@@ -92,7 +92,7 @@ func (dag *Dag) InsertTxDag(
 	// keeps a duplicate off the dag.mux queue entirely. The answer can go stale
 	// between here and the lock, which is why the same check is repeated inside;
 	// this one can only ever skip work, never authorise it.
-	if dag.getById(inVertex.id.id, true) != nil {
+	if dag.getById(inVertex.id.id) != nil {
 		return nil
 	}
 
@@ -133,7 +133,7 @@ func (dag *Dag) linkReceivedSite(inVertex *Node, ids ...tx.UuidSlice) (bool, err
 	dag.mux.Lock()
 	defer dag.mux.Unlock()
 
-	if v := dag.getById(inVertex.id.id, true); v != nil {
+	if v := dag.getById(inVertex.id.id); v != nil {
 		return false, nil
 	}
 
@@ -148,7 +148,7 @@ func (dag *Dag) linkReceivedSite(inVertex *Node, ids ...tx.UuidSlice) (bool, err
 		// first, check dag cache (and more thorough search if required)
 		// we are looking for the sites/vertices that this site/vertex has
 		// already approved elsewhere
-		if n := dag.getById(id.Id, true); n != nil {
+		if n := dag.getById(id.Id); n != nil {
 			candidates = append(candidates, n)
 		} else if _, ok := settledSite(id.Id); ok {
 			// The approved site has been settled by a commit transaction. It is
@@ -354,7 +354,7 @@ func (dag *Dag) stripClaim(site *Node, reason error) {
 	attributionStrips.Add(1)
 	stats.AttributionStripped.Inc()
 	dag.mux.Lock()
-	stillLive := dag.getById(site.id.id, true) != nil
+	stillLive := dag.getById(site.id.id) != nil
 	if stillLive {
 		clearProcessor(site)
 	}
