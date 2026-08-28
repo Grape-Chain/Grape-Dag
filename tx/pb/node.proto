@@ -30,4 +30,12 @@ message Node {
 	Height height = 6;
 	Txv1 tx = 7;
     map<string, bool> missingTargets = 8;
+
+    // The node that encapsulated the transaction into this site, and its
+    // signature over the site's identity. Added after field 8, so a peer built
+    // before them ignores all three and a peer built after them tolerates their
+    // absence: an unattributed site stays valid, it simply earns nobody a fee.
+    bytes processorAddress = 9;
+    bytes processorPk = 10;
+    bytes processorSig = 11;
 }

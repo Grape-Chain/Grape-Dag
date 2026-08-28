@@ -78,6 +78,10 @@ func publish(ctx context.Context, topic *pubsub.Topic, statsId uuid.UUID, leader
 		}
 		rec.Ids = tx.Ids{}
 		ids, signatures, err := dag.GetDag().AddTxDag(dagNode)
+		// AddTxDag signs the site as ours, so the claim exists only after it
+		// returns. Copied onto the record here because a subscribing peer
+		// builds its own site from the transaction and never sees this one.
+		rec.ProcessorAddress, rec.ProcessorPk, rec.ProcessorSig = dag.ProcessorAttribution(dagNode)
 		if err != nil {
 			// if for whatever reason we failed to add to dag indicate it here
 			logger.Warnf("[publish] Tx \n%s\n payment cannot be processed. %s", rec.Transaction.String(), err)

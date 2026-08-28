@@ -72,6 +72,19 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 		if _, err := dag.addToDag(node, tips); err != nil {
 			return nil, nil, err
 		}
+		// This node encapsulated the transaction, so it is the site's processor
+		// and the party the site's fee is owed to. Signed here rather than
+		// before addToDag because the approvals are part of what is signed and
+		// node.targets is populated inside it - signing first would sign an
+		// empty approval set.
+		//
+		// A failure is logged and not returned: an unattributed site is a valid
+		// site that earns nobody a fee, and refusing to publish a transaction
+		// because this node cannot claim payment for it would be putting the
+		// fee ahead of the ledger.
+		if err := signProcessor(node, dag.Wallet()); err != nil {
+			logger.Warnf("[attribution] Cannot claim site %s as ours: %s", node.id.id.String(), err.Error())
+		}
 	}
 
 	// To speed things up, ignore cumWeights when working with MCMCPP

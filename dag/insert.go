@@ -190,6 +190,25 @@ func (dag *Dag) InsertTxDag(
 			targetNode.id.id.String(), targetNode.id.idMajor, targetNode.id.idMinor,
 		)
 	})
+	// Whoever built this site claimed it, and the claim is checkable: the
+	// signature covers the site's id, its transaction and its approvals. Checked
+	// here, after the links are established, because the approvals are part of
+	// what was signed.
+	//
+	// A site with no attribution at all is accepted - it came from a node
+	// predating attribution, and it simply earns nobody a fee. A site whose
+	// attribution does not verify is kept as well, but stripped: the site is
+	// still a valid part of the graph and refusing it would let a bad claim
+	// deny the network a transaction, whereas keeping the claim would let the
+	// liar be paid.
+	if err := verifyProcessor(inVertex); err != nil {
+		if !errors.Is(err, ErrNoProcessorAttribution) {
+			logger.Warnf("[attribution] Site %s carries an unusable claim, dropping it: %s",
+				inVertex.id.id.String(), err.Error())
+			clearProcessor(inVertex)
+		}
+	}
+
 	// update cumulative weights only when working with mcmc+
 	switch dagAlgorithm() {
 	case DAG_ALGO_MCMCP.Type():

@@ -234,6 +234,13 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("tx.maxfuellimit", 10000000)
 	viper.SetDefault("tx.maxfuelprice", 10000000)
 	viper.SetDefault("tx.neutrino", 0.00000001)
+	// Fees off by default. Switching them on is a network-wide decision, and a
+	// node that switches alone rejects payments the rest of the network accepts.
+	viper.SetDefault("tx.feemode", "fixed")
+	viper.SetDefault("tx.minpaymentfee", 1000)   // 1e-5 Grape
+	viper.SetDefault("tx.feestartpin", -1)       // never
+	viper.SetDefault("tx.minstake", 10000000000) // 100 Grape
+	viper.SetDefault("tx.stakecapmilli", 5000)   // 5.0x
 
 	err = viper.Unmarshal(&peerConfig)
 	if err != nil {

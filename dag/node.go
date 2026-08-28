@@ -62,6 +62,14 @@ type Node struct {
 	// be collected, but the id is kept so the approval is still reported.
 	slicedTargets []uuid.UUID
 	// [earlier nodes] <==targets== [this node] <==sources== [later nodes]
+
+	// Processor attribution - the node that encapsulated this site's transaction
+	// into the site, and its signature over the site's identity. See
+	// attribution.go. Empty on a site from a peer built before attribution
+	// existed, which is a valid site that simply earns nobody a fee.
+	processorAddress []byte
+	processorPk      []byte
+	processorSig     []byte
 }
 
 func (x *Node) String() string {
@@ -108,6 +116,11 @@ func (n *Node) ToPbNode() *pb.Node {
 	for _, id := range n.slicedTargets {
 		pbn.MissingTargets[id.String()] = true
 	}
+	// Attribution travels as-is. Copied out rather than shared so a peer
+	// serialising a site cannot be handed a slice that aliases the live site.
+	pbn.ProcessorAddress = append([]byte(nil), n.processorAddress...)
+	pbn.ProcessorPk = append([]byte(nil), n.processorPk...)
+	pbn.ProcessorSig = append([]byte(nil), n.processorSig...)
 	return pbn
 }
 
@@ -131,6 +144,12 @@ func (n *Node) FromPbNode(pbn *pb.Node) {
 	n.txWeight = float64(pbn.TxWeight)
 	n.valid = pbn.Valid
 	n.missingTargets = pbn.MissingTargets
+	// Taken verbatim, including absent. A site from a peer that predates
+	// attribution leaves all three nil, which verifyProcessor reports as
+	// unattributed rather than invalid.
+	n.processorAddress = pbn.ProcessorAddress
+	n.processorPk = pbn.ProcessorPk
+	n.processorSig = pbn.ProcessorSig
 }
 
 func (n *Node) GetMinHeight() uint64 {

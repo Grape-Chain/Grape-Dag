@@ -108,6 +108,11 @@ func subscribe(subscriber *pubsub.Subscription,
 			logger.Warnf("[SUB] Tx \n%s\n cannot be verified. Discrarded", rec.Transaction.String())
 			continue
 		}
+		// The claim travels on the record, because this is a site we built from
+		// somebody else's transaction. Carried, not trusted: it is verified
+		// where the site joins the graph, which is the first point at which its
+		// approvals are known and the signature can be recomputed.
+		dag.SetProcessorAttribution(dagNode, rec.ProcessorAddress, rec.ProcessorPk, rec.ProcessorSig)
 		txUUID := uuid.MustParse(rec.Tx)
 		// secondary queue for inbound tx - we want to prevent tx loss,
 		// we try to accept as many incoming tx as we possibly can

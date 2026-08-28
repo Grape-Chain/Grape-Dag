@@ -27,6 +27,16 @@ type GrapeTx struct {
 	TxIdMajor   uint64
 	TxIdMinor   uint32
 	TxIdId      uuid.UUID
+
+	// The site's processor: which node encapsulated this transaction, and its
+	// signature over the site's identity. Carried on the gossip record because
+	// a subscribing peer builds its own site from the transaction rather than
+	// taking the sender's, so this is the only route by which the claim
+	// reaches it. Absent on records from nodes predating attribution, which is
+	// a site that earns nobody a fee rather than an invalid one.
+	ProcessorAddress []byte
+	ProcessorPk      []byte
+	ProcessorSig     []byte
 }
 
 var logger golog.EventLogger = golog.Logger("p2p-grapetx")
@@ -86,6 +96,9 @@ func GrapeTxFromProtobuf(msg *pb.GrapeTxRecord) (*GrapeTx, error) {
 	record.PeerID = id
 	record.Addrs = addrsFromProtobuf(msg.Addresses)
 	record.Seq = msg.Seq
+	record.ProcessorAddress = msg.ProcessorAddress
+	record.ProcessorPk = msg.ProcessorPk
+	record.ProcessorSig = msg.ProcessorSig
 	payload, _ := base58.Decode(string(msg.Tx[:]))
 	record.Tx = string(payload[:])
 	record.Version = VersionType(msg.Version)
@@ -223,6 +236,11 @@ func (r *GrapeTx) ToProtobuf() (*pb.GrapeTxRecord, error) {
 		Txidmajor:   r.TxIdMajor,
 		Txidminor:   r.TxIdMinor,
 		Txidid:      idid,
+		// Nil when the sending node predates attribution, or could not claim
+		// the site. Absent fields on the wire, not empty ones.
+		ProcessorAddress: r.ProcessorAddress,
+		ProcessorPk:      r.ProcessorPk,
+		ProcessorSig:     r.ProcessorSig,
 	}, nil
 }
 

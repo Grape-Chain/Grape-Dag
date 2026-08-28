@@ -162,6 +162,51 @@ type TxConfiguration struct {
 	Maxfuellimit uint64
 	Maxfuelprice uint64
 	Neutrino     float64
+
+	// The fee and reward settings. See docs/economics.md, which is the document
+	// to read before changing any of them: they decide what a payment costs and
+	// how the proceeds are divided, so a node that disagrees with the network
+	// about one of them will reject payments everyone else accepts.
+
+	// Feemode - how a payment's fee is set. "fixed" is the only implemented
+	// mode: the fee is a minimum, not a bid, and under congestion transactions
+	// queue rather than outbid each other. The setting exists so that adding a
+	// fee market later is not a migration.
+	Feemode string
+	// Minpaymentfee - the least a payment may pay, in neutrinos. Charged as
+	// fuel_limit x fuel_price with the limit fixed at 1, so the fee rides on
+	// fields a payment already carries and there is one number to reason about.
+	Minpaymentfee uint64
+	// Feestartpin - the commit-transaction number at which fees begin. Negative
+	// means never, which is the default: before it, the fee is zero and every
+	// path behaves as it did before fees existed. Must be agreed network-wide
+	// before it is set.
+	Feestartpin int64
+	// Minstake - where the stake bonus starts, in neutrinos. Not a gate: a
+	// processor below it still earns for the work it did, at the base weight.
+	Minstake uint64
+	// Stakecapmilli - ceiling on the stake bonus, in permille. 1000 means stake
+	// is worth nothing and rewards are purely work-based; larger tilts rewards
+	// toward big holders. The main economic dial.
+	Stakecapmilli uint32
+}
+
+// FeesActive - whether fees are charged for a commit transaction at this height.
+//
+// A single place to ask, because the answer is needed on the client path, on the
+// peer path and again when the commit transaction is built, and three copies of
+// the comparison is three chances to get the boundary wrong.
+func (t TxConfiguration) FeesActive(pinNumber int64) bool {
+	return t.Feestartpin >= 0 && pinNumber >= t.Feestartpin
+}
+
+// MinimumPaymentFee - the least a payment may pay at this height, in neutrinos.
+// Zero before fees start.
+func (t TxConfiguration) MinimumPaymentFee(pinNumber int64) uint64 {
+	if !t.FeesActive(pinNumber) {
+		return 0
+	}
+	return t.Minpaymentfee
 }
 
 type HostConfig struct {
