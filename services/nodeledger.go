@@ -81,12 +81,26 @@ func (nodeLedger) WalletAddress() string {
 	return cfg.Dag.Wallet
 }
 
-// EarningsFor - fees credited to a wallet.
+// recentCredits - how many individual payments the earnings endpoint reports.
+// Enough for a wallet application to show a history without asking it to render
+// the whole chain.
+const recentCredits = 50
+
+// EarningsFor - fees credited to a wallet, read from the commit-transaction
+// chain.
 //
-// Nothing in the ledger credits a fee to anybody yet: a site carries no
-// processor identity, and the fee a payment pays is computed for display and
-// then discarded. Returning node.ErrNotWired says so, rather than returning
-// zeros, which a wallet application cannot tell from "you have earned nothing".
-func (nodeLedger) EarningsFor(string) (*big.Int, *big.Int, []node.Credit, error) {
-	return big.NewInt(0), big.NewInt(0), []node.Credit{}, node.ErrNotWired
+// Zero is an honest answer here, not a placeholder: a node earns nothing until
+// fees are switched on network-wide, and until then the chain genuinely carries
+// no reward records. See docs/economics.md.
+func (nodeLedger) EarningsFor(wallet string) (*big.Int, *big.Int, []node.Credit, error) {
+	lifetime, pending, credits := dag.EarningsFor(wallet, recentCredits)
+	out := make([]node.Credit, 0, len(credits))
+	for _, c := range credits {
+		out = append(out, node.Credit{
+			Pin:    c.Pin,
+			Amount: c.Amount,
+			At:     c.At,
+		})
+	}
+	return lifetime, pending, out, nil
 }

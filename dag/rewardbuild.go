@@ -2,6 +2,7 @@ package dag
 
 import (
 	"math/big"
+	"time"
 
 	grape1crypto "github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
@@ -21,6 +22,13 @@ While fees are off, which is the default, the pool is nought, the split is
 empty, and the commit transaction encodes exactly as it did before any of these
 fields existed. See docs/economics.md.
 */
+
+// RewardCredit - one payment the commit-transaction chain made to an account.
+type RewardCredit struct {
+	Pin    int64
+	Amount *big.Int
+	At     time.Time
+}
 
 // paymentFee - what one site's transaction paid, in the ledger's smallest unit.
 //
@@ -178,4 +186,50 @@ func rewardsBalance(pin *pb.TxPin) bool {
 		total.Add(total, new(big.Int).SetBytes(r.Amount))
 	}
 	return pool.Cmp(total) == 0
+}
+
+// EarningsFor - what the commit-transaction chain says this account has been
+// paid, newest first, capped at limit records.
+//
+// Read from the chain rather than from a running total, because the chain is the
+// only authority: a running total would have to be rebuilt on recovery and kept
+// in step with reorganisation, and would be a second place for the number to be
+// wrong. The cost is a scan of the pins held in memory, which is bounded by the
+// retain window and is paid only when somebody asks.
+//
+// lifetime is everything the chain has settled to this account. pending is
+// always nought here: a reward exists only once a commit transaction carries it,
+// and at that point it is settled, so there is no window in which a reward is
+// earned but not yet paid. The distinction is kept in the shape because fees
+// charged per site before the commit transaction that settles them would
+// reintroduce one.
+func EarningsFor(account string, limit int) (lifetime, pending *big.Int, credits []RewardCredit) {
+	lifetime, pending = new(big.Int), new(big.Int)
+	credits = []RewardCredit{}
+	if _pins_ == nil || account == "" {
+		return lifetime, pending, credits
+	}
+	chain := _pins_.snapshotPins()
+	for _, pin := range chain {
+		amount, ok := rewardsPaid(pin)[account]
+		if !ok || amount == nil || amount.Sign() <= 0 {
+			continue
+		}
+		lifetime.Add(lifetime, amount)
+		credits = append(credits, RewardCredit{
+			Pin:    pin.PinNumber,
+			Amount: new(big.Int).Set(amount),
+			At:     pin.GetTs().AsTime(),
+		})
+	}
+	// Newest first, and only as many as were asked for. Reversed after
+	// accumulating rather than scanning backwards, because lifetime has to
+	// cover the whole chain however few records the caller wants.
+	for i, j := 0, len(credits)-1; i < j; i, j = i+1, j-1 {
+		credits[i], credits[j] = credits[j], credits[i]
+	}
+	if limit > 0 && len(credits) > limit {
+		credits = credits[:limit]
+	}
+	return lifetime, pending, credits
 }

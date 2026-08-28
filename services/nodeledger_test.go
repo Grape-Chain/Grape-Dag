@@ -1,7 +1,6 @@
 package services
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/Grape-Chain/Grape-Dag/services/node"
@@ -31,20 +30,27 @@ func TestTheLiveLedgerAnswersBeforeTheNodeHasStarted(t *testing.T) {
 	_ = l.WalletAddress()
 }
 
-// Fees are not credited to anybody yet. The endpoint must say so rather than
-// report zero, which a wallet application cannot tell from "you have earned
-// nothing" - and which would show a user a confident 0.00 for a figure the node
-// is not computing at all.
-func TestEarningsReportNotWiredRatherThanZero(t *testing.T) {
+// Earnings are read from the commit-transaction chain. With no chain - which is
+// the state of a node that has not started - the answer is nought earned and no
+// credits, and it must not be nil: the JSON encoder renders a nil slice as null,
+// and a wallet application reading null where it expects a list is a crash on
+// somebody else's machine.
+func TestEarningsWithNoChainReportNothingRatherThanNil(t *testing.T) {
 	lifetime, pending, recent, err := NewNodeLedger().EarningsFor("0xabc")
-	if !errors.Is(err, node.ErrNotWired) {
-		t.Fatalf("earnings returned err=%v, want node.ErrNotWired", err)
+	if err != nil {
+		t.Fatalf("earnings returned err=%v, want nil", err)
 	}
 	if lifetime == nil || pending == nil {
 		t.Fatal("earnings returned nil totals, which the JSON encoder cannot render")
 	}
+	if lifetime.Sign() != 0 || pending.Sign() != 0 {
+		t.Fatalf("a node with no chain reports lifetime %s pending %s", lifetime, pending)
+	}
 	if recent == nil {
 		t.Fatal("recent credits are nil; the endpoint must render [] rather than null")
+	}
+	if len(recent) != 0 {
+		t.Fatalf("a node with no chain reports %d credits", len(recent))
 	}
 }
 

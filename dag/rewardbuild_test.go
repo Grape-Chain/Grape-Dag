@@ -184,3 +184,81 @@ func TestASplitThatDoesNotAddUpIsRejected(t *testing.T) {
 		t.Fatal("a split paying out less than the pool, with no remainder, was accepted")
 	}
 }
+
+// Earnings are read from the commit-transaction chain, which is the only
+// authority: a running total would have to be rebuilt on recovery and kept in
+// step, and would be a second place for the number to be wrong.
+func TestEarningsAreReadFromTheCommitTransactionChain(t *testing.T) {
+	recoveryFixture(t, t.TempDir())
+	const alice = "0x00000000000000000000000000000000000000a1"
+	const bob = "0x00000000000000000000000000000000000000b2"
+
+	for i, amounts := range []map[string]int64{
+		{alice: 100, bob: 50},
+		{alice: 30},
+		{bob: 7},
+	} {
+		pin := pb.NewTxPin([]byte{})
+		pin.PinNumber = int64(i)
+		total := int64(0)
+		for account, amount := range amounts {
+			pin.Rewards = append(pin.Rewards, &pb.RewardRecord{
+				Processor: []byte(account),
+				Amount:    big.NewInt(amount).Bytes(),
+			})
+			total += amount
+		}
+		pin.FeePool = big.NewInt(total).Bytes()
+		_pins_.unsafe_appendPin(pin)
+	}
+
+	lifetime, pending, credits := EarningsFor(alice, 50)
+	if lifetime.Cmp(big.NewInt(130)) != 0 {
+		t.Fatalf("alice's lifetime earnings are %s, want 130", lifetime.String())
+	}
+	if pending.Sign() != 0 {
+		t.Fatalf("pending is %s; a reward exists only once a commit transaction carries it", pending)
+	}
+	if len(credits) != 2 {
+		t.Fatalf("alice has %d credits, want 2", len(credits))
+	}
+	// Newest first, so a wallet application shows the most recent payment at the
+	// top without having to sort.
+	if credits[0].Pin <= credits[1].Pin {
+		t.Fatalf("credits are ordered %d then %d; want newest first", credits[0].Pin, credits[1].Pin)
+	}
+
+	if bobTotal, _, bobCredits := EarningsFor(bob, 50); bobTotal.Cmp(big.NewInt(57)) != 0 || len(bobCredits) != 2 {
+		t.Fatalf("bob earned %s over %d credits, want 57 over 2", bobTotal.String(), len(bobCredits))
+	}
+	// An account the chain never paid earns nothing, and gets a list rather
+	// than nil.
+	if total, _, none := EarningsFor("0xdead", 50); total.Sign() != 0 || none == nil || len(none) != 0 {
+		t.Fatalf("an unpaid account reports %s over %v", total.String(), none)
+	}
+}
+
+// The credit list is capped so an endpoint cannot be asked to render the whole
+// chain, but the lifetime total still covers all of it.
+func TestTheEarningsCreditListIsCappedButTheTotalIsNot(t *testing.T) {
+	recoveryFixture(t, t.TempDir())
+	const alice = "0x00000000000000000000000000000000000000a1"
+	for i := 0; i < 20; i++ {
+		pin := pb.NewTxPin([]byte{})
+		pin.PinNumber = int64(i)
+		pin.FeePool = big.NewInt(10).Bytes()
+		pin.Rewards = []*pb.RewardRecord{{Processor: []byte(alice), Amount: big.NewInt(10).Bytes()}}
+		_pins_.unsafe_appendPin(pin)
+	}
+
+	lifetime, _, credits := EarningsFor(alice, 5)
+	if lifetime.Cmp(big.NewInt(200)) != 0 {
+		t.Fatalf("lifetime is %s, want 200 - the cap must not shorten the total", lifetime.String())
+	}
+	if len(credits) != 5 {
+		t.Fatalf("%d credits returned for a limit of 5", len(credits))
+	}
+	if credits[0].Pin != 19 {
+		t.Fatalf("the newest credit is pin %d, want 19", credits[0].Pin)
+	}
+}
