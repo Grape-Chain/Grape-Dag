@@ -49,14 +49,6 @@ const (
 	// generator holds - benchReserve does that - only how much the faucet funds.
 	benchDefaultPrepare = 200000
 
-	// benchReserve is how many signed transactions each worker holds ready before
-	// the window opens, and the depth of the buffer its signer keeps topped up
-	// afterwards. At roughly 0.6 KB per signed transaction this is about 1.2 MB
-	// per worker, 60 MB across a 48-worker saturation run, and it is what
-	// separates how long a run can last from how much memory the generator needs
-	// to last that long.
-	benchReserve = 2000
-
 	// benchMaxAssumedRate is the throughput a -bench_max run sizes its nominal
 	// pool - and so its wallet funding - for, when there is no offered rate to
 	// derive either from. Deliberately far above anything one node has been
@@ -93,6 +85,21 @@ const (
 	// window closed, so they are not read as the node refusing load.
 	benchShutdownFailure = "cut short by shutdown"
 )
+
+// benchReserve is how many signed transactions each worker holds ready before
+// the window opens, and the depth of the buffer its signer keeps topped up
+// afterwards. At roughly 0.6 KB per signed transaction this is about 1.2 MB per
+// worker, 60 MB across a 48-worker saturation run, and it is what separates how
+// long a run can last from how much memory the generator needs to last that
+// long.
+//
+// A variable rather than a constant so that a test can shrink it. Filling a
+// 2000-deep reserve means two thousand real ed25519 signatures: a fifth of a
+// second on an idle machine and many seconds on a loaded one - long enough that
+// a test waiting on the reserve with a wall-clock deadline fails for being slow
+// rather than for being wrong, which is what happened on a box running five test
+// binaries at once. Nothing outside a test writes it.
+var benchReserve = 2000
 
 // BenchOptions holds the bench-mode settings that come from the command line.
 type BenchOptions struct {

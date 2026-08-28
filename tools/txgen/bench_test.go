@@ -498,6 +498,15 @@ func TestRunBenchStopsOnACancelledContext(t *testing.T) {
 // benchWorkerReserve is what prevents it, and this is the test that keeps the
 // guard honest.
 func TestTheSignerAlwaysAnnouncesItsReserve(t *testing.T) {
+	// Shrunk so the "larger than the reserve" case costs a handful of signatures
+	// rather than two thousand. This test's deadline is there to catch a signer
+	// that can never announce, and a deadline that also catches a loaded machine
+	// is a test that fails for the wrong reason - which is exactly what happened
+	// on a box running five test binaries at once.
+	restore := benchReserve
+	benchReserve = 4
+	t.Cleanup(func() { benchReserve = restore })
+
 	for _, perWorker := range []int{0, 1, 3, benchReserve + 1} {
 		plan := &benchPlan{
 			opts:       &BenchOptions{Workers: 1, Amount: 1},
@@ -517,7 +526,7 @@ func TestTheSignerAlwaysAnnouncesItsReserve(t *testing.T) {
 		go signBenchLoad(ctx, plan, w)
 		select {
 		case <-w.reserved:
-		case <-time.After(10 * time.Second):
+		case <-time.After(30 * time.Second):
 			cancel()
 			t.Fatalf("perWorker=%d: the signer never announced its reserve, so setup would wait forever", perWorker)
 		}

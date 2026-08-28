@@ -932,6 +932,10 @@ func (dssub *DagSyncSub) destroy() {
 	logger.Infof("%s  ~ Sync pubsub stopped", emoji.VerticalTrafficLight)
 }
 
+// syncSubBufferSize - depth, in messages, of the sync subscription's output
+// channel. See the comment at its use below for why it is not 1<<20.
+const syncSubBufferSize = 1 << 12
+
 func NewDagSyncSub(rd *routing.RoutingDiscovery, ps *pubsub.PubSub, rendezvous string, bs bool) *DagSyncSub {
 	dssub := &DagSyncSub{
 		rd:         rd,
@@ -971,7 +975,18 @@ func NewDagSyncSub(rd *routing.RoutingDiscovery, ps *pubsub.PubSub, rendezvous s
 		return nil
 	}
 
-	subopt := []pubsub.SubOpt{pubsub.WithBufferSize(1 << 20)}
+	// The same 8MB mistake diffusion had, on the sync subscription. WithBufferSize
+	// is the depth of the subscription's output channel in messages, the library
+	// default is 32, and the channel is allocated up front - so 1<<20 was a
+	// million message pointers, eight megabytes, reserved at start-up for a
+	// subscription that carries sync traffic rather than a transaction firehose.
+	//
+	// Sized to what a sync burst actually looks like instead: a few thousand
+	// messages of slack is more than a catch-up ever produces in one heartbeat,
+	// and a subscriber that does fall this far behind wants to be dropping
+	// messages and re-requesting them, not accumulating a backlog it will process
+	// long after the sync state machine has moved on.
+	subopt := []pubsub.SubOpt{pubsub.WithBufferSize(syncSubBufferSize)}
 	dssub.sub, dssub.err = dssub.topic.Subscribe(subopt...)
 	if dssub.err != nil {
 		dssub.destroy()

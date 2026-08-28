@@ -41,13 +41,28 @@ func (dsa Ed25519DSA) Sign(key PrivateKey, message []byte) []byte {
 	return signature
 }
 
+// Verify - check an ed25519 signature.
+//
+// The lengths are checked exactly, not merely for emptiness. ed25519.Verify
+// panics on a public key that is not exactly PublicKeySize bytes - "bad public
+// key length" - and this function is reached from the gossip subscriber with a
+// key that came off the wire. A peer sending a transaction with a five-byte
+// sender key therefore killed the receiving node with a single message, and the
+// emptiness check let it straight through. dag/attribution.go already checks the
+// processor key this way, for the same reason; this is the same check on the
+// path that a transaction's own sender key takes.
+//
+// The signature length is checked too. That one does not panic - the library
+// returns false for a wrong-sized signature - but a caller reading the log
+// should be told which of the three inputs was malformed rather than being left
+// with a bare false.
 func (dsa Ed25519DSA) Verify(key PublicKey, signature []byte, message []byte) bool {
-	if len(key) == 0 {
-		logger.Error("[Verify] Public key is invalid")
+	if len(key) != ed25519.PublicKeySize {
+		logger.Errorf("[Verify] Public key is %d bytes, want %d", len(key), ed25519.PublicKeySize)
 		return false
 	}
-	if len(signature) == 0 {
-		logger.Error("[Verify] Signature is invalid")
+	if len(signature) != ed25519.SignatureSize {
+		logger.Errorf("[Verify] Signature is %d bytes, want %d", len(signature), ed25519.SignatureSize)
 		return false
 	}
 	if len(message) == 0 {

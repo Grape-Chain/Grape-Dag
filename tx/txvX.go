@@ -666,24 +666,35 @@ func (t *Txv1) generateSignature(pk *grape_wallet.PrivateKey) []byte {
 	return t.Signature
 }
 
+// Verify - check the sender's signature over this transaction.
+//
+// The payload is the transaction with its signature field empty, because that is
+// what was signed. This used to be done by blanking t.Signature on the receiver,
+// hashing, and putting it back - which made verification a write. That is a
+// hazard nobody had written down: the subscriber now verifies on several
+// goroutines at once, and while each holds its own freshly unmarshalled record
+// today, anything that ever verified one shared transaction from two goroutines
+// would have them blanking and restoring the same field against each other. The
+// hash is taken on a copy instead, so verifying is a read and the question does
+// not arise.
+//
+// It also used to return nil - success - when the marshalling failed, having
+// already blanked the signature and not yet restored it. A transaction that
+// could not be hashed was therefore reported as verified, and lost its signature
+// on the way through.
 func (t *Txv1) Verify() error {
 	sz := len(t.Signature)
 	if sz < 64 {
 		return errors.Errorf("Invalid tx signature of length %d", sz)
 	}
-	// We assume that signature is empty when calculating hash, so, make a copy and set it to empty
-	// before calculating the hash value
-	sigbuf := make([]byte, sz)
-	copy(sigbuf, t.Signature)
-	t.Signature = []byte{} // reset the sig value before calculating hash
-	payload, err := t.Hash(crypto.SHA256)
+	// A shallow copy is enough: the only field that has to differ is Signature,
+	// and assigning to the copy's field cannot reach the original's bytes.
+	unsigned := *t
+	unsigned.Signature = nil
+	payload, err := unsigned.Hash(crypto.SHA256)
 	if err != nil {
-		logger.Errorf("[signature] Tx marshal binary error: %s", err.Error())
-		return nil
+		return errors.Wrap(err, "cannot hash the transaction to verify it")
 	}
-	// restore signature value for the transaction
-	t.Signature = make([]byte, sz)
-	copy(t.Signature, sigbuf)
 
 	valid := grape_wallet.NewDSA().Verify(t.Sender_Pubk, t.Signature, payload)
 	if !valid {
