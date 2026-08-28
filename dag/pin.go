@@ -561,6 +561,22 @@ func (p *NodeTxPin) unsafe_buildPin(sites []*Node, smcTxs []tx.Transaction) (*pb
 	pin.PinNumber = p.unsafe_nextPinNumber()
 	p.runSmartContractStage(pin, smcTxs)
 
+	// The fee split, once the smart-contract stage has said what its
+	// transactions actually burned. Before signing, because the split is part of
+	// what the signature and the validator quorum cover: a commit transaction
+	// that could be re-split after being agreed would let the proposer pay
+	// itself. A no-op while fees are off, which is the default.
+	recordRewards(pin, sites, func(account string) *big.Int {
+		balance, err := p.unsafe_getBalanceForWallet(account)
+		if err != nil || balance == nil {
+			return big.NewInt(0)
+		}
+		return balance
+	}, rewardSettingsFrom(txSettings{
+		Minstake:      txConfig.Minstake,
+		Stakecapmilli: txConfig.Stakecapmilli,
+	}, dagConfig.Coinbaseaccount))
+
 	// now that all the information has been collected, sign it
 	pin.SignTx(dagWallet)
 	return pin, nil
