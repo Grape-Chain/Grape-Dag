@@ -209,19 +209,9 @@ func (dag *Dag) InsertTxDag(
 		}
 	}
 
-	// update cumulative weights only when working with mcmc+
-	switch dagAlgorithm() {
-	case DAG_ALGO_MCMCP.Type():
-		// No reversal: updateCumWeights needs approvers before the sites they
-		// approve, which is the node slice read backwards. Reversing it first
-		// walked oldest-first and read a stale weight for every site with more
-		// than one approver - and reversed the shared slice in place while other
-		// readers could see it. AddTxDag already had the reversal commented out;
-		// this is the same call made the same way.
-		dag._dag_ = updateCumWeights(dag._dag_, dag._links_)
-	}
+	// Cumulative weights are no longer recomputed here either; see dag/weights.go.
 	// dag.dag = updateFwdWeights(dag.dag, dag.links)
-	if peerConfig.Console > 0 {
+	if traceSites {
 		dag.logLast("INSERT:", inVertex, 1)
 	}
 	return nil

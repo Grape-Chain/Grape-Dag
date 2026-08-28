@@ -87,10 +87,10 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 		}
 	}
 
-	// To speed things up, ignore cumWeights when working with MCMCPP
-	if dagAlgorithm() == DAG_ALGO_MCMCP.Type() {
-		dag._dag_ = updateCumWeights(dag._dag_, dag._links_)
-	}
+	// Cumulative weights are no longer recomputed here. See dag/weights.go: the
+	// pass walked every live site on every insert and was the largest single
+	// consumer of CPU in the node, at 15.95% of a profile under load, and
+	// nothing reads what it produced.
 
 	//dag.dag = updateFwdWeights(dag.dag, dag.links)
 	// logLast reads the site's edges to format itself, so this is real graph

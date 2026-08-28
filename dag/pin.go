@@ -174,7 +174,7 @@ func (p *NodeTxPin) set(genesis *Node, wallet string) {
 	defer p.unlock()
 	pin := pb.NewTxPin([]byte{})
 	s := &pb.SiteID{
-		Id:      genesis.id.id[:],
+		Id:      append([]byte(nil), genesis.id.id[:]...),
 		Address: genesis.id.address,
 		IdMajor: genesis.id.idMajor,
 		IdMinor: genesis.id.idMinor,
@@ -521,8 +521,13 @@ func (p *NodeTxPin) unsafe_buildPin(sites []*Node, smcTxs []tx.Transaction) (*pb
 	for _, val := range sites {
 		// store sites in pin [for now] - need for synch
 		pin.Nodes = append(pin.Nodes, val.ToPbNode())
+		// Copied, not sliced. Slicing takes a reference into the live Node's
+		// uuid array, so every commit transaction the node retains keeps every
+		// site it settled reachable - with its edge slices - and slicing them
+		// out of the graph frees nothing. Sixteen bytes per site against
+		// holding the site itself.
 		s := &pb.SiteID{
-			Id:      val.id.id[:],
+			Id:      append([]byte(nil), val.id.id[:]...),
 			Address: val.id.address,
 			IdMajor: val.id.idMajor,
 			IdMinor: val.id.idMinor,

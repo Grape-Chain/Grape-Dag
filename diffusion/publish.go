@@ -31,7 +31,6 @@ func publish(ctx context.Context, topic *pubsub.Topic, statsId uuid.UUID, leader
 	//defer runtime.UnlockOSThread()
 	var rec *tx.GrapeTx = nil
 	// var yield_time int64 = config.PUBSUB_QUEUE_YIELD_MIN
-	pubopt := []pubsub.PubOpt{}
 	for {
 		// The NXT-forging switch. Checked before the dequeue, not after: a
 		// stopped node that dequeued first would take transactions off the
@@ -114,6 +113,12 @@ func publish(ctx context.Context, topic *pubsub.Topic, statsId uuid.UUID, leader
 		if err != nil {
 			logger.Errorf("Failed to marshal a tx record \n%s\n err:%s", rec.Transaction.String(), err.Error())
 		}
+		// Built per publish. This was declared outside the loop and appended to
+		// on every transaction, so it grew by one option per transaction for
+		// the life of the process and every Publish was handed the whole list -
+		// a leak, and a cost that rose with the number of transactions the node
+		// had ever sent.
+		pubopt := []pubsub.PubOpt{}
 		if !leader {
 			const pub_threshold = 1
 			pubopt = append(pubopt, pubsub.WithReadiness(pubsub.MinTopicSize(pub_threshold)))
