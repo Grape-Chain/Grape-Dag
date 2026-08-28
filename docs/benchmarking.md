@@ -210,6 +210,85 @@ SIGINT cancels the window and still prints the report. A measurement that throws
 its numbers away when interrupted is one nobody dares interrupt, so bad runs get
 left to finish instead.
 
+## What one node can actually do, and what stops it
+
+Measured on the reference harness below, on a **4 vCPU Intel Xeon @ 2.80GHz,
+16 GiB** box — *not* the 8-vCPU class the throughput target is written against,
+so read these as a floor rather than as the target being met or missed.
+
+Two nodes, leader plus one peer, both on the same four cores; 48 generator
+workers offering as fast as the node accepts, for five minutes.
+
+```
+t= 55s  ingress=3415/s  inserted=2853/s  confirmed=2782/s  live=596
+t=110s  ingress=2715/s  inserted=2715/s  confirmed=2717/s  live=507
+t=165s  ingress=2728/s  inserted=2728/s  confirmed=2723/s  live=700
+t=220s  ingress=2645/s  inserted=2645/s  confirmed=2664/s  live=362
+t=275s  ingress=2631/s  inserted=2631/s  confirmed=2615/s  live=322
+```
+
+**About 2,700 transactions a second, sustained.** The three counters converge
+after the first window, which is the reading that matters: ingress is not
+running ahead of the graph, so this is throughput and not buffering. The first
+window is higher because the publish queue is still filling. `live` stays in the
+hundreds throughout, so slicing and confirmation hold their working set. The
+generator reported **0.00% stalls**, so the number is the node's and not the
+generator's.
+
+### What is not the limit
+
+- **Not CPU.** A 45-second profile under load collected 56.76s of samples, which
+  is **1.26 cores out of four**. The node cannot use the other 2.7.
+- **Not lock contention.** `AddTxDag` was 63.54% of 9.12s of mutex delay before
+  this work; it is now 1.97% of 24.5s. `GetConfirmedSites` is 4.35%. The largest
+  entry left is `runtime._LostContendedRuntimeLock` at 72.84%, which is the Go
+  runtime's own locks, not the ledger's.
+- **Not the generator.** Zero stalls, and `accepted/offered` at 0.9994.
+
+### What is the limit
+
+`grape_queue_depth{queue="publish"}` sits at **32,810** — its 32,768 ceiling —
+for the whole run, every run. The publish queue is full, `Enqueue` blocks rather
+than drops, and that backpressure is what makes ingress equal insertion.
+
+Behind that queue is **one goroutine**. `publish()` dequeues a transaction,
+builds a site, signs it, marshals it and hands it to gossipsub, one at a time.
+At 2,700 a second that is about 370 microseconds per transaction on a single
+goroutine, against an insert that A/B benchmarking puts at 65. The rest is
+signing and serialisation, and about 30% of all CPU the node uses is ed25519
+field arithmetic (`feMul` 12.90%, `feSquare` 9.90%, plus carries and selects).
+
+So the ceiling is a serialisation ceiling, not a contention or capacity one, and
+the next multiple comes from fanning that goroutine out the way the subscriber's
+verification was fanned out — which needs `AddTxDag` to be safe for concurrent
+callers first.
+
+### Component measurements behind it
+
+Each measured A/B on the same box, same substrate both sides:
+
+| | before | after | |
+|---|---|---|---|
+| insert, 4 goroutines | 96.8 µs/op | 65.5 µs/op | 1.5× |
+| insert lock contention delay | 0.253 ms | 0.084 ms | 3× |
+| received-insert exclusive section | 75,718 ns | 4,022 ns | **19×** |
+| subscriber verification | 12,657 msg/s | 23,148 msg/s | 1.83× |
+| commit build, 5000 sites | 45.6 ms | 22.7 ms | 2× |
+| tip selection, 5000 sites/fanout 64 | 229 µs | 19.6 µs | **11.7×** |
+| allocations per insert round, 5000/64 | 118,794 | 2,018 | **59×** |
+| chain readers completing per commit | 274–298 | 1364–1575 | 5× |
+| resident memory over a 5-minute run | 5.2 GB | 3.6 GB | |
+| `go test -race ./dag/` | 275.7 s | 16.9 s | |
+
+### Reproducing it
+
+The harness deliberately records the box's load average beside every sample.
+A rate taken while the machine is three times oversubscribed is a rate for a
+machine that is three times oversubscribed, and without that number written
+down beside it there is no telling that reading from a real regression later.
+Every figure above was taken with nothing else running; several earlier ones
+were not, and had to be thrown away.
+
 ## Running it
 
 The node's gRPC port is the only thing that has to be right. To find the maximum
