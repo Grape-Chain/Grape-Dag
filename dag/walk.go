@@ -183,6 +183,11 @@ func weightedChoice(nodes []*Node, weights []float64) *Node {
 // weights is a uniform pick. That is the same failure the old absolute-weight
 // form had, and it would have come back at exactly the throughput this is
 // being built for.
+//
+// The plain form, with a fresh slice. Selection uses transitionWeightsInto, and
+// this is what the tests state the weights against - including the one that
+// checks the two agree, since a reused buffer that answers differently is a walk
+// biased by a comparison it made somewhere else.
 func transitionWeights(potential int, nextPotential []int, alpha float64) []float64 {
 	return transitionWeightsInto(potential, nextPotential, alpha, nil)
 }
@@ -501,15 +506,6 @@ func (dag *Dag) uniformTips() []*Node {
 		return nil
 	}
 	return out
-}
-
-// anyTipExcept - a tip that has not already been taken, if the graph has one.
-func (dag *Dag) anyTipExcept(taken map[uuid.UUID]struct{}) *Node {
-	ts := tipSelector()
-	if ts == nil {
-		return nil
-	}
-	return ts.tipExcept(taken)
 }
 
 // logTipSelection - say at startup what selection is actually doing, including

@@ -66,6 +66,9 @@ type NodeTxPin struct {
 	downloadedPins chan *pb.TxPin
 	dlMu           sync.Mutex
 	dlClosed       bool
+	// retained - what the body-retention window is currently holding. See
+	// pinBodyRetainSites.
+	retained retainedBodies
 }
 
 // pinBodyRetainPins - how many commit transactions at the head of the chain
@@ -91,6 +94,46 @@ type NodeTxPin struct {
 // a pin whose transactions have been released rather than serve one that the
 // receiver would reject as unsigned.
 var pinBodyRetainPins = 64
+
+// pinBodyRetainSites - how many settled transactions the window may hold across
+// all the pins in it, whatever the pin count says.
+//
+// The pin count alone is the wrong unit, and measurement is what showed it.
+// Sixty-four commit transactions was chosen as "about five minutes at the
+// default interval", which is a statement about time; what the window actually
+// costs is a protobuf copy of every transaction in it. Under load a commit
+// settles what arrived in five seconds, so at 2,600 sites a second that is
+// thirteen thousand transactions per pin and roughly eight hundred thousand
+// across sixty-four of them. A heap profile of a node eight minutes into a
+// saturation run put 48% of the live heap in exactly that: Node.ToPbNode
+// reached through serialiseSites, 0.80 GB of 1.65 GB, with the live graph down
+// at seventy-six sites because slicing was doing its job perfectly. Resident
+// memory was 2.9 GB and climbing, on a chain seventy commits long.
+//
+// So the window is now whichever bound bites first. On a quiet chain the pin
+// count governs and the behaviour is unchanged; under load the site count
+// governs and the window shortens to as few as one or two commits, which is
+// still the working set every query path and every catching-up peer actually
+// asks for. Anything deeper comes from the store, which is where the whole
+// chain lives.
+//
+// 100,000 is about 120 MB of pb.Node at the sizes measured here, and about
+// forty seconds of a 2,600-a-second stream. A var so a test can shrink it.
+var pinBodyRetainSites = 100000
+
+// retainedBodies - settled transactions currently held in the window, and a
+// hint at the oldest pin still holding any.
+//
+// Counted rather than recomputed: the point of the window is to avoid walking
+// the chain on every append. The hint is a hint precisely because
+// insertIfNotFound splices pins in and shifts every index after it, so the
+// release loop scans forward from it rather than trusting it - which
+// self-corrects in one pass and stays amortised constant, since each pin is
+// released exactly once however far the hint has drifted.
+type retainedBodies struct {
+	sites  int
+	oldest int
+}
 
 // pinHead - the chain head a commit transaction is built against.
 //
@@ -180,19 +223,53 @@ func (p *NodeTxPin) unsafe_appendPin(pin *pb.TxPin) {
 // restore the graph root. Releasing it would make a restarted node mint a new
 // root instead of keeping the one its chain was built on.
 //
-// Exactly one pin, the one the window has just left behind: appends happen one
-// at a time, so every pin passes the edge once and is released once. Walking
-// further back on each append to catch up would be linear in the chain, which is
-// the cost this whole thing exists to avoid.
+// Two bounds, and whichever bites first governs: the pin count, and the number
+// of settled transactions held across the window. See pinBodyRetainSites for why
+// the count alone was not enough - it is a bound on time, and what the window
+// costs is bytes.
+//
+// Amortised constant despite the loop. Each pin is released exactly once, so the
+// total work over the life of the chain is one release per pin however many a
+// single append has to catch up on; and the scan forward from the hint exists
+// only because insertIfNotFound can splice pins in and shift the indices under
+// it.
 func (p *NodeTxPin) unsafe_releaseOldBodies() {
-	if pinBodyRetainPins <= 0 {
-		return
+	p.retained.sites += len(p.pins[len(p.pins)-1].GetNodes())
+
+	for p.unsafe_overRetention() {
+		i := p.unsafe_oldestWithBody()
+		// Index 0 is never released, and nothing older than it exists, so
+		// reaching the head means there is nothing left to give back.
+		if i <= 0 || i >= len(p.pins)-1 {
+			return
+		}
+		p.retained.sites -= len(p.pins[i].GetNodes())
+		p.pins[i] = pinWithoutBody(p.pins[i])
+		p.retained.oldest = i + 1
 	}
-	i := len(p.pins) - 1 - pinBodyRetainPins
-	if i <= 0 || p.pins[i] == nil {
-		return
+}
+
+// unsafe_overRetention - whether the window is holding more than either bound
+// allows. Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_overRetention() bool {
+	if pinBodyRetainSites > 0 && p.retained.sites > pinBodyRetainSites {
+		return true
 	}
-	p.pins[i] = pinWithoutBody(p.pins[i])
+	return pinBodyRetainPins > 0 && len(p.pins)-1-p.retained.oldest >= pinBodyRetainPins
+}
+
+// unsafe_oldestWithBody - the index of the oldest pin that still carries its
+// settled transactions, starting from the hint. Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_oldestWithBody() int {
+	i := p.retained.oldest
+	if i < 1 {
+		i = 1
+	}
+	for i < len(p.pins) && (p.pins[i] == nil || len(p.pins[i].GetNodes()) == 0) {
+		i++
+	}
+	p.retained.oldest = i
+	return i
 }
 
 // unsafe_servable - whether the pin at this index is whole enough to send to a
@@ -216,7 +293,10 @@ func (p *NodeTxPin) unsafe_servable(i int) bool {
 	if i == 0 {
 		return true
 	}
-	if pinBodyRetainPins > 0 && i < len(p.pins)-pinBodyRetainPins {
+	// Whether this pin still has its transactions, not where it sits: the two
+	// bounds mean the window's depth in pins is no longer fixed, so a positional
+	// test would refuse pins that are whole and offer pins that are not.
+	if i < p.retained.oldest {
 		return false
 	}
 	return len(pin.Nodes) > 0 || len(pin.Sites) == 0

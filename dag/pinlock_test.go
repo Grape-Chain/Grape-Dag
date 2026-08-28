@@ -526,3 +526,119 @@ func BenchmarkPinAddUnderReaderLoad(b *testing.B) {
 		})
 	}
 }
+
+// The window has to be bounded by what it costs, not by how long it covers.
+//
+// Sixty-four commit transactions was chosen as "about five minutes at the
+// default interval" - a statement about time. What the window actually holds is
+// a protobuf copy of every transaction in it, and under load a commit settles
+// whatever arrived in five seconds. At the rates measured on a saturating node
+// that is around thirteen thousand transactions per commit, so the pin count
+// alone let the window hold hundreds of thousands of them: a heap profile put
+// 48% of a loaded node's live heap in exactly those bodies, with the live graph
+// down at seventy-six sites because slicing was working perfectly.
+func TestTheRetainWindowIsBoundedBySitesNotJustByPins(t *testing.T) {
+	restoreSites, restorePins := pinBodyRetainSites, pinBodyRetainPins
+	pinBodyRetainSites, pinBodyRetainPins = 40, 1000 // sites bite first
+	t.Cleanup(func() { pinBodyRetainSites, pinBodyRetainPins = restoreSites, restorePins })
+
+	p := newNodeTxPin()
+	p.LockPin()
+	p.unsafe_appendPin(storedPin(0, nil, nil, lockSite(1)))
+	for n := 1; n <= 20; n++ {
+		sites := make([]*Node, 10)
+		for i := range sites {
+			sites[i] = lockSite(n*100 + i)
+		}
+		p.unsafe_appendPin(storedPin(int64(n), nil, nil, sites...))
+	}
+	held := 0
+	for _, pin := range p.pins {
+		held += len(pin.GetNodes())
+	}
+	p.UnlockPin()
+
+	// 21 pins of 10 transactions each is 210; the pin bound would have kept every
+	// one of them.
+	if held > pinBodyRetainSites+10 {
+		t.Errorf("the window holds %d settled transactions with a %d-site bound and a %d-pin bound; the pin bound is governing when the site bound should",
+			held, pinBodyRetainSites, pinBodyRetainPins)
+	}
+	if held == 0 {
+		t.Error("the window holds nothing at all - it has released the working set as well as the tail")
+	}
+}
+
+// The pin bound still governs a chain that is not under load, so a quiet node
+// behaves exactly as it did.
+func TestASmallChainKeepsEveryBodyUnderBothBounds(t *testing.T) {
+	restoreSites, restorePins := pinBodyRetainSites, pinBodyRetainPins
+	pinBodyRetainSites, pinBodyRetainPins = 100000, 64
+	t.Cleanup(func() { pinBodyRetainSites, pinBodyRetainPins = restoreSites, restorePins })
+
+	p := newNodeTxPin()
+	p.LockPin()
+	p.unsafe_appendPin(storedPin(0, nil, nil, lockSite(1)))
+	for n := 1; n <= 8; n++ {
+		p.unsafe_appendPin(storedPin(int64(n), nil, nil, lockSite(n*100), lockSite(n*100+1)))
+	}
+	held := 0
+	for _, pin := range p.pins {
+		held += len(pin.GetNodes())
+	}
+	p.UnlockPin()
+
+	if want := 1 + 8*2; held != want {
+		t.Errorf("a nine-pin chain well inside both bounds holds %d settled transactions, want %d", held, want)
+	}
+}
+
+// One append has to be able to give back several commits' worth, not one.
+//
+// The rule this replaced released exactly one pin per append, on the reasoning
+// that appends happen one at a time so every pin passes the window edge once.
+// That holds for a bound measured in pins. It does not hold for a bound measured
+// in transactions: a single large commit can push the window over on its own, and
+// under a one-per-append rule the excess is then carried for as many appends as
+// it takes to walk it off - which on a node whose commits are large is never,
+// because each new commit adds more than the release gives back.
+//
+// So the shape here is many small commits and then one big one. The bound is 30;
+// twelve commits of 5 sit comfortably inside it, and the single commit of 200
+// that follows has to release essentially all of them in that one append.
+func TestOneAppendReleasesAsManyCommitsAsItTakes(t *testing.T) {
+	restoreSites, restorePins := pinBodyRetainSites, pinBodyRetainPins
+	pinBodyRetainSites, pinBodyRetainPins = 30, 1000
+	t.Cleanup(func() { pinBodyRetainSites, pinBodyRetainPins = restoreSites, restorePins })
+
+	p := newNodeTxPin()
+	p.LockPin()
+	defer p.UnlockPin()
+	p.unsafe_appendPin(storedPin(0, nil, nil, lockSite(1)))
+	for n := 1; n <= 12; n++ {
+		p.unsafe_appendPin(storedPin(int64(n), nil, nil, lockSite(n*10), lockSite(n*10+1),
+			lockSite(n*10+2), lockSite(n*10+3), lockSite(n*10+4)))
+	}
+	beforeBig := 0
+	for _, pin := range p.pins {
+		beforeBig += len(pin.GetNodes())
+	}
+
+	big := make([]*Node, 200)
+	for i := range big {
+		big[i] = lockSite(50000 + i)
+	}
+	p.unsafe_appendPin(storedPin(13, nil, nil, big...))
+
+	afterBig := 0
+	for i, pin := range p.pins {
+		if i == len(p.pins)-1 {
+			continue // the commit just appended is always whole
+		}
+		afterBig += len(pin.GetNodes())
+	}
+	if afterBig > 10 {
+		t.Errorf("one commit of 200 against a %d-site bound left %d earlier transactions held (was %d before it) - the release gave back one commit and stopped",
+			pinBodyRetainSites, afterBig, beforeBig)
+	}
+}
