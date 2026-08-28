@@ -15,11 +15,27 @@ message ConfirmedSet {
     repeated bytes siteIds = 2; // uuid bytes
 }
 
-// PinProposal - the proposer's candidate commit transaction for an epoch.
+// PinProposal - the proposer's candidate commit transaction for an epoch, with
+// the evidence that justifies it.
+//
+// A validator checks a proposal by counting, in the reports it holds, how many
+// validators reported each site the proposal settles. Doing that against only
+// the reports that happened to arrive makes the check depend on delivery order:
+// a report still in flight is a report not counted, so a receiver under-counts
+// and refuses a proposal that is perfectly justified. With no slack in the
+// quorum - three live validators and a quorum of three - that is not a rare
+// race, it is the normal case, and the chain stops.
+//
+// So the proposer carries the signed reports it counted. They are the same
+// messages the receiver would have received anyway, each still signed by the
+// validator that wrote it, so folding them in adds no trust: the receiver
+// verifies every one before counting it, and reaches the same conclusion the
+// proposer did from the same evidence.
 message PinProposal {
     int64  epoch = 1;
     uint32 round = 2; // view-change round; the proposer rotates with it
     TxPin  pin   = 3;
+    repeated ConsensusEnvelope reports = 4; // signed ConfirmedSet messages
 }
 
 // PinVote - one validator's agreement with a proposal, as a signature over the

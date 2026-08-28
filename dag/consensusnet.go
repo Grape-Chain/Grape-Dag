@@ -60,6 +60,9 @@ type consensusDriver struct {
 	// epochOpened - when the current epoch was opened, so a chain with nothing
 	// to settle re-opens once per interval rather than once per tick.
 	epochOpened time.Time
+	// reported - when we last said what we hold confirmed, so the repeat is once
+	// per commit interval rather than once per tick.
+	reported time.Time
 }
 
 // pinCandidate - what building a commit transaction changed, and how to put it
@@ -144,13 +147,35 @@ func (d *consensusDriver) drive() {
 		return
 	}
 	d.engine.tick()
+
+	// Say again what we hold confirmed. Validators open an epoch when they see
+	// the chain move, which they do at different moments, so a report sent once
+	// at the open reaches only the validators that were already in the epoch.
+	// See consensusEngine.rebroadcastReport.
+	d.mu.Lock()
+	due := time.Since(d.reported) >= d.interval
+	if due {
+		d.reported = time.Now()
+	}
+	d.mu.Unlock()
+	if due {
+		d.engine.rebroadcastReport()
+	}
 }
 
 func (d *consensusDriver) openEpoch(epoch int64) {
 	d.mu.Lock()
 	d.epochOpened = time.Now()
+	d.reported = d.epochOpened
 	d.mu.Unlock()
 	d.engine.startEpoch(epoch)
+	// One line per commit interval, and the only place the protocol's state is
+	// visible from outside. A quorum that never forms looks exactly like an idle
+	// chain from the ledger alone; this says which it is.
+	_, round, phase, reports, _ := d.engine.state()
+	logger.Infof("[consensus] Epoch %d round %d open: %d site(s) held confirmed, %d report(s), proposer %s, phase %s",
+		epoch, round, len(d.confirmedSites()), reports,
+		shortKey(d.engine.proposerFor(epoch, round)), phase)
 }
 
 func (d *consensusDriver) epochStarted() time.Time {
@@ -185,10 +210,18 @@ func (d *consensusDriver) buildPin(epoch int64, ids []uuid.UUID) (*pb.TxPin, err
 	d.rollbackCandidate("superseded by a new proposal")
 
 	nodes := confirmedNodesFor(ids)
-	if len(nodes) != len(ids) {
-		// Every site in the agreed set has to be one we hold, or the commit
-		// transaction we propose would not be the one we voted to propose.
-		return nil, errors.Errorf("agreed on %d sites but hold %d of them", len(ids), len(nodes))
+	if len(nodes) == 0 {
+		return nil, errors.Errorf("none of the %d agreed site(s) are in this node's graph", len(ids))
+	}
+	if len(nodes) < len(ids) {
+		// Settle what we hold rather than nothing. The agreed set is what a
+		// quorum reported, which can name a site this node has not seen; every
+		// site we do settle is still quorum-reported, so a smaller commit
+		// transaction is safe and the rest wait for the next one. Refusing to
+		// build unless we held every agreed site stopped the chain outright on a
+		// four-validator network the moment one validator's view lagged.
+		logger.Infof("[consensus] Epoch %d: settling %d of the %d agreed site(s); the rest are not in this node's graph yet",
+			epoch, len(nodes), len(ids))
 	}
 
 	cand := &pinCandidate{epoch: epoch, cache: newWalletCache()}

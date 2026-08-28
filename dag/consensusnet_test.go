@@ -423,3 +423,60 @@ func inUnconfirmedPool(id string) bool {
 	})
 	return len(found) > 0
 }
+
+// A node that starts a chain has to be ready to apply commit transactions from
+// others. In leader mode the node that starts a chain is also the only node
+// that settles it, so this never mattered; under a validator quorum every
+// validator publishes when it is the proposer, and a chain-starting node that
+// stayed unready would watch the network settle the ledger and stay at its own
+// genesis for ever. Observed on a four-validator network: the other three
+// reached commit transaction 11 while the genesis node sat at 1.
+func TestAChainStartingNodeIsReadyToApplyOthersCommitTransactions(t *testing.T) {
+	recoveryFixture(t, t.TempDir())
+	prevWallet, prevDag := dagWallet, _dag_
+	dagWallet = testPinWallet
+	// Wallet() reads the package-level wallet, so a bare Dag is enough here.
+	_dag_ = &Dag{}
+	t.Cleanup(func() { dagWallet, _dag_ = prevWallet, prevDag })
+
+	if _pins_.IsReady() {
+		t.Fatal("a node with no chain reports itself ready")
+	}
+	_pins_.set(paymentSite(0, 1, 2, 1000), addrStr(1))
+	if !_pins_.IsReady() {
+		t.Fatal("a node that started a chain is not ready to apply commit transactions from others")
+	}
+}
+
+// copyFrom took only the destination's lock while iterating the source's map,
+// which crashed the process with "concurrent map iteration and map write" the
+// moment anything else wrote to the source. A validator snapshots the live
+// cache before building a commit transaction, so the ordinary path reaches it.
+func TestCopyingTheWalletCacheIsSafeWhileItIsBeingWritten(t *testing.T) {
+	source := newWalletCache()
+	for i := 0; i < 64; i++ {
+		source.setBalance(addrStr(byte(i)), big.NewInt(int64(i)))
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			source.setBalance(addrStr(byte(i%200)), big.NewInt(int64(i)))
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		if err := newWalletCache().copyFrom(source); err != nil {
+			t.Fatalf("copying: %s", err.Error())
+		}
+	}
+	close(stop)
+	<-done
+}

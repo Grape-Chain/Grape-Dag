@@ -146,6 +146,9 @@ type consensusEngine struct {
 
 	// reports - epoch t1: which sites each validator says are confirmed.
 	reports map[string]map[uuid.UUID]struct{}
+	// reportEnvelopes - the signed message each report arrived in, kept so a
+	// proposal can carry the evidence that justifies it. See PinProposal.
+	reportEnvelopes map[string]*pb.ConsensusEnvelope
 	// proposal - the commit transaction under consideration, and its hash.
 	proposal     *pb.TxPin
 	proposalHash []byte
@@ -197,17 +200,18 @@ func newConsensusEngine(self *grape_wallet.Wallet, validators []string, quorum i
 	}
 	sort.Strings(sorted)
 	return &consensusEngine{
-		self:        self,
-		selfKey:     strings.ToLower(hex.EncodeToString(*self.PublicKey())),
-		validators:  sorted,
-		quorum:      quorum,
-		net:         net,
-		timing:      timingFor(interval),
-		phase:       phaseIdle,
-		reports:     map[string]map[uuid.UUID]struct{}{},
-		votes:       map[string]*pb.ValidatorSignature{},
-		viewChanges: map[string]struct{}{},
-		pending:     map[int64][]*pb.ConsensusEnvelope{},
+		self:            self,
+		selfKey:         strings.ToLower(hex.EncodeToString(*self.PublicKey())),
+		validators:      sorted,
+		quorum:          quorum,
+		net:             net,
+		timing:          timingFor(interval),
+		phase:           phaseIdle,
+		reports:         map[string]map[uuid.UUID]struct{}{},
+		reportEnvelopes: map[string]*pb.ConsensusEnvelope{},
+		votes:           map[string]*pb.ValidatorSignature{},
+		viewChanges:     map[string]struct{}{},
+		pending:         map[int64][]*pb.ConsensusEnvelope{},
 	}, nil
 }
 
@@ -244,24 +248,13 @@ func (e *consensusEngine) unsafeStartEpoch(epoch int64) {
 	e.round = 0
 	e.phase = phaseCollecting
 	e.reports = map[string]map[uuid.UUID]struct{}{}
+	e.reportEnvelopes = map[string]*pb.ConsensusEnvelope{}
 	e.votes = map[string]*pb.ValidatorSignature{}
 	e.viewChanges = map[string]struct{}{}
 	e.proposal, e.proposalHash = nil, nil
 	e.deadline = e.net.now().Add(e.timing.collect)
 
-	sites := e.net.confirmedSites()
-	msg := &pb.ConfirmedSet{Epoch: epoch}
-	for _, id := range sites {
-		msg.SiteIds = append(msg.SiteIds, append([]byte(nil), id[:]...))
-	}
-	// Our own report counts, and is recorded here rather than waiting for our
-	// own broadcast to come back to us.
-	e.recordReport(e.selfKey, sites)
-	if err := e.sign(&pb.ConsensusEnvelope{
-		Payload: &pb.ConsensusEnvelope_Confirmed{Confirmed: msg},
-	}); err != nil {
-		logger.Errorf("[consensus] Cannot sign our confirmed set for epoch %d: %s", epoch, err.Error())
-	}
+	e.unsafeReport()
 
 	// Anything that arrived for this epoch before we opened it counts now.
 	held := e.pending[epoch]
@@ -276,6 +269,46 @@ func (e *consensusEngine) unsafeStartEpoch(epoch int64) {
 			logger.Debugf("[consensus] Held message for epoch %d from %s: %s", epoch, shortKey(key), err.Error())
 		}
 	}
+}
+
+// unsafeReport - say what we hold confirmed for the epoch that is open. Caller
+// holds the lock.
+func (e *consensusEngine) unsafeReport() {
+	sites := e.net.confirmedSites()
+	msg := &pb.ConfirmedSet{Epoch: e.epoch}
+	for _, id := range sites {
+		msg.SiteIds = append(msg.SiteIds, append([]byte(nil), id[:]...))
+	}
+	// Our own report counts, and is recorded here rather than waiting for our
+	// own broadcast to come back to us.
+	e.recordReport(e.selfKey, sites)
+	env := &pb.ConsensusEnvelope{Payload: &pb.ConsensusEnvelope_Confirmed{Confirmed: msg}}
+	if err := e.sign(env); err != nil {
+		logger.Errorf("[consensus] Cannot sign our confirmed set for epoch %d: %s", e.epoch, err.Error())
+		return
+	}
+	// Kept signed, so a proposal we make can carry it as evidence.
+	e.reportEnvelopes[e.selfKey] = env
+}
+
+// rebroadcastReport - say again what we hold confirmed, for the epoch already
+// open.
+//
+// A report is a snapshot, sent once when an epoch opens, and validators do not
+// open epochs at the same instant - they open them when the chain moves, which
+// they learn at different times. Without repetition the first report a
+// validator ever sends is the only one the others hold, so a validator that
+// opened its epoch a second later never appears in anyone else's count and the
+// quorum never forms. Repeating it also carries the sites confirmed since,
+// which is what lets an epoch that opened with nothing settleable become
+// settleable without being restarted.
+func (e *consensusEngine) rebroadcastReport() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.phase == phaseIdle || e.phase == phaseDone {
+		return
+	}
+	e.unsafeReport()
 }
 
 // epochOf - which epoch a message concerns, and whether it names one at all.
@@ -293,12 +326,24 @@ func epochOf(env *pb.ConsensusEnvelope) (int64, bool) {
 	return 0, false
 }
 
+// recordReport - fold a validator's report into what we hold for it.
+//
+// Merged, not replaced. A report says "these sites are confirmed", and within
+// an epoch that statement stays true - a site stops being confirmed only by
+// being settled, which ends the epoch. Replacing would make a validator's
+// contribution jump around with the timing of its repeats, so a site could be
+// counted at the proposer and not at a receiver purely because their copies of
+// the same validator's report were taken at different moments. Merging makes
+// each validator's contribution grow monotonically, so evidence is never lost.
 func (e *consensusEngine) recordReport(key string, sites []uuid.UUID) {
-	set := make(map[uuid.UUID]struct{}, len(sites))
+	set := e.reports[key]
+	if set == nil {
+		set = make(map[uuid.UUID]struct{}, len(sites))
+		e.reports[key] = set
+	}
 	for _, id := range sites {
 		set[id] = struct{}{}
 	}
-	e.reports[key] = set
 }
 
 // agreedSites - the sites at least a quorum of validators reported, in a stable
@@ -318,6 +363,59 @@ func (e *consensusEngine) agreedSites() []uuid.UUID {
 	}
 	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
 	return out
+}
+
+// reportEvidence - the signed reports this node counted, in a stable order, to
+// travel with a proposal. See PinProposal for why a proposal carries them.
+// Caller holds the lock.
+func (e *consensusEngine) reportEvidence() []*pb.ConsensusEnvelope {
+	out := make([]*pb.ConsensusEnvelope, 0, len(e.reportEnvelopes))
+	for _, key := range e.validators {
+		if env, ok := e.reportEnvelopes[key]; ok && env != nil {
+			out = append(out, env)
+		}
+	}
+	return out
+}
+
+// absorbEvidence - fold the reports a proposal carries into our own, after
+// checking each one as strictly as if it had arrived on its own.
+//
+// This adds no trust. Every report is signed by the validator that wrote it and
+// is verified here against that signature and against the validator set, so a
+// proposer can only pass on what its peers actually said. What it removes is
+// the dependence on delivery order: two validators counting the same evidence
+// reach the same conclusion. Caller holds the lock.
+func (e *consensusEngine) absorbEvidence(reports []*pb.ConsensusEnvelope) {
+	for _, env := range reports {
+		if env == nil {
+			continue
+		}
+		confirmed, ok := env.Payload.(*pb.ConsensusEnvelope_Confirmed)
+		if !ok || confirmed.Confirmed == nil || confirmed.Confirmed.Epoch != e.epoch {
+			continue
+		}
+		key := strings.ToLower(hex.EncodeToString(env.Pk))
+		if !e.isValidator(key) {
+			continue
+		}
+		payload, err := consensusPayloadHash(env)
+		if err != nil {
+			continue
+		}
+		if !grape_wallet.NewDSA().Verify(grape_wallet.PublicKey(env.Pk), env.Sign, payload) {
+			logger.Warnf("[consensus] A proposal carried a report from %s that is not correctly signed", shortKey(key))
+			continue
+		}
+		sites := make([]uuid.UUID, 0, len(confirmed.Confirmed.SiteIds))
+		for _, raw := range confirmed.Confirmed.SiteIds {
+			if id, err := uuid.FromBytes(raw); err == nil {
+				sites = append(sites, id)
+			}
+		}
+		e.recordReport(key, sites)
+		e.reportEnvelopes[key] = env
+	}
 }
 
 // justified - can this site be settled on the evidence we hold? Used to check a
@@ -416,7 +514,7 @@ func (e *consensusEngine) deliver(env *pb.ConsensusEnvelope) error {
 func (e *consensusEngine) unsafeRoute(key string, env *pb.ConsensusEnvelope) error {
 	switch p := env.Payload.(type) {
 	case *pb.ConsensusEnvelope_Confirmed:
-		return e.onConfirmedSet(key, p.Confirmed)
+		return e.onConfirmedSet(key, env, p.Confirmed)
 	case *pb.ConsensusEnvelope_Proposal:
 		return e.onProposal(key, p.Proposal)
 	case *pb.ConsensusEnvelope_Vote:
@@ -427,11 +525,17 @@ func (e *consensusEngine) unsafeRoute(key string, env *pb.ConsensusEnvelope) err
 	return errors.New("consensus envelope carries no payload")
 }
 
-func (e *consensusEngine) onConfirmedSet(key string, msg *pb.ConfirmedSet) error {
-	if msg.Epoch != e.epoch || e.phase != phaseCollecting {
-		// Not this epoch, or we have moved past collecting. Reports for an epoch
-		// we have finished are not evidence for the next one.
+func (e *consensusEngine) onConfirmedSet(key string, env *pb.ConsensusEnvelope, msg *pb.ConfirmedSet) error {
+	if msg.Epoch != e.epoch {
+		// A report about an epoch we are not in is not evidence for the one we
+		// are. Reports are accepted in any phase of this epoch, though: a report
+		// that arrives after voting opened is still a true statement about what
+		// that validator holds confirmed, and refusing it only makes this node's
+		// evidence differ from everyone else's.
 		return nil
+	}
+	if env != nil {
+		e.reportEnvelopes[key] = env
 	}
 	sites := make([]uuid.UUID, 0, len(msg.SiteIds))
 	for _, raw := range msg.SiteIds {
@@ -452,19 +556,25 @@ func (e *consensusEngine) unsafeOpenVoting() {
 	if e.phase != phaseCollecting {
 		return
 	}
+	sites := e.agreedSites()
+	if len(sites) == 0 {
+		// Nothing a quorum agrees is settled yet. Keep collecting rather than
+		// opening a vote on nothing: an epoch is not over because it is not
+		// ready, and the reports that would make it ready are still arriving.
+		// Ending the epoch here instead would need every validator to restart it
+		// in step, which nothing makes them do.
+		logger.Debugf("[consensus] Epoch %d round %d: nothing %d of %d validator(s) agree is settled yet, from %d report(s)",
+			e.epoch, e.round, e.quorum, len(e.validators), len(e.reports))
+		e.deadline = e.net.now().Add(e.timing.collect)
+		return
+	}
 	e.phase = phaseVoting
 	e.deadline = e.net.now().Add(e.timing.vote)
 	if e.proposerFor(e.epoch, e.round) != e.selfKey {
 		return
 	}
-	sites := e.agreedSites()
-	if len(sites) == 0 {
-		// Nothing a quorum agrees is settled. That is not a failure - it is an
-		// epoch with nothing to commit - so there is no proposal and no view
-		// change to make.
-		e.phase = phaseDone
-		return
-	}
+	logger.Infof("[consensus] Epoch %d round %d: proposing %d site(s) agreed by at least %d of %d validator(s)",
+		e.epoch, e.round, len(sites), e.quorum, len(e.validators))
 	pin, err := e.net.buildPin(e.epoch, sites)
 	if err != nil || pin == nil {
 		logger.Errorf("[consensus] Cannot build a commit transaction for epoch %d: %v", e.epoch, err)
@@ -472,7 +582,7 @@ func (e *consensusEngine) unsafeOpenVoting() {
 	}
 	if err := e.sign(&pb.ConsensusEnvelope{
 		Payload: &pb.ConsensusEnvelope_Proposal{Proposal: &pb.PinProposal{
-			Epoch: e.epoch, Round: e.round, Pin: pin,
+			Epoch: e.epoch, Round: e.round, Pin: pin, Reports: e.reportEvidence(),
 		}},
 	}); err != nil {
 		logger.Errorf("[consensus] Cannot broadcast our proposal for epoch %d: %s", e.epoch, err.Error())
@@ -503,6 +613,9 @@ func (e *consensusEngine) onProposal(key string, msg *pb.PinProposal) error {
 	if msg.Pin.PinNumber != e.epoch {
 		return errors.Errorf("proposal for epoch %d carries a commit transaction numbered %d", e.epoch, msg.Pin.PinNumber)
 	}
+	// Count the proposer's evidence alongside our own before judging what it
+	// settles, so the same reports produce the same verdict on both sides.
+	e.absorbEvidence(msg.Reports)
 	// The check that makes the quorum mean something: every site settled here has
 	// to be one a quorum of validators reported, on our own evidence.
 	for _, site := range msg.Pin.Sites {
@@ -639,7 +752,7 @@ func (e *consensusEngine) unsafeAdvanceRound() {
 	}
 	if err := e.sign(&pb.ConsensusEnvelope{
 		Payload: &pb.ConsensusEnvelope_Proposal{Proposal: &pb.PinProposal{
-			Epoch: e.epoch, Round: e.round, Pin: pin,
+			Epoch: e.epoch, Round: e.round, Pin: pin, Reports: e.reportEvidence(),
 		}},
 	}); err != nil {
 		logger.Errorf("[consensus] Cannot broadcast our proposal for epoch %d round %d: %s", e.epoch, e.round, err.Error())
@@ -666,13 +779,15 @@ func (e *consensusEngine) tick() {
 		e.unsafeOpenVoting()
 	case phaseVoting:
 		if len(e.agreedSites()) == 0 {
-			// Nothing a quorum agrees is settled, so there is nothing the
-			// proposer can have failed to propose and no reason to replace it.
-			// Without this an idle chain calls a view change every voting window
-			// for ever, churning the proposer and logging a warning each time to
-			// report that nothing happened. The phase is left alone so that a
-			// proposal still arriving is still voted on.
-			e.deadline = e.net.now().Add(e.timing.vote)
+			// What the round was about is no longer agreed - a validator's
+			// report shrank, or the sites were settled by a commit transaction
+			// that arrived meanwhile. There is nothing the proposer can have
+			// failed to propose, so this is not a reason to replace it; without
+			// this an idle chain would call a view change every voting window
+			// for ever. Back to collecting, so a later quorum can open a vote on
+			// something real.
+			e.phase = phaseCollecting
+			e.deadline = e.net.now().Add(e.timing.collect)
 			return
 		}
 		// The round produced nothing in time. Say so; a quorum saying the same

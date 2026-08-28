@@ -179,13 +179,36 @@ func (wc *WalletCache) setBalance(wallet string, balance *big.Int) {
 	wc.cache[wallet] = []*Pair[string, *big.Int]{newPair("recovered", big.NewInt(0).Set(balance))}
 }
 
-func (wc *WalletCache) copyFrom(another *WalletCache) error {
+// snapshot - a copy of what this cache holds, taken under its own lock.
+func (wc *WalletCache) snapshot() map[string][]*Pair[string, *big.Int] {
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
-	wc.cache = make(map[string][]*Pair[string, *big.Int])
-	for address, balances := range another.cache {
-		wc.cache[address] = copyBalances(balances)
+	out := make(map[string][]*Pair[string, *big.Int], len(wc.cache))
+	for address, balances := range wc.cache {
+		out[address] = copyBalances(balances)
 	}
+	return out
+}
+
+// copyFrom - replace what this cache holds with what another one holds.
+//
+// The source is read through snapshot(), under the source's own lock. Reading
+// it directly took only the destination's lock, which is not the lock that
+// guards the map being iterated: a copy taken while any other goroutine wrote
+// to the source crashed the process with "concurrent map iteration and map
+// write". That was survivable while the only copy happened under the pin lock;
+// a validator snapshotting the live cache before building a commit transaction
+// made it reachable from the ordinary path.
+//
+// The two locks are never held at once, so there is no order to get wrong.
+func (wc *WalletCache) copyFrom(another *WalletCache) error {
+	if another == nil {
+		return nil
+	}
+	copied := another.snapshot()
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	wc.cache = copied
 	return nil
 }
 

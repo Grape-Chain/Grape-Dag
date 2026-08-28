@@ -187,6 +187,15 @@ func (p *NodeTxPin) set(genesis *Node, wallet string) {
 	pin.SignTx(_dag_.Wallet())
 
 	p.unsafe_appendPin(pin)
+	// This node has a chain of its own now, so it is ready to apply commit
+	// transactions from others. Only a node that synced one from a peer used to
+	// set this, because in leader mode the node that starts a chain is also the
+	// only node that ever settles it. Under a validator quorum every validator
+	// publishes when it is the proposer, so a chain-starting node that never
+	// became ready would refuse every commit transaction it did not build - it
+	// would watch the rest of the network settle the ledger and stay at its own
+	// genesis.
+	p.ready = true
 	// The genesis pin is where the initial offering enters the ledger, so it is
 	// both the store's record of the chain's identity and the only statement of
 	// where the money came from.

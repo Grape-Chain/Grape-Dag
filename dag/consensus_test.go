@@ -9,6 +9,7 @@ import (
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -39,6 +40,9 @@ type testCluster struct {
 
 	// published - agreed commit transactions, by whoever published them.
 	published []*pb.TxPin
+	// proposals - every proposal that went out, so a test can hand one to a
+	// validator that did not hear it.
+	proposals []*pb.ConsensusEnvelope
 	// silent - validators that send nothing (a crashed proposer).
 	silent map[int]bool
 	// deaf - validators that receive nothing (a partitioned node).
@@ -61,8 +65,27 @@ func (n *testNet) broadcast(env *pb.ConsensusEnvelope) error {
 	if n.cluster.silent[n.index] {
 		return nil
 	}
+	if _, isProposal := env.Payload.(*pb.ConsensusEnvelope_Proposal); isProposal {
+		// A copy, taken as it goes out. The engine keeps working on the same pin
+		// afterwards - unsafeTryCommit attaches the certificate to it - and a
+		// recorded pointer would show a message nobody sent, with a signature
+		// that no longer matches. Production marshals the envelope inside
+		// broadcast, so it takes its copy at the same moment.
+		if sent, ok := proto.Clone(env).(*pb.ConsensusEnvelope); ok {
+			n.cluster.proposals = append(n.cluster.proposals, sent)
+		}
+	}
 	n.cluster.queue = append(n.cluster.queue, env)
 	return nil
+}
+
+// lastProposal - the most recent proposal any validator sent.
+func (c *testCluster) lastProposal() *pb.ConsensusEnvelope {
+	c.t.Helper()
+	if len(c.proposals) == 0 {
+		c.t.Fatal("no proposal was made, so there is nothing to hand anyone")
+	}
+	return c.proposals[len(c.proposals)-1]
 }
 
 // drain - deliver everything in flight, and everything it causes, until the
@@ -748,5 +771,240 @@ func TestStateDoesNotCarryBetweenEpochs(t *testing.T) {
 	}
 	if got := second.Quorum.Round; got != 0 {
 		t.Fatalf("the second epoch started at round %d, so state carried over", got)
+	}
+}
+
+// ------------------------------------------------------- evidence
+
+// A validator judges a proposal by counting, in the reports it holds, how many
+// validators reported each site. Counting only the reports that happened to
+// arrive makes the verdict depend on delivery order, and with no slack in the
+// quorum - three live validators and a quorum of three - a single report still
+// in flight makes a receiver refuse a perfectly justified proposal. Observed on
+// a four-validator network: killing one validator livelocked the chain through
+// a hundred view changes without a single commit transaction.
+//
+// So a proposal carries the reports it was built from.
+func TestAProposalCarriesTheEvidenceThatJustifiesIt(t *testing.T) {
+	shared := testSites(3)
+	c := newTestCluster(t, 4, shared)
+	const epoch = 1
+
+	proposer := c.indexOfProposer(epoch, 0)
+	// This one hears nothing at all, so the only evidence it can possibly have
+	// is what the proposal brings with it.
+	isolated := (proposer + 1) % 4
+	c.deaf[isolated] = true
+
+	c.startEpoch(epoch)
+	c.advance(c.interval / 4)
+
+	env := c.lastProposal()
+	carried := env.GetProposal().GetReports()
+	if len(carried) < quorumFor(4) {
+		t.Fatalf("the proposal carries %d report(s), fewer than the quorum of %d it needs to justify itself",
+			len(carried), quorumFor(4))
+	}
+	if _, _, _, reports, _ := c.engines[isolated].state(); reports > 1 {
+		t.Fatalf("the isolated validator heard %d reports, so it is not isolated", reports)
+	}
+
+	if err := c.engines[isolated].deliver(env); err != nil {
+		t.Fatalf("a validator that heard no reports refused a proposal that carried them: %s", err.Error())
+	}
+	if votes := c.votesHeld(isolated); votes == 0 {
+		t.Fatal("the isolated validator did not vote for a proposal whose evidence it could check")
+	}
+}
+
+// Carrying the evidence adds no trust: every report is checked against the
+// validator set and its own signature before it is counted. A proposer cannot
+// manufacture agreement by attaching reports its peers never wrote.
+func TestAProposalCarryingForgedEvidenceIsStillRefused(t *testing.T) {
+	shared := testSites(3)
+	c := newTestCluster(t, 4, shared)
+	const epoch = 1
+
+	proposer := c.indexOfProposer(epoch, 0)
+	isolated := (proposer + 1) % 4
+	c.deaf[isolated] = true
+
+	c.startEpoch(epoch)
+	c.advance(c.interval / 4)
+
+	// The same proposal, with every carried report's signature broken.
+	env, ok := proto.Clone(c.lastProposal()).(*pb.ConsensusEnvelope)
+	if !ok {
+		t.Fatal("cannot copy the proposal")
+	}
+	for _, report := range env.GetProposal().GetReports() {
+		report.Sign[0] ^= 0xff
+	}
+	// Re-sign the envelope itself, so what fails is the evidence and not the
+	// message carrying it.
+	c.sign(proposer, env)
+
+	if err := c.engines[isolated].deliver(env); err == nil {
+		t.Fatal("a proposal justified only by forged reports was accepted")
+	}
+	if votes := c.votesHeld(isolated); votes != 0 {
+		t.Fatalf("the validator voted on forged evidence (%d vote(s) held)", votes)
+	}
+}
+
+// A report says "these sites are confirmed", and within an epoch that stays
+// true. Replacing a validator's report with its next one would make its
+// contribution jump around with the timing of its repeats, so the same site
+// could be counted at the proposer and not at a receiver purely because their
+// copies were taken at different moments.
+func TestReportsAccumulateRatherThanReplace(t *testing.T) {
+	c := newTestCluster(t, 4, nil)
+	const epoch = 1
+	c.startEpoch(epoch)
+
+	first := testSites(2)
+	second := testSites(2)
+	sender := 1
+	target := 0
+
+	for _, batch := range [][]uuid.UUID{first, second} {
+		msg := &pb.ConfirmedSet{Epoch: epoch}
+		for _, id := range batch {
+			msg.SiteIds = append(msg.SiteIds, append([]byte(nil), id[:]...))
+		}
+		env := c.sign(sender, &pb.ConsensusEnvelope{
+			Payload: &pb.ConsensusEnvelope_Confirmed{Confirmed: msg},
+		})
+		if err := c.engines[target].deliver(env); err != nil {
+			t.Fatalf("delivering a report: %s", err.Error())
+		}
+	}
+
+	c.engines[target].mu.Lock()
+	held := len(c.engines[target].reports[c.keys[sender]])
+	c.engines[target].mu.Unlock()
+	if held != len(first)+len(second) {
+		t.Fatalf("the validator holds %d site(s) for a peer that reported %d then %d: the second report replaced the first",
+			held, len(first), len(second))
+	}
+}
+
+// A report that arrives after voting opened is still a true statement about
+// what that validator holds confirmed. Refusing it only makes this node's
+// evidence differ from everyone else's, which is the thing that stops the chain.
+func TestAReportIsStillCountedAfterVotingOpens(t *testing.T) {
+	c := newTestCluster(t, 4, testSites(2))
+	const epoch = 1
+	proposer := c.indexOfProposer(epoch, 0)
+	c.startEpoch(epoch)
+	c.advance(c.interval / 4)
+
+	if _, _, phase, _, _ := c.engines[proposer].state(); phase == phaseCollecting {
+		t.Fatal("voting never opened, so the test proves nothing")
+	}
+
+	late := testSites(1)
+	msg := &pb.ConfirmedSet{Epoch: epoch}
+	msg.SiteIds = append(msg.SiteIds, append([]byte(nil), late[0][:]...))
+	sender := (proposer + 1) % 4
+	env := c.sign(sender, &pb.ConsensusEnvelope{
+		Payload: &pb.ConsensusEnvelope_Confirmed{Confirmed: msg},
+	})
+	if err := c.engines[proposer].deliver(env); err != nil {
+		t.Fatalf("delivering a late report: %s", err.Error())
+	}
+
+	c.engines[proposer].mu.Lock()
+	_, counted := c.engines[proposer].reports[c.keys[sender]][late[0]]
+	c.engines[proposer].mu.Unlock()
+	if !counted {
+		t.Fatal("a report that arrived after voting opened was thrown away")
+	}
+}
+
+// indexOfValidator - which validator a public key belongs to, or -1.
+func (c *testCluster) indexOfValidator(pk []byte) int {
+	want := hex.EncodeToString(pk)
+	for i, k := range c.keys {
+		if k == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// isolatedProposal - a proposal, and a validator that heard nothing else, so
+// what the proposal carries is the only evidence in play. The tests below
+// damage the carried reports in one way each and check that the damage is
+// noticed.
+func isolatedProposal(t *testing.T) (*testCluster, int, *pb.ConsensusEnvelope) {
+	t.Helper()
+	c := newTestCluster(t, 4, testSites(3))
+	const epoch = 1
+	proposer := c.indexOfProposer(epoch, 0)
+	isolated := (proposer + 1) % 4
+	c.deaf[isolated] = true
+	c.startEpoch(epoch)
+	c.advance(c.interval / 4)
+
+	env, ok := proto.Clone(c.lastProposal()).(*pb.ConsensusEnvelope)
+	if !ok {
+		t.Fatal("cannot copy the proposal")
+	}
+	return c, isolated, env
+}
+
+// A report is evidence because a validator wrote it. One signed by someone
+// outside the set is not evidence at all, however well formed, or a proposer
+// could manufacture a quorum out of keys it made up.
+func TestAProposalCarryingReportsFromOutsidersIsRefused(t *testing.T) {
+	c, isolated, env := isolatedProposal(t)
+
+	for _, report := range env.GetProposal().GetReports() {
+		outsider := grape_wallet.NewWallet()
+		report.Pk = *outsider.PublicKey()
+		report.Sign = nil
+		payload, err := consensusPayloadHash(report)
+		if err != nil {
+			t.Fatalf("hashing a report: %s", err.Error())
+		}
+		report.Sign = grape_wallet.NewDSA().Sign(*outsider.PrivateKey(), payload)
+	}
+	c.sign(c.indexOfProposer(1, 0), env)
+
+	if err := c.engines[isolated].deliver(env); err == nil {
+		t.Fatal("a proposal justified only by reports from outside the validator set was accepted")
+	}
+	if votes := c.votesHeld(isolated); votes != 0 {
+		t.Fatalf("the validator voted on evidence from outsiders (%d vote(s) held)", votes)
+	}
+}
+
+// A report names the epoch it is about. One about a different epoch says
+// nothing about this one - the sites it lists may already have been settled -
+// so replaying old reports must not justify a new commit transaction.
+func TestAProposalCarryingReportsFromAnotherEpochIsRefused(t *testing.T) {
+	c, isolated, env := isolatedProposal(t)
+
+	for _, report := range env.GetProposal().GetReports() {
+		confirmed, ok := report.Payload.(*pb.ConsensusEnvelope_Confirmed)
+		if !ok {
+			t.Fatal("a carried report is not a confirmed set")
+		}
+		author := c.indexOfValidator(report.Pk)
+		if author < 0 {
+			t.Fatal("a carried report is not from a validator")
+		}
+		// Genuinely signed by its author, but about a different epoch.
+		confirmed.Confirmed.Epoch = 99
+		c.sign(author, report)
+	}
+	c.sign(c.indexOfProposer(1, 0), env)
+
+	if err := c.engines[isolated].deliver(env); err == nil {
+		t.Fatal("a proposal justified only by reports about another epoch was accepted")
+	}
+	if votes := c.votesHeld(isolated); votes != 0 {
+		t.Fatalf("the validator voted on evidence from another epoch (%d vote(s) held)", votes)
 	}
 }
