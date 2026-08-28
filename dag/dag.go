@@ -67,6 +67,16 @@ var (
 	sliceArchive SliceArchive = nil
 )
 
+// traceSites - log a line for every site inserted and every approval made.
+//
+// Off unless -verbose is given. These lines were tied to peer.console, which is
+// also what decides whether the node logs at all: an operator who wanted any
+// log at all got a line per site and per approval with it, and one of them
+// walked the site's edges to format itself. A node under load wrote two hundred
+// megabytes of log in seven minutes, and writing it was the single largest
+// consumer of CPU in a profile of that node - ahead of signature verification.
+var traceSites bool
+
 // confirmations - how the DAG decides a site is confirmed and ready for a
 // commit transaction. Two implementations exist: ConfirmTracker, which measures
 // the share of current tips that confirm each site (the technical paper's
@@ -462,6 +472,9 @@ func Init() {
 	}
 	walletCache = newWalletCache()
 	walletCacheConfirmed = newWalletCache()
+	if x != nil {
+		traceSites = x.Host.Verbose > 0
+	}
 	dagWallet = initDagWallet(dagConfig)
 	confirmationCounter = newConfirmations(dagConfig)
 	if err := configurePinSigners(dagConfig.Pinsigners); err != nil {
@@ -628,7 +641,11 @@ func (dag *Dag) approveTx(nodes []*Node) bool {
 	goterators.ForEach(nodes, func(node *Node) {
 		if node != nil {
 			if err := dag.approveNode(node); err == nil {
-				utils.ColorizeInfo(logger, "Approved TX:[%s|%d.%d]", node.id.id.String(), node.id.idMajor, node.id.idMinor)
+				// Guarded at the call site, not inside the log call: the
+				// arguments are evaluated either way, and id.String() allocates.
+				if traceSites {
+					utils.ColorizeInfo(logger, "Approved TX:[%s|%d.%d]", node.id.id.String(), node.id.idMajor, node.id.idMinor)
+				}
 			} else {
 				utils.ColorizeError(logger, "Failed TX:[%s|%d.%d] err:", node.id.id.String(), node.id.idMajor, node.id.idMinor, err.Error())
 			}

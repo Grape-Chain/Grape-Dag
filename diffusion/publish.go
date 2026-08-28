@@ -113,11 +113,15 @@ func publish(ctx context.Context, topic *pubsub.Topic, statsId uuid.UUID, leader
 		} else {
 			stats.Enqueue(statsId, rec, stats.TX_TYPE_PUB, sz, diff)
 
-			buf := bytes.Buffer{}
-			for _, id := range rec.Ids.IDs {
-				buf.WriteString(id.Id.String() + " ")
+			// Built only when it will be printed: one uuid.String() and one
+			// string concatenation per approval, on the publish path.
+			if config.GetConfig().Host.Verbose > 0 {
+				buf := bytes.Buffer{}
+				for _, id := range rec.Ids.IDs {
+					buf.WriteString(id.Id.String() + " ")
+				}
+				utils.ColorizeInfo(logger, "[PUB] Tx:%s Approves:[ %s]", rec.Tx, buf.String())
 			}
-			utils.ColorizeInfo(logger, "[PUB] Tx:%s Approves:[ %s]", rec.Tx, buf.String())
 			if leader {
 				dag.GetDag().SyncUp()
 			}

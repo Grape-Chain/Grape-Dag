@@ -80,7 +80,9 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 	}
 
 	//dag.dag = updateFwdWeights(dag.dag, dag.links)
-	if peerConfig.Console > 0 {
+	// logLast reads the site's edges to format itself, so this is real graph
+	// work done only to produce a log line.
+	if traceSites {
 		dag.logLast("ADD:", node, 1)
 	}
 	return uuIDs, signatures, nil
