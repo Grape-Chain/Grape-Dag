@@ -119,6 +119,24 @@ func verifyWorkers() int {
 	return n
 }
 
+// Refusal reasons. Also the values of the reason label on
+// grape_sub_verify_rejected_total, so they are named rather than spelled out at
+// each site: a typo in a metric label is invisible until somebody needs it.
+const (
+	reasonUnmarshal     = "unmarshal"
+	reasonNoTransaction = "no_transaction"
+	reasonSignature     = "signature"
+	reasonTxID          = "tx_id"
+	reasonUnverified    = "unverified"
+	reasonBuild         = "build"
+)
+
+// refuse - the single place a refusal is counted.
+func refuse(reason string) verifiedRecord {
+	stats.SubVerifyRejected.WithLabelValues(reason).Inc()
+	return verifiedRecord{reason: reason}
+}
+
 // verifiedRecord - a gossip record whose transaction signature has been checked.
 //
 // The only thing that produces one with a non-nil rec is verifyRecord, and
@@ -132,6 +150,12 @@ func verifyWorkers() int {
 type verifiedRecord struct {
 	rec   *tx.GrapeTx
 	delay time.Duration
+	// reason - why a record was refused, and the label the refusal is counted
+	// under. Empty on acceptance. Carried on the value so that a test can
+	// assert which diagnostic a refusal produced and not only that it refused:
+	// two different faults refused for the same stated reason is a fault report
+	// nobody can act on.
+	reason string
 	// checkedSig - a copy of the signature that was actually verified.
 	//
 	// A bool would say "something was verified"; this says "this transaction
@@ -273,6 +297,14 @@ func startVerifyPipeline(workers int, deliver func(verifiedRecord)) *verifyPipel
 }
 
 // submit - hand one received message to the pipeline, waiting if it is full.
+//
+// The pipeline takes ownership of raw: a worker reads it on another goroutine,
+// so the caller must not reuse or alter the slice afterwards. pubsub allocates a
+// fresh slice per message when it unmarshals the RPC (the read buffer it pools
+// is copied out of), so passing msg.Data straight in is safe.
+//
+// Delivery order is the order in which callers won the ordered channel, so with
+// one submitter - which is what the subscriber has - it is arrival order.
 func (p *verifyPipeline) submit(raw []byte, from peer.ID) {
 	job := verifyJobPool.Get().(*verifyJob)
 	job.raw = raw
@@ -325,7 +357,7 @@ func (p *verifyPipeline) collect(deliver func(verifiedRecord)) {
 		// pipeline stands, which is the point of checking.
 		if !v.verifiedFor() {
 			logger.Errorf("[SUB] A record reached the collector without having been verified. Discarded")
-			stats.SubVerifyRejected.WithLabelValues("unverified").Inc()
+			stats.SubVerifyRejected.WithLabelValues(reasonUnverified).Inc()
 			continue
 		}
 		deliver(v)
@@ -352,16 +384,14 @@ func verifyRecord(raw []byte, from peer.ID) verifiedRecord {
 		// Transaction. A peer choosing to send rubbish should cost us this
 		// message and nothing else.
 		logger.Errorf("Failed to unmarshal tx. err: %s", err.Error())
-		stats.SubVerifyRejected.WithLabelValues("unmarshal").Inc()
-		return verifiedRecord{}
+		return refuse(reasonUnmarshal)
 	}
 	if rec.Transaction == nil {
 		// GrapeTxFromProtobuf leaves this nil for a record whose version it
 		// does not know, and every use of it below is a method call. One
 		// unrecognised version number was enough to stop the node.
 		logger.Warnf("[SUB] Record from %s carries no usable transaction. Discarded", from.String())
-		stats.SubVerifyRejected.WithLabelValues("no_transaction").Inc()
-		return verifiedRecord{}
+		return refuse(reasonNoTransaction)
 	}
 	rec.PeerID = from
 
@@ -375,15 +405,13 @@ func verifyRecord(raw []byte, from peer.ID) verifiedRecord {
 		if config.GetConfig() != nil && config.GetConfig().Host.Verbose > 1 {
 			logger.Warnf("[SUB] Refused tx \n%s\n", rec.Transaction.String())
 		}
-		stats.SubVerifyRejected.WithLabelValues("signature").Inc()
-		return verifiedRecord{}
+		return refuse(reasonSignature)
 	}
 	// Parsed here rather than in the collector because uuid.MustParse panics,
 	// and rec.Tx is a string chosen by whoever sent the message.
 	if _, err := uuid.Parse(rec.Tx); err != nil {
 		logger.Warnf("[SUB] Record from %s carries an unusable tx id %q. Discarded", from.String(), rec.Tx)
-		stats.SubVerifyRejected.WithLabelValues("tx_id").Inc()
-		return verifiedRecord{}
+		return refuse(reasonTxID)
 	}
 
 	//  time check
@@ -442,13 +470,18 @@ func (v verifiedRecord) verifiedFor() bool {
 // buildSite - encapsulate a verified transaction into a site and queue it for
 // insertion.
 //
-// Not fanned out, and not for want of trying: dag.NewDagNode increments
-// _dag_.prevMajor without synchronisation, so concurrent calls are a data race
-// on dag-wide state. Those version numbers are then overwritten by InsertTxDag
-// from the ones on the record, so on this path the increment is pure waste as
-// well as unsafe - but dag/node.go is not ours to change. Making prevMajor
-// atomic there would let the whole build move onto the workers and take the
-// remaining per-message work off this goroutine too.
+// Stays on the collector rather than moving onto the workers, now that
+// dag.NewDagNode takes its major id with one atomic add and is safe to call
+// concurrently. Two reasons, and the second is the real one:
+//
+//   - what is left here is a uuid, a base64 encode and a queue push, a couple of
+//     microseconds against the thirty to seventy the verify costs. Moving it
+//     would buy very little.
+//   - the collector is the ordering point, so it is single-threaded whatever
+//     happens, and the enqueue has to happen on it. Building here keeps
+//     verifyRecord free of the dag entirely, which is what lets the gate be
+//     tested without a configured graph. Trading that for two microseconds on a
+//     stage that is no longer the bottleneck is a bad trade.
 func buildSite(v verifiedRecord, statsId uuid.UUID) {
 	// The gate, checked where the site is actually made rather than only where
 	// the record was accepted. Impossible to fail as the pipeline stands; here
@@ -457,7 +490,7 @@ func buildSite(v verifiedRecord, statsId uuid.UUID) {
 	// worst outcome available.
 	if !v.verifiedFor() {
 		logger.Errorf("[SUB] Refusing a site whose transaction is not the one that was verified. Discarded")
-		stats.SubVerifyRejected.WithLabelValues("unverified").Inc()
+		stats.SubVerifyRejected.WithLabelValues(reasonUnverified).Inc()
 		return
 	}
 	rec := v.rec
@@ -471,7 +504,7 @@ func buildSite(v verifiedRecord, statsId uuid.UUID) {
 		// Still reachable: NewDagNode also refuses a transaction from another
 		// network, whatever the verify flag says.
 		logger.Warnf("[SUB] Tx \n%s\n cannot be verified. Discrarded", rec.Transaction.String())
-		stats.SubVerifyRejected.WithLabelValues("build").Inc()
+		stats.SubVerifyRejected.WithLabelValues(reasonBuild).Inc()
 		return
 	}
 	// The claim travels on the record, because this is a site we built from
@@ -497,10 +530,19 @@ func buildSite(v verifiedRecord, statsId uuid.UUID) {
 
 func runInsert(wg *sync.WaitGroup, leader bool) {
 	defer wg.Done()
-	// warnAt - the depth at which the queue is worth a line in the log. Left at
-	// the value it had, but stated against the ceiling so the message says how
-	// much room is left rather than just a number.
-	const warnAt = 500
+	// The depth at which the queue is worth a line in the log, as a fraction of
+	// the ceiling rather than a bare 500.
+	//
+	// 500 out of an undocumented 32768 is why "critically high: 32767" read as a
+	// mystery: the warning started at 1.5% full and said nothing about the
+	// ceiling, so by the time the number looked alarming the node had been
+	// warning for thirty thousand transactions. A quarter full, stated against
+	// the ceiling, is a warning an operator can act on - and the gauge is now the
+	// thing to watch anyway, so the log only has to say when to go and look.
+	warnAt := subintxq.Capacity() / 4
+	if warnAt < 1 {
+		warnAt = 1
+	}
 	for {
 		qmsg, sz, ok := subintxq.TryDequeue()
 		if !ok {
@@ -514,7 +556,7 @@ func runInsert(wg *sync.WaitGroup, leader bool) {
 			break
 		}
 		if sz >= warnAt {
-			logger.Warnf("DAG Insert queue size is critically high: %d of %d. Reduce the transaction rate to avoid stalling the producers",
+			logger.Warnf("DAG Insert queue depth is %d of %d. At the ceiling the producers are held, not dropped; reduce the transaction rate",
 				sz, subintxq.Capacity())
 		}
 		err := dag.GetDag().InsertTxDag(qmsg.vertex, qmsg.id, qmsg.idMajor, qmsg.idMinor, qmsg.targetIds...)

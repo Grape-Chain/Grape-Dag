@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/vm"
 )
 
@@ -68,7 +69,7 @@ func TestACommitTransactionBuiltAgainstAMovedHeadIsDiscarded(t *testing.T) {
 	fundedChainStart(t, p, 8)
 
 	head := p.headSnapshot()
-	built, err := p.buildCheckpointed(head, paymentsFrom(1, 4, 8), nil)
+	built, err := p.buildCheckpointed(head, prepareSites(paymentsFrom(1, 4, 8)), nil)
 	if err != nil {
 		t.Fatalf("building: %s", err.Error())
 	}
@@ -138,7 +139,7 @@ func TestABuildDoesNotWaitForTheChainLock(t *testing.T) {
 	go func() {
 		p.LockBuild()
 		defer p.UnlockBuild()
-		built, err := p.buildCheckpointed(head, paymentsFrom(2, 64, 8), nil)
+		built, err := p.buildCheckpointed(head, prepareSites(paymentsFrom(2, 64, 8)), nil)
 		if err != nil {
 			done <- nil
 			return
@@ -156,6 +157,40 @@ func TestABuildDoesNotWaitForTheChainLock(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		p.unlock()
 		t.Fatal("the build waited for the pin lock; it is meant to run with the lock released")
+	}
+}
+
+// What a commit transaction says about a site is read under the graph lock, and
+// that read happens before the pin lock is taken - never after it, which is the
+// documented inversion. Held here against the build to prove both halves: that
+// the build waits for the graph, and that it is not holding the pin lock while
+// it waits.
+func TestABuildReadsTheGraphBeforeItTakesThePinLock(t *testing.T) {
+	p := buildFixture(t)
+	fundedChainStart(t, p, 8)
+	prevDag := _dag_
+	_dag_ = &Dag{}
+	t.Cleanup(func() { _dag_ = prevDag })
+
+	_dag_.mux.Lock()
+	done := make(chan error, 1)
+	go func() { done <- p.add(paymentsFrom(3, 4, 8), nil) }()
+
+	select {
+	case <-done:
+		_dag_.mux.Unlock()
+		t.Fatal("the build finished while the graph was locked against it: it is reading the graph unlocked")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if !p.mu.TryLock() {
+		_dag_.mux.Unlock()
+		t.Fatal("the build holds the pin lock while it waits for the graph lock, which is the inversion that deadlocks")
+	}
+	p.mu.Unlock()
+	_dag_.mux.Unlock()
+
+	if err := <-done; err != nil {
+		t.Fatalf("adding once the graph was released: %s", err.Error())
 	}
 }
 
@@ -392,6 +427,23 @@ func TestAPinWithoutItsTransactionsIsNotServedToAPeer(t *testing.T) {
 	}
 }
 
+// The genesis pin a leader forms names the site it settles without carrying it -
+// see set() - so "holds no transactions" cannot be read as "was released".
+// Inferring one from the other refused to serve the opening pin of every
+// leader-started chain.
+func TestTheOpeningPinIsServedEvenThoughItCarriesNoTransactions(t *testing.T) {
+	p := &NodeTxPin{}
+	genesis := pb.NewTxPin([]byte{})
+	genesis.Sites = append(genesis.Sites, &pb.SiteID{Id: make([]byte, 16)})
+	p.lock("test")
+	p.unsafe_appendPin(genesis)
+	p.unlock()
+
+	if got := p.getAllFrom(0); len(got) != 1 {
+		t.Fatalf("served %d pin(s) from height 0; the opening pin has to be servable", len(got))
+	}
+}
+
 // ------------------------------------------------------------- benchmarks
 
 // benchBuildFixture - a chain with an opening statement, ready to build on.
@@ -434,9 +486,13 @@ func BenchmarkPinBuild(b *testing.B) {
 }
 
 // BenchmarkPinAddUnderReaderLoad - the whole leader path with the readers that
-// used to wait behind it: what a REST balance query, an eth-RPC height and the
-// insert path's balance lookup cost while a commit transaction is being formed.
-// Reported per commit, with the reads each commit made alongside it.
+// used to wait behind it: a REST balance query and an eth-RPC height, in a loop,
+// while commit transactions are formed.
+//
+// reads/commit is the number to read. ns/op is not comparable across a change
+// that unblocks the readers: they get through many times more work per commit
+// afterwards, and on a machine with no spare cores their CPU and their
+// allocations are counted against the commit that let them run.
 func BenchmarkPinAddUnderReaderLoad(b *testing.B) {
 	for _, sites := range []int{100, 1000} {
 		b.Run(fmt.Sprintf("sites=%d", sites), func(b *testing.B) {

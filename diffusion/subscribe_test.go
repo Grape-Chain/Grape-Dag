@@ -9,6 +9,7 @@ import (
 	"time"
 
 	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
+	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -76,23 +77,26 @@ func record(t testing.TB, transaction tx.Transaction) []byte {
 	return raw
 }
 
-// sink - collects what the pipeline delivers, and refuses anything that did not
-// come through the gate.
+// sink - collects what the pipeline delivers, re-checking each signature itself.
 //
-// The refusal is the point. A test that only counted deliveries would pass with
-// verification removed; this one records a failure, so removing the gate is
-// caught wherever the sink is used.
+// The re-check is the point, and it deliberately does not ask the pipeline
+// whether the record was verified: the question these tests are asking is
+// whether the pipeline let something unverifiable through, and taking the
+// pipeline's word for that answers nothing. It runs the real
+// tx.VerifySignature against whatever arrived, so any change that opens the
+// gate - in verifyRecord, in the collector, or in the gate predicate itself -
+// shows up here as an unverified delivery.
 type sink struct {
-	mu       sync.Mutex
-	nonces   []uint64
-	unverifi int
+	mu         sync.Mutex
+	nonces     []uint64
+	unverified int
 }
 
 func (s *sink) deliver(v verifiedRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !v.verifiedFor() {
-		s.unverifi++
+	if v.rec == nil || v.rec.Transaction == nil || v.rec.Transaction.VerifySignature() != nil {
+		s.unverified++
 		return
 	}
 	s.nonces = append(s.nonces, v.rec.Transaction.GetNonce())
@@ -101,7 +105,7 @@ func (s *sink) deliver(v verifiedRecord) {
 func (s *sink) result() ([]uint64, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]uint64(nil), s.nonces...), s.unverifi
+	return append([]uint64(nil), s.nonces...), s.unverified
 }
 
 func TestAnUnverifiableTransactionNeverReachesTheInsertQueue(t *testing.T) {
@@ -436,5 +440,102 @@ func TestAMalformedPublicKeyDoesNotStopTheStream(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != 10 || got[1] != 11 {
 		t.Fatalf("expected the two good records either side of the bad one, got %v", got)
+	}
+}
+
+// TestTheCollectorRefusesARecordThatDidNotComeFromTheVerifier - the gate is
+// enforced where records are handed on as well as where they are made, so that
+// changing either half alone cannot open it. Driven by hand, because the
+// verifier will not produce such a record.
+func TestTheCollectorRefusesARecordThatDidNotComeFromTheVerifier(t *testing.T) {
+	p := &verifyPipeline{
+		order:   make(chan *verifyJob, 4),
+		jobs:    make(chan *verifyJob),
+		workers: 1,
+	}
+	for _, forged := range []verifiedRecord{
+		// Never verified at all.
+		{rec: &tx.GrapeTx{Transaction: tamperedTx(t, 1)}},
+		// Carries a signature that was verified, but not this transaction's.
+		{rec: &tx.GrapeTx{Transaction: tamperedTx(t, 2)}, checkedSig: []byte("some other signature")},
+	} {
+		job := &verifyJob{out: make(chan verifiedRecord, 1)}
+		job.out <- forged
+		p.order <- job
+	}
+	close(p.order)
+
+	delivered := 0
+	p.collect(func(verifiedRecord) { delivered++ })
+	if delivered != 0 {
+		t.Fatalf("%d records that never went through the verifier were handed on", delivered)
+	}
+}
+
+// TestATransactionAlteredAfterVerificationIsRefused - checkedSig is a copy of
+// the signature rather than the transaction's own slice, so altering the
+// transaction in place after it was verified is caught. Aliasing the slice would
+// make the comparison a slice against itself, which is always equal.
+func TestATransactionAlteredAfterVerificationIsRefused(t *testing.T) {
+	v := verifyRecord(record(t, signedTx(t, 1)), peer.ID("test-peer"))
+	if !v.verifiedFor() {
+		t.Fatal("a valid record should pass the gate")
+	}
+	// In place, through the slice the transaction itself holds.
+	sig := v.rec.Transaction.GetSignature()
+	if len(sig) == 0 {
+		t.Fatal("expected the verified transaction to carry a signature")
+	}
+	sig[0] ^= 0xff
+	if v.verifiedFor() {
+		t.Fatal("altering the verified transaction's signature in place must be caught")
+	}
+}
+
+// TestBuildSiteRefusesARecordThatWasNotVerified - the last gate, at the point
+// the site is actually made and queued. Nothing verified reaches the graph
+// without passing this, and it refuses before it touches the dag, which is why
+// it can be tested without one.
+func TestBuildSiteRefusesARecordThatWasNotVerified(t *testing.T) {
+	subintxq = txqueue.NewLockFreeQueueOf[SubInTx](true)
+	before := subintxq.Len()
+
+	buildSite(verifiedRecord{rec: &tx.GrapeTx{Transaction: tamperedTx(t, 1)}}, uuid.Nil)
+	buildSite(verifiedRecord{}, uuid.Nil)
+
+	if got := subintxq.Len(); got != before {
+		t.Fatalf("an unverified record reached the insert queue: depth went from %d to %d", before, got)
+	}
+}
+
+// TestARecordWithNoUsableTransactionIsRefusedAndSaysWhy - GrapeTxFromProtobuf
+// leaves Transaction nil for a version it does not recognise, and every use of
+// it afterwards is a method call. One unrecognised version number was enough to
+// stop the node.
+//
+// The refusal reason is asserted, not just the refusal: the recover in
+// verifySignature would refuse this record anyway, so without checking the
+// reason this test would pass with the nil check removed and the diagnostic
+// would silently become "signature" for a record that has no signature at all.
+func TestARecordWithNoUsableTransactionIsRefusedAndSaysWhy(t *testing.T) {
+	rec := &tx.GrapeTx{
+		Tx:      uuid.New().String(),
+		Version: tx.VersionType(99), // no such protocol version
+		Ids:     tx.Ids{},
+		// A transaction is needed to marshal, but the version above means the
+		// far side will not build one.
+		Transaction: signedTx(t, 1),
+	}
+	raw, err := rec.MarshalRecord()
+	if err != nil {
+		t.Fatalf("marshalling the record: %s", err.Error())
+	}
+
+	v := verifyRecord(raw, peer.ID("test-peer"))
+	if v.rec != nil {
+		t.Fatal("a record carrying no usable transaction must be refused")
+	}
+	if v.reason != reasonNoTransaction {
+		t.Fatalf("expected the refusal reason %q, got %q", reasonNoTransaction, v.reason)
 	}
 }

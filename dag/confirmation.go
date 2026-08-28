@@ -48,13 +48,19 @@ func (c *ConfirmationCounter) getTips() []*Node {
 }
 
 // resolveSite - look a site up in the dag when the counter has lost track of it.
-// Kept separate so pop() does not depend on the dag lock being free: getById
-// takes only the lookup RWMutex, never dag.mux.
+// Kept separate so pop() does not depend on the dag lock being free: this asks
+// the lookup map, which has its own RWMutex, and never dag.mux.
+//
+// The lookup map rather than getById with cacheOnly set, which is the same
+// answer by a longer route. getById's other branch is a linear scan of the live
+// graph that asks for dag.mux with TryLock and carries on unlocked when it
+// fails, and it takes mu_map before dag.mux, the reverse of every other path
+// here. This was the last caller that could reach it.
 func resolveSite(id uuid.UUID) *Node {
 	if _dag_ == nil {
 		return nil
 	}
-	return _dag_.getById(id, true)
+	return _dag_.Vertex(id)
 }
 
 // markHarvested - record that a site has been written into a pin, so it cannot

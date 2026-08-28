@@ -206,10 +206,14 @@ func settledSite(id uuid.UUID) (*Node, bool) {
 	return nil, sliceArchive.Has(id)
 }
 
-// sliceAppliedPin - take the dag lock and settle the sites a commit transaction
-// just made irrevocable. Called from both sides of the chain: the leader after
-// it forms a pin, and every other node after it applies one, so the live graph
-// is bounded the same way everywhere.
+// sliceAppliedPin - settle the sites a commit transaction just made
+// irrevocable. Called from both sides of the chain: the leader after it forms a
+// pin, and every other node after it applies one, so the live graph is bounded
+// the same way everywhere.
+//
+// The same steps as sliceSites, which is the whole operation under one lock and
+// is what the tests drive; if a step is added to one, it belongs in both.
+//
 // Only the graph surgery runs under dag.mux. Decoding the settled ids, handing
 // them to the archive and recording them as harvested all need locks of their
 // own but nothing from the graph, and they are proportional to the size of the

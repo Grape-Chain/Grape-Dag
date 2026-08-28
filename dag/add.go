@@ -30,10 +30,12 @@ machine, so the ceiling was this lock and not the hardware.
 
 Three things came out from under it, in descending order of what they cost:
 
-  - the ed25519 signature over the site's processor claim. Measured at 72.7us per
-    site (BenchmarkSiteAttributionSignature) against 4-10us for tip selection and
-    confirmation together (BenchmarkGraphGrowth): around nine tenths of the
-    section, spent on a signature that concerns nobody but this node's own fee.
+  - the ed25519 signature over the site's processor claim. Measured at 54-73us
+    per site (BenchmarkSiteAttributionSignature, the spread being how loaded the
+    machine is) against 3-8us for tip selection and confirmation together
+    (BenchmarkGraphGrowth), out of an uncontended insert of about 64us. Around
+    nine tenths of the section, spent on a signature that concerns nobody but
+    this node's own fee.
 
   - approveTx, which takes the pin lock once per approval target. That put a
     cross-lock dependency on the hot path - dag.mux held while waiting for a lock
@@ -51,17 +53,18 @@ The cost is three acquisitions where there was one, so an insert is no longer a
 single atomic step, and two windows open in it:
 
   - between selection and linking, a chosen tip can be settled by a commit
-    transaction. linkNewSite re-checks the tips against the live index and drops
-    any that went; if that leaves nothing, the transaction is refused and
-    retried, exactly as an empty selection is.
+    transaction. linkNewSite re-checks the tips against the live index, and if
+    that leaves nothing it selects again under its own lock rather than refusing
+    the transaction - a refusal here is a lost payment, because the publisher has
+    already dequeued it.
 
   - between linking and publishing - the window the signature is made in - an
     approval target can be settled while the site is not yet in dag._dag_, where
     sliceSites cannot reach it. publishNewSite does to the site what sliceSites
     would have done: drops the pointer, keeps the id.
 
-Neither window is free, but both are bounded and checked, and the alternative is
-holding the node's one global lock across a 72.7us signature.
+Neither window is free, but both are closed rather than tolerated, and the
+alternative is holding the node's one global lock across an ed25519 signature.
 */
 func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 	defer stats.Time(stats.SiteInsert)()
@@ -102,12 +105,12 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 	//
 	// No dag lock held. signProcessor reads this site's id, its transaction and
 	// its approval-target ids, and writes processorAddress, processorPk and
-	// processorSig. All five are fields of a site that is, at this moment,
-	// reachable only from the source lists of the tips it approves - it is in
-	// neither dag._dag_, the lookup maps, nor the confirmation tracker - and the
-	// tracker filters those source lists by its own membership, so no walk, no
-	// commit build and no size gauge can see this site yet. Nothing else writes
-	// these three fields, ever.
+	// processorSig - three fields nothing else in the process ever writes. At
+	// this moment the site is reachable only from the source lists of the tips
+	// it approves: it is in neither dag._dag_, the lookup maps, nor the
+	// confirmation tracker, and the tracker filters those source lists by its
+	// own membership, so no walk, no commit build and no size gauge can arrive
+	// at this site yet.
 	//
 	// Signing after publication would have been one lock acquisition cheaper and
 	// wrong: a site is confirmable as soon as something approves it, the commit
@@ -131,13 +134,14 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 
 	//dag.dag = updateFwdWeights(dag.dag, dag.links)
 	if traceSites {
-		// logLast reads the site's edges to format itself, so this is real graph
-		// work done only to produce a log line - and it needs the lock for the
-		// same reason the linking does. Its own acquisition, so that the section
-		// every insert pays for does not carry a debugging aid.
-		dag.mux.Lock()
+		// logLast walks the site's edges to format itself, so this is real graph
+		// work done only to produce a log line. It reads dag._links_ and writes
+		// nothing, so the shared lock is enough - and it gets its own
+		// acquisition, so that the section every insert pays for does not carry a
+		// debugging aid.
+		dag.rlock()
 		dag.logLast("ADD:", node, 1)
-		dag.mux.Unlock()
+		dag.runlock()
 	}
 	return linked.uuIDs, linked.signatures, nil
 }
@@ -145,7 +149,7 @@ func (dag *Dag) AddTxDag(node *Node) ([]uuid.UUID, map[string][]byte, error) {
 // linkedSite - what the linking half of an insert hands to the publishing half,
 // and what AddTxDag hands back to the publisher.
 //
-// Carried in one value rather than as four returns because the two halves have
+// Carried in one value rather than as three returns because the two halves have
 // to agree on exactly this, across a window in which the lock is not held.
 type linkedSite struct {
 	// uuIDs, signatures - the approvals, in the form the publisher puts on the
@@ -191,6 +195,14 @@ func (dag *Dag) approvalTargets(node *Node) ([]*Node, bool, error) {
 	// How far the ledger has come, not how much of it is resident: slicing
 	// shrinks the live graph, and measuring that would drop the node back
 	// into the genesis-fanout phase and link new sites to genesis again.
+	//
+	// The counter is now incremented in publishSite, two acquisitions later, so
+	// several concurrent inserts during the opening phase can all read a count
+	// below the width and all fan out to genesis - a few more exodus sites than
+	// dag.initialwidth asked for. That costs nothing: genesis is recorded as
+	// harvested when its own commit transaction is formed, so extra approvers
+	// cannot get it settled twice, and SyncUp treats "past the width" and
+	// "exactly at the width" alike.
 	if dag.sitesAdded.Load() < uint64(dag.width) {
 		tips, viaGenesis = []*Node{dag.getGenesis()}, true
 	} else {
@@ -205,9 +217,14 @@ func (dag *Dag) approvalTargets(node *Node) ([]*Node, bool, error) {
 		// used to return success with the site never added: the caller went on
 		// to broadcast it, and the site then existed on every peer except its
 		// author - whose balance was never updated for it either, since that
-		// happens inside addToDag. The publisher already skips a transaction
-		// whose insert failed, so an error puts the transaction back where it
-		// can be retried.
+		// happens inside addToDag.
+		//
+		// This is still the least bad outcome and not a good one: the publisher
+		// logs the error and moves on, and it has already taken the transaction
+		// off the queue, so the transaction is dropped rather than retried. The
+		// comment that used to be here said it was retried; it is not. Making it
+		// a retry is a change in diffusion/publish.go, and it is in the report -
+		// which is also why linkNewSite re-selects instead of failing.
 		return nil, false, errors.Errorf("no site is available to approve, so payment tx %s cannot enter the dag", node.id.id.String())
 	}
 	return tips, viaGenesis, nil
@@ -231,8 +248,8 @@ func (dag *Dag) selectApprovalTargets() []*Node {
 //   - the tip re-check. Selection ran under its own acquisition, so a commit
 //     transaction may have settled a chosen tip since, and sliceSites may have
 //     taken it out of the graph. Linking to it anyway would put a pointer to an
-//     archived site into the live edge list, where no later commit will prune it
-//     - the site is settled already, so nothing names it again.
+//     archived site into the live edge list, where no later commit will ever
+//     prune it, the site being settled already so that nothing names it again.
 //
 //   - dag._links_ is a shared slice, and appending to it can reallocate the
 //     backing array, so it cannot happen while anything is reading it.

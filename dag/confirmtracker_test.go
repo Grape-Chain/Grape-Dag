@@ -108,6 +108,14 @@ func assertTipIndexIsConsistent(t *testing.T, tr *ConfirmTracker, when string) {
 		if held, ok := tr.sites[id]; !ok || held != track {
 			t.Fatalf("%s: the tip ring holds a site the active region does not: %s", when, id.String())
 		}
+		// A site nothing approves has no descendants, so no other tip has a
+		// path to it and nothing can confirm it. That is the definition read
+		// backwards, and it is why the sweep can leave the tip set alone: a
+		// member of it can never reach the threshold to begin with.
+		if track.count != 0 {
+			t.Fatalf("%s: %s is approved by nothing yet %d tips confirm it",
+				when, id.String(), track.count)
+		}
 	}
 }
 
@@ -685,6 +693,91 @@ func TestAConfirmedExpiredTipLeavesTheTipSet(t *testing.T) {
 	}
 }
 
+// A commit transaction takes some of the confirmed queue and leaves the rest,
+// and a site settled afterwards has to be the site that leaves. The queue is
+// compacted by the take, so the position a site sat in beforehand is not the
+// position it keeps - an index that is not moved with it removes somebody else's
+// site from the queue, and that site then never reaches a commit transaction.
+func TestSettlingASiteAfterAPartialTakeRemovesTheRightOne(t *testing.T) {
+	tr := newConfirmTracker(0, 1000)
+	held := make([]*Node, 0, 6)
+	for i := 0; i < 6; i++ {
+		n := tnode(i)
+		tr.mu.Lock()
+		tr.confirmedSet[n.id.id] = len(tr.confirmed)
+		tr.confirmed = append(tr.confirmed, n)
+		tr.mu.Unlock()
+		held = append(held, n)
+	}
+
+	// A commit settles the first two, leaving four.
+	took := tr.take([]uuid.UUID{held[0].id.id, held[1].id.id})
+	if len(took) != 2 {
+		t.Fatalf("the commit took %d sites, want 2", len(took))
+	}
+
+	// Now settle one of the survivors out of band, as slicing does.
+	tr.markHarvested(held[4].id.id)
+
+	left := map[uuid.UUID]bool{}
+	for _, n := range tr.peek() {
+		left[n.id.id] = true
+	}
+	if left[held[4].id.id] {
+		t.Fatalf("the settled site is still queued for a commit transaction")
+	}
+	for _, want := range []*Node{held[2], held[3], held[5]} {
+		if !left[want.id.id] {
+			t.Fatalf("site %s was removed from the queue by settling a different site",
+				want.id.id.String())
+		}
+	}
+	if len(left) != 3 {
+		t.Fatalf("the queue holds %d sites, want 3", len(left))
+	}
+}
+
+// Sampling the tip set shuffles it in place, which is the only way to draw
+// distinct tips without copying the set first. The index has to move with the
+// entries or every later read of the tip set is reading the wrong slot.
+func TestSamplingTheTipSetKeepsItsIndexInStep(t *testing.T) {
+	tr := newConfirmTracker(0, 1000)
+	genesis := tnode(0)
+	tr.add(genesis)
+	for i := 1; i <= 12; i++ {
+		n := tnode(i)
+		tlink(n, genesis)
+		tr.add(n)
+	}
+	assertTipIndexIsConsistent(t, tr, "before sampling")
+
+	for round := 0; round < 40; round++ {
+		got := tr.sampleTips(3, nil)
+		if len(got) != 3 {
+			t.Fatalf("round %d: sampled %d tips, want 3", round, len(got))
+		}
+		seen := map[uuid.UUID]bool{}
+		for _, n := range got {
+			if seen[n.id.id] {
+				t.Fatalf("round %d: the same tip was sampled twice", round)
+			}
+			seen[n.id.id] = true
+		}
+		assertTipIndexIsConsistent(t, tr, fmt.Sprintf("after sampling round %d", round))
+	}
+
+	// And the index still points at the right sites once one of them is dropped
+	// from a position the shuffling moved it to.
+	tips := tr.getTips()
+	tr.markHarvested(tips[0].id.id)
+	assertTipIndexIsConsistent(t, tr, "after dropping a shuffled tip")
+	for _, n := range tr.getTips() {
+		if n.id.id == tips[0].id.id {
+			t.Fatalf("a harvested tip is still in the tip set")
+		}
+	}
+}
+
 // The harvest record is bounded by handing the guarantee to the slice archive,
 // not by forgetting: an id is only dropped once the archive holds it, and the
 // tracker then consults both. Getting this wrong pays a processor twice.
@@ -729,10 +822,17 @@ func TestASettledSiteStaysRefusedAfterTheHarvestRecordIsPruned(t *testing.T) {
 	}
 
 	// And the guarantee still holds: a late arrival naming it must not get it
-	// tracked, confirmed, or paid a second time.
+	// tracked, confirmed, or paid a second time. Checked at the region rather
+	// than through isTip, because a settled site with approvers on it is not a
+	// tip whether the guard held or not - the question is whether it is back in
+	// the region at all, since that is what puts it back in the denominator and
+	// back in line for a commit transaction.
 	tr.add(settled)
-	if tr.isTip(settled.id.id) {
-		t.Fatalf("a settled site came back as a tip once its harvest record had been pruned")
+	tr.mu.Lock()
+	_, back := tr.sites[settled.id.id]
+	tr.mu.Unlock()
+	if back {
+		t.Fatalf("a settled site was tracked again once its harvest record had been pruned")
 	}
 	c := tnode(3)
 	tlink(c, a)
@@ -742,6 +842,93 @@ func TestASettledSiteStaysRefusedAfterTheHarvestRecordIsPruned(t *testing.T) {
 		if n.id.id == settled.id.id {
 			t.Fatalf("a settled site was confirmed a second time after its harvest record was pruned")
 		}
+	}
+}
+
+// A site that was approved while it was detached is given a slot again when it
+// relinks, which is the tracker's own doing; the next approval has to take that
+// slot back off it. Narrowing the retirement condition to the first approval -
+// which is all it looks like it needs, since a tip is a site nothing approves -
+// leaves such a site counting towards the denominator for good, and the
+// denominator is what every confirmation is measured against.
+func TestASiteApprovedWhileDetachedLeavesTheDenominatorWhenApprovedAgain(t *testing.T) {
+	tr := newConfirmTracker(0, 1000)
+	genesis := tnode(0)
+	tr.add(genesis)
+
+	// A site arrives before one of the sites it approves.
+	detached := tnode(1)
+	tlink(detached, genesis)
+	detached.missingTargets = map[string]bool{uuid.New().String(): true}
+	tr.add(detached)
+	if tr.holdsSlot(detached.id.id) {
+		t.Fatalf("a detached site must not count towards the denominator")
+	}
+
+	// Something approves it while it is still detached.
+	first := tnode(2)
+	tlink(first, detached)
+	tr.add(first)
+	if approvers := approversOf(t, tr, detached); approvers != 1 {
+		t.Fatalf("the detached site has %d approvers, want 1", approvers)
+	}
+
+	// Its missing target arrives, so it joins the graph - and the tracker gives
+	// it a slot.
+	detached.missingTargets = nil
+	tr.relink(detached)
+
+	// A second approval. Whatever the site's history, something approves it, so
+	// it is not a tip and must not be in the denominator.
+	second := tnode(3)
+	tlink(second, detached)
+	tr.add(second)
+	if tr.holdsSlot(detached.id.id) {
+		t.Fatalf("a site with two approvers still counts towards the confirmation denominator")
+	}
+	if tr.isTip(detached.id.id) {
+		t.Fatalf("a site with two approvers is still offered as an approval target")
+	}
+	assertTipIndexIsConsistent(t, tr, "after the second approval")
+}
+
+// The other half of the bound: a harvest the archive does not hold yet must not
+// be dropped. That is the window between a site being handed to a commit
+// transaction and that transaction being applied, and forgetting an id inside it
+// puts the site back in the tip set - which is what pays for it twice.
+func TestAnUnarchivedHarvestIsNotForgottenByThePrune(t *testing.T) {
+	prevArchive := sliceArchive
+	sliceArchive = newRamArchive()
+	t.Cleanup(func() { sliceArchive = prevArchive })
+
+	tr := newConfirmTracker(0, 1000)
+	applied, inFlight := tnode(1), tnode(2)
+	tr.markHarvested(applied.id.id)
+	tr.markHarvested(inFlight.id.id)
+
+	// Only one of the two commit transactions has been applied.
+	sliceArchive.Archive(1, []*pb.Node{{Id: &pb.Node_NodeId{Id: applied.id.id[:]}}})
+
+	tr.mu.Lock()
+	tr.harvestPruneAt = 1
+	tr.pruneHarvested()
+	_, appliedHeld := tr.harvested[applied.id.id]
+	_, inFlightHeld := tr.harvested[inFlight.id.id]
+	tr.mu.Unlock()
+
+	if appliedHeld {
+		t.Fatalf("an archived harvest was kept, so the record is not bounded at all")
+	}
+	if !inFlightHeld {
+		t.Fatalf("a harvest the archive does not hold was forgotten: that site can be confirmed and paid twice")
+	}
+
+	tr.add(inFlight)
+	tr.mu.Lock()
+	_, back := tr.sites[inFlight.id.id]
+	tr.mu.Unlock()
+	if back {
+		t.Fatalf("a harvested site the archive has not seen yet was tracked again")
 	}
 }
 

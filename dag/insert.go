@@ -4,9 +4,7 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/tx"
-	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/google/uuid"
-	"github.com/ledongthuc/goterators"
 	"github.com/pkg/errors"
 )
 
@@ -61,6 +59,14 @@ func (d *Dag) unsafe_bypassInsert(vertices []*Node) (*Dag, error) {
 // based on the ids of the sites this site approves in other nodes; Hence, this site
 // should locate the approvees (this site in the original node) that were approved by this site
 // in the original node
+//
+// The subscriber's half of the insert path, and the busier of the two: this node
+// receives every transaction the network publishes, not only its own. It is split
+// the same way AddTxDag is, and for the same reason. Resolving the approvals and
+// linking the site needs the exclusive lock; checking the claim the site arrived
+// with does not, and that check is an ed25519 verification. See
+// checkProcessorClaim for the invariant that makes moving it out safe rather than
+// merely faster.
 func (dag *Dag) InsertTxDag(
 	inVertex *Node,
 	txId uuid.UUID,
@@ -82,31 +88,51 @@ func (dag *Dag) InsertTxDag(
 	// transaction arrives from every peer that relays it - and asking the lookup
 	// map costs one read of an RWMutex that dag.mux does not gate. Doing it here
 	// keeps a duplicate off the dag.mux queue entirely. The answer can go stale
-	// between here and the lock, which is why the same check is repeated below;
+	// between here and the lock, which is why the same check is repeated inside;
 	// this one can only ever skip work, never authorise it.
 	if dag.getById(inVertex.id.id, true) != nil {
 		return nil
 	}
 
+	inGraph, err := dag.linkReceivedSite(inVertex, ids...)
+
+	// Both of the next two are outside the exclusive section, and both are
+	// conditional on the site having actually been added - which is not the same
+	// question as whether an error came back. The missing-target path adds the
+	// site and then reports the gap, and a site with unresolved approvals still
+	// carries a claim worth checking.
+	if inGraph {
+		dag.checkProcessorClaim(inVertex)
+		if traceSites {
+			// logLast walks the site's edges to format itself, which is a read of
+			// dag._links_ and nothing more, so the shared lock is enough.
+			dag.rlock()
+			dag.logLast("INSERT:", inVertex, 1)
+			dag.runlock()
+		}
+	}
+	return err
+}
+
+// linkReceivedSite - the exclusive half of a received insert: resolve what the
+// site approves, link it, and put it in the graph.
+//
+// Returns whether the site is now in the live graph, which the caller needs in
+// order to decide whether there is anything left to do, and separately the error
+// the caller reports. The two differ on the missing-target path, which adds the
+// site so that it can be relinked later and still reports that this node is out
+// of sync.
+//
+// Everything here needs the exclusive lock: the resolution loop's answers have to
+// stay true until the edges are appended, dag._links_ is a shared slice whose
+// append can reallocate, and addToDag applies the payment to the wallet cache and
+// writes the node slice, the lookup maps and the confirmation tracker.
+func (dag *Dag) linkReceivedSite(inVertex *Node, ids ...tx.UuidSlice) (bool, error) {
 	dag.mux.Lock()
 	defer dag.mux.Unlock()
 
-	// Check if this node is already in our dag
-	// if v := dag.getById(inVertex.id.id, true); v == nil {
-	// 	// if cache lookup failed, do a more thorough search
-	// 	if _, i, err := goterators.Find(dag._dag_, func(n *Node) bool {
-	// 		return n.Equal(inVertex)
-	// 	}); err == nil && i >= 0 {
-	// 		// this node is already in our dag - Ignore
-	// 		return nil
-	// 	}
-	// } else {
-	// 	// this vertex is already in our version of dag; skip out
-	// 	return nil
-	// }
-
 	if v := dag.getById(inVertex.id.id, true); v != nil {
-		return nil
+		return false, nil
 	}
 
 	// Vertex(node) to insert may be missing sites in the current version of the dag
@@ -143,93 +169,52 @@ func (dag *Dag) InsertTxDag(
 		// store in dag without trying to approve target sites it references
 		// this node
 		// so, the current version of dag does not have the sites referenced by inVertex site
-		goterators.ForEach(idsNotFound, func(id uuid.UUID) {
+		for _, id := range idsNotFound {
 			if inVertex.missingTargets == nil {
-				inVertex.missingTargets = make(map[string]bool)
+				inVertex.missingTargets = make(map[string]bool, len(idsNotFound))
 			}
 			inVertex.missingTargets[id.String()] = true
 			logger.Warnf("Tx %s is missing from this DAG. Requesting...", id.String())
-		})
+		}
 		if _, err := dag.addToDag(inVertex, candidates); err != nil {
-			return errors.Errorf("Failed to insert Tx %s into dag. %s", inVertex.id.id.String(), err.Error())
+			return false, errors.Errorf("Failed to insert Tx %s into dag. %s", inVertex.id.id.String(), err.Error())
 		}
 		logger.Warn("Local DAG is out of sync. Synchronization is underway...")
 
 		// @TODO: add to queue until a chain can be built and inserted
-		return errors.Errorf("Tx %s is missing source Txs: %q", inVertex.id.id.String(), idsNotFound)
+		return true, errors.Errorf("Tx %s is missing source Txs: %q", inVertex.id.id.String(), idsNotFound)
 	}
 
-	// Find versions and adjust this inVertex version if required
-	var nextToNode *Node = nil
-	if dagConfig.Versioncollision {
-		// look at the candidates for approval
-		approvers := []*Node{}
-		// candidates - the sites/vertices that this inVertex approved elsewhere
-		goterators.ForEach(candidates, func(targetNode *Node) {
-			// for the candidates get all approvers that approve them
-			approvers = append(approvers, getApprovers(dag._links_, targetNode)...)
-		})
-		goterators.ForEach(approvers, func(candidateNode *Node) {
-			// only makes sense when two vertises are different
-			if candidateNode.id.id != inVertex.id.id {
-				if candidateNode.id.idMajor == inVertex.id.idMajor {
-					if candidateNode.id.idMinor >= inVertex.id.idMinor {
-						idMajor = candidateNode.id.idMajor
-						idMinor = candidateNode.id.idMinor + 1
-						nextToNode = candidateNode
-					}
-				}
-			}
-		})
+	// Version-collision handling used to sit here, behind dag.versioncollision,
+	// and it has been removed rather than completed. What it did, when the
+	// setting was on: it looked through the approvers of this site's approval
+	// targets for one carrying the same idMajor and an idMinor at or above this
+	// site's, and on finding one it set nextToNode and bumped this site's
+	// version. It then tested nextToNode.id.id != inVertex.id.id and returned an
+	// error if so.
+	//
+	// That test could not be false. nextToNode was only ever assigned inside a
+	// branch guarded by candidateNode.id.id != inVertex.id.id, so every value it
+	// could hold failed the test by construction. So the whole feature reduced
+	// to: with dag.versioncollision on, a received site that collides on version
+	// is refused outright and never enters the graph, while every other peer
+	// holds it and this node's balances never move for it. The splice into
+	// dag._dag_ below that test, and the addToDag calls beside it, were
+	// unreachable - which is also why they had drifted into skipping the balance
+	// update, the site counter, the confirmation tracker and the site's own
+	// target list.
+	//
+	// Completing it would have meant inventing the semantics: there is no
+	// specification for what a version collision should do, no test, and no
+	// caller that turns the setting on. Leaving it was the worst option, because
+	// the flag reads as a supported feature. Removed, so that the only behaviour
+	// is the one that is actually exercised. dag.versioncollision is now inert
+	// and Init says so if it is set; the config field and its viper default
+	// should go too - see the report.
+	if _, err := dag.addToDag(inVertex, candidates); err != nil {
+		return false, err
 	}
-	// if there is conflicting versioning, update this vertex's versioning
-	if nextToNode != nil {
-		if nextToNode.id.id != inVertex.id.id {
-			return errors.Errorf("Tx %s is missing from this DAG. @TODO: Add to queue. Error for now", inVertex.id.id.String())
-		}
-		utils.ColorizeInfo(logger, "[*] Resolving DAG node versioning conflict: v.%d.%d", idMajor, idMinor)
-		// Update the sourceNode's ids
-		inVertex.id.idMajor = idMajor
-		inVertex.id.idMinor = idMinor
-		logger.Warnf("[*] Update uuid:%s idMajor:%d, idMinor:%d",
-			inVertex.id.id.String(), inVertex.id.idMajor, inVertex.id.idMinor)
 
-		_, idx, err := goterators.Find(dag._dag_, func(candidate *Node) bool {
-			return candidate.id.id == nextToNode.id.id
-		})
-		if err == nil {
-			// insert if there is conflict
-			if idx < len(dag._dag_)-1 {
-				dag._dag_ = append(dag._dag_[:idx+1], dag._dag_[idx:]...)
-				dag._dag_[idx+1] = inVertex
-				// Registered in the lookup map here because this branch splices
-				// straight into dag._dag_ instead of going through addToDag, so
-				// nothing else would. InsertIfNotExist now trusts the map to
-				// answer "is this site in the live graph", and this was the one
-				// path that could put a site in the graph without it. Note that
-				// the branch still skips the balance update, the confirmation
-				// tracker and the site counter, which is a wider problem in a
-				// path that dag.versioncollision leaves off by default; see the
-				// report.
-				dag.lookupCacheUpdate(inVertex, targetIDs(candidates))
-			} else {
-				_, err := dag.addToDag(inVertex, candidates)
-				if err != nil {
-					return err
-				}
-			}
-		} else {
-			_, err := dag.addToDag(inVertex, candidates)
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		_, err := dag.addToDag(inVertex, candidates)
-		if err != nil {
-			return err
-		}
-	}
 	// after the new node has been added to dag, update links
 	for _, targetNode := range candidates {
 		// link to these candidates - there should be at least one or ideally, two candidates
@@ -245,29 +230,103 @@ func (dag *Dag) InsertTxDag(
 			)
 		}
 	}
-	// Whoever built this site claimed it, and the claim is checkable: the
-	// signature covers the site's id, its transaction and its approvals. Checked
-	// here, after the links are established, because the approvals are part of
-	// what was signed.
-	//
-	// A site with no attribution at all is accepted - it came from a node
-	// predating attribution, and it simply earns nobody a fee. A site whose
-	// attribution does not verify is kept as well, but stripped: the site is
-	// still a valid part of the graph and refusing it would let a bad claim
-	// deny the network a transaction, whereas keeping the claim would let the
-	// liar be paid.
-	if err := verifyProcessor(inVertex); err != nil {
-		if !errors.Is(err, ErrNoProcessorAttribution) {
-			logger.Warnf("[attribution] Site %s carries an unusable claim, dropping it: %s",
-				inVertex.id.id.String(), err.Error())
-			clearProcessor(inVertex)
-		}
-	}
 
 	// Cumulative weights are no longer recomputed here either; see dag/weights.go.
 	// dag.dag = updateFwdWeights(dag.dag, dag.links)
-	if traceSites {
-		dag.logLast("INSERT:", inVertex, 1)
+	return true, nil
+}
+
+// checkProcessorClaim - verify the claim a received site arrived with, and strip
+// it if it does not hold up.
+//
+// Whoever built this site claimed it, and the claim is checkable: the signature
+// covers the site's id, the hash of its transaction, and the ids of the sites it
+// approves.
+//
+// A site with no attribution at all is accepted as it is - it came from a node
+// predating attribution, and it simply earns nobody a fee. A site whose
+// attribution does not verify is kept as well, but stripped: the site is still a
+// valid part of the graph and refusing it would let a bad claim deny the network
+// a transaction, whereas keeping the claim would let the liar be paid.
+//
+// # Why this is outside the exclusive section
+//
+// It is an ed25519 verification plus an address derivation, and it used to run
+// inside the section that every insert, the slicer, the commit builder and the
+// size gauges all queue behind. See BenchmarkSiteAttributionVerification for what
+// that cost the rest of the node per received site.
+//
+// What it reads, and why the shared lock is enough for the reading half:
+//
+//   - the site's id and its transaction. Both are written before the site is
+//     reachable by anything, and never again.
+//
+//   - the three claim fields. Nothing else writes them for a received site:
+//     signProcessor only ever writes them for a site this node built itself, and
+//     only before that site is published, and clearProcessor is reached from here
+//     alone. One goroutine inserts a given site, because the duplicate checks in
+//     InsertTxDag mean the second arrival returns before reaching this.
+//
+//   - the site's approval-target ids, through approvalTargetIDs.
+//
+// # The invariant the last one rests on
+//
+// The exclusive section has been released by the time this runs, so a commit
+// transaction or the reconciler can run between it and the shared lock below.
+// approvalTargetIDs takes the union of targets, slicedTargets and missingTargets,
+// discards nils and duplicates and sorts what is left. Every concurrent writer of
+// those three fields MOVES an id between them; none adds one and none drops one:
+//
+//   - slicing moves an id out of targets and into slicedTargets. sliceSites does
+//     it through dropSettled, and dropSettledTargets does it for a site caught in
+//     AddTxDag's signing window. Both record the id as they drop the pointer.
+//
+//   - relinking moves an id out of missingTargets and into targets.
+//     ReconcileMissingTargets appends the target and deletes the key in the same
+//     step.
+//
+//   - the only writers that add to the union - the resolution loop in
+//     linkReceivedSite, and linkApprovals - run once per site, inside the
+//     exclusive section, before this is called.
+//
+// Both movers also drop nil pointers out of targets without recording anything,
+// which loses no id because approvalTargetIDs skips nils.
+//
+// So the union, and therefore the payload, is the same whichever side of a slice
+// or a relink this happens to observe. That is what makes the check correct
+// outside the exclusive section and not just cheaper. If any path could add an id
+// to the union or drop one from all three, the payload would differ from the one
+// the builder signed: an honest claim would fail to verify and this would strip a
+// processor of the fee for work it did, or a tampered claim would pass and pay
+// somebody who did nothing. TestTheApprovalIdSetIsInvariantUnderSlicingAndRelinking
+// is that invariant, checked.
+func (dag *Dag) checkProcessorClaim(site *Node) {
+	dag.rlock()
+	err := verifyProcessor(site)
+	dag.runlock()
+	if err == nil || errors.Is(err, ErrNoProcessorAttribution) {
+		return
 	}
-	return nil
+
+	// Stripping is a write, so it needs the exclusive lock, and Go has no lock
+	// upgrade: the shared lock has to be released first, which reopens the
+	// window. Hence the re-check on the other side. A site that has left the live
+	// graph in the meantime must not be written to - it is in the archive by
+	// then, and the commit transaction that settled it has already recorded which
+	// processor it credited, so clearing the field afterwards would change
+	// nothing except the object a late arrival is resolved from.
+	dag.mux.Lock()
+	stillLive := dag.getById(site.id.id, true) != nil
+	if stillLive {
+		clearProcessor(site)
+	}
+	dag.mux.Unlock()
+
+	if stillLive {
+		logger.Warnf("[attribution] Site %s carries an unusable claim, dropping it: %s",
+			site.id.id.String(), err.Error())
+		return
+	}
+	logger.Warnf("[attribution] Site %s carries an unusable claim, but it was settled before the claim could be dropped: %s",
+		site.id.id.String(), err.Error())
 }

@@ -179,28 +179,47 @@ func (p *NodeTxPin) unsafe_appendPin(pin *pb.TxPin) {
 // statement, and dag.Init reads the genesis site back out of its Nodes to
 // restore the graph root. Releasing it would make a restarted node mint a new
 // root instead of keeping the one its chain was built on.
+//
+// Exactly one pin, the one the window has just left behind: appends happen one
+// at a time, so every pin passes the edge once and is released once. Walking
+// further back on each append to catch up would be linear in the chain, which is
+// the cost this whole thing exists to avoid.
 func (p *NodeTxPin) unsafe_releaseOldBodies() {
 	if pinBodyRetainPins <= 0 {
 		return
 	}
-	for i := len(p.pins) - 1 - pinBodyRetainPins; i > 0; i-- {
-		if p.pins[i] == nil || !pinCarriesBody(p.pins[i]) {
-			// Everything below has already been released; releasing walks
-			// backwards from the window edge on every append, so it only ever
-			// has one pin to do.
-			return
-		}
-		p.pins[i] = pinWithoutBody(p.pins[i])
+	i := len(p.pins) - 1 - pinBodyRetainPins
+	if i <= 0 || p.pins[i] == nil {
+		return
 	}
+	p.pins[i] = pinWithoutBody(p.pins[i])
 }
 
-// pinCarriesBody - whether a pin still holds the transactions it settled.
+// unsafe_servable - whether the pin at this index is whole enough to send to a
+// peer. Caller must hold p.mu.
 //
-// A pin that settled nothing - which is what a chain-start pin carrying only
-// balances is - counts as carrying its body: there is nothing to release, and
-// reporting it as released would make getAllFrom refuse to serve it.
-func pinCarriesBody(pin *pb.TxPin) bool {
-	return pin != nil && (len(pin.Nodes) > 0 || len(pin.Sites) == 0)
+// Positional, because that is exactly how releasing works: index 0 is kept
+// whole, and every index below the window edge has had its transactions
+// released. The pin itself cannot be asked - an empty Nodes list does not
+// distinguish a released pin from the genesis pin, which names the site it
+// settles without carrying it - so asking it was a bug that refused to serve
+// the opening pin of every leader-started chain.
+//
+// The content check is belt and braces for insertIfNotFound, the one path that
+// shifts positions without releasing anything, which can leave the edge off by
+// as many pins as it spliced in.
+func (p *NodeTxPin) unsafe_servable(i int) bool {
+	pin := p.pins[i]
+	if pin == nil {
+		return false
+	}
+	if i == 0 {
+		return true
+	}
+	if pinBodyRetainPins > 0 && i < len(p.pins)-pinBodyRetainPins {
+		return false
+	}
+	return len(pin.Nodes) > 0 || len(pin.Sites) == 0
 }
 
 // pinWithoutBody - the same commit transaction with the settled transactions,
@@ -411,15 +430,19 @@ func (p *NodeTxPin) getAllFrom(fromPinNumber int) []*pb.TxPin {
 	// append that reallocated - or a release that replaced an element - changed
 	// what was being sent while it was being sent.
 	out := []*pb.TxPin{}
-	for _, pin := range p.pins[from:] {
-		if !pinCarriesBody(pin) {
+	for i := from; i < len(p.pins); i++ {
+		if !p.unsafe_servable(i) {
+			var number int64 = -1
+			if p.pins[i] != nil {
+				number = p.pins[i].PinNumber
+			}
+			logger.Errorf("[pin] Cannot serve pin=%d from memory: its transactions were released past the %d-pin retain window. A peer catching up from %d has to be served from the store.",
+				number, pinBodyRetainPins, fromPinNumber)
 			break
 		}
-		out = append(out, pin)
+		out = append(out, p.pins[i])
 	}
 	if len(out) == 0 {
-		logger.Errorf("[pin] Cannot serve pin=%d from memory: its transactions were released past the %d-pin retain window. The peer asking from %d has to be served from the store.",
-			p.pins[from].PinNumber, pinBodyRetainPins, fromPinNumber)
 		return nil
 	}
 	return out
@@ -661,6 +684,13 @@ func (p *NodeTxPin) getById(id uuid.UUID) *Node {
 // the caller consumed these sites from the confirmed pool, so losing them is
 // worth being loud about, but appending a stale pin would be worse.
 func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
+	// The graph read first, and on its own: what a commit transaction says about
+	// a site it settles is read under the graph lock, before any pin lock is
+	// taken, and the same messages are reused if the build has to be repeated.
+	// See prepareSites for what is being protected and why it cannot be done
+	// inside the build.
+	prepared := prepareSites(sites)
+
 	// One build at a time, and for the whole attempt rather than only around the
 	// build: what makes a discarded build undoable is a VM checkpoint, and
 	// checkpoints nest, so a second build opening its own between this one's
@@ -674,7 +704,7 @@ func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
 	var lastHead pinHead
 	for attempt := 1; attempt <= attempts; attempt++ {
 		head := p.headSnapshot()
-		built, err := p.buildCheckpointed(head, sites, smcTxs)
+		built, err := p.buildCheckpointed(head, prepared, smcTxs)
 		if err != nil {
 			return err
 		}
@@ -709,13 +739,13 @@ func (p *NodeTxPin) UnlockBuild() { p.buildMu.Unlock() }
 // either taken from head, published lock-free (unsafe_getLatestBalance reads the
 // atomic view), or behind a lock of its own: the wallet cache, the VM, the
 // contract pool.
-func (p *NodeTxPin) buildCheckpointed(head pinHead, sites []*Node, smcTxs []tx.Transaction) (*builtPin, error) {
+func (p *NodeTxPin) buildCheckpointed(head pinHead, prepared []preparedSite, smcTxs []tx.Transaction) (*builtPin, error) {
 	// Marked before the smart-contract stage runs, so that a build the head
 	// invalidates can put the state store back. The quorum path takes its own
 	// checkpoint around unsafe_buildPin; checkpoints nest, so the two do not
 	// interfere.
 	vm.Checkpoint()
-	built, err := p.buildPin(head, sites, smcTxs)
+	built, err := p.buildPin(head, prepared, smcTxs)
 	if err != nil {
 		vm.RevertCheckpoint()
 		return nil, err
@@ -784,6 +814,92 @@ func (b *builtPin) discard() {
 	}
 }
 
+// preparedSite - a confirmed site turned into the form a commit transaction
+// carries, plus the two accounts its payment moves value between.
+//
+// It exists so that reading the graph and building the pin are separate steps.
+// ToPbNode reads a site's approval targets, its sliced-target ids, its height
+// and its processor claim, every one of which the insert path writes as new
+// sites arrive and slicing rewrites when a commit transaction settles them. A
+// torn read there is not merely a wrong answer: it is what gets signed and sent
+// to peers as the ledger's statement of what it settled.
+type preparedSite struct {
+	vertex    *Node
+	node      *pb.Node
+	site      *pb.SiteID
+	sender    string
+	recipient string
+}
+
+// prepareSites - serialise the sites a commit transaction will settle, under the
+// graph's read lock.
+//
+// The graph lock has to be taken before the pin lock and never after it - that
+// is the documented inversion, and dag/syncmngr.go applyPin is shaped the way it
+// is to respect it - so this is a step of its own that runs before a build
+// begins rather than the first loop inside the builder. add() calls it while
+// holding no lock at all.
+func prepareSites(sites []*Node) []preparedSite {
+	if _dag_ == nil {
+		return serialiseSites(sites)
+	}
+	_dag_.rlock()
+	defer _dag_.runlock()
+	return serialiseSites(sites)
+}
+
+// serialiseSites - the same conversion with no graph lock held.
+//
+// For the quorum path only, which calls unsafe_buildPin with the pin lock
+// already held and so must not take the graph lock. That path therefore still
+// races the insert path, exactly as it did before the two steps were separated;
+// closing it means calling prepareSites in dag/consensusnet.go buildPin before
+// it takes the pin lock, and handing the result to unsafe_buildPinPrepared.
+func serialiseSites(sites []*Node) []preparedSite {
+	// sort sites based on time in an ascending order - from past to future
+	sort.SliceStable(sites, func(i, j int) bool {
+		return sites[i].time.Before(sites[j].time)
+	})
+	out := make([]preparedSite, 0, len(sites))
+	for _, val := range sites {
+		if val == nil || val.tx == nil {
+			continue
+		}
+		out = append(out, preparedSite{
+			vertex: val,
+			node:   val.ToPbNode(),
+			// Copied, not sliced. Slicing takes a reference into the live
+			// Node's uuid array, so every commit transaction the node retains
+			// keeps every site it settled reachable - with its edge slices -
+			// and slicing them out of the graph frees nothing. Sixteen bytes
+			// per site against holding the site itself.
+			site: &pb.SiteID{
+				Id:      append([]byte(nil), val.id.id[:]...),
+				Address: val.id.address,
+				IdMajor: val.id.idMajor,
+				IdMinor: val.id.idMinor,
+			},
+			// Converted once. BytesToAddress hex-encodes and allocates, and the
+			// builder used to call it eight times per site: twice to look the
+			// balances up, and six more times to index the same two maps and
+			// the cache again while writing the pin out.
+			sender:    grape1crypto.BytesToAddress(val.tx.GetSender()),
+			recipient: grape1crypto.BytesToAddress(val.tx.GetRecipient()),
+		})
+	}
+	return out
+}
+
+// verticesOf - the sites behind these prepared messages, for the reward split,
+// which recomputes from the sites themselves.
+func verticesOf(prepared []preparedSite) []*Node {
+	out := make([]*Node, 0, len(prepared))
+	for _, ps := range prepared {
+		out = append(out, ps.vertex)
+	}
+	return out
+}
+
 // unsafe_buildPin - form a commit transaction over these sites, signed and
 // numbered, but not appended to the chain.
 //
@@ -792,9 +908,17 @@ func (b *builtPin) discard() {
 // it is not free of consequence - the smart-contract stage executes, and the
 // wallet cache is invalidated for every account it touches - so a proposer that
 // loses its round has to undo that; see pinCandidate in dag/consensusnet.go.
-// Caller holds the pin lock.
+// Caller holds the pin lock, which is why the sites are serialised here without
+// the graph lock; see serialiseSites.
 func (p *NodeTxPin) unsafe_buildPin(sites []*Node, smcTxs []tx.Transaction) (*pb.TxPin, error) {
-	built, err := p.buildPin(p.unsafe_head(), sites, smcTxs)
+	return p.unsafe_buildPinPrepared(serialiseSites(sites), smcTxs)
+}
+
+// unsafe_buildPinPrepared - the same, over sites that have already been
+// serialised, so that the caller can have done that under the graph's read lock.
+// Caller holds the pin lock.
+func (p *NodeTxPin) unsafe_buildPinPrepared(prepared []preparedSite, smcTxs []tx.Transaction) (*pb.TxPin, error) {
+	built, err := p.buildPin(p.unsafe_head(), prepared, smcTxs)
 	if err != nil {
 		return nil, err
 	}
@@ -815,7 +939,7 @@ func (p *NodeTxPin) unsafe_buildPin(sites []*Node, smcTxs []tx.Transaction) (*pb
 // signature and number come from the anchor. That is what lets add() run it
 // unlocked; unsafe_buildPin calls it with the lock held because its caller is
 // already holding it for other reasons.
-func (p *NodeTxPin) buildPin(head pinHead, sites []*Node, smcTxs []tx.Transaction) (*builtPin, error) {
+func (p *NodeTxPin) buildPin(head pinHead, prepared []preparedSite, smcTxs []tx.Transaction) (*builtPin, error) {
 	defer stats.Time(stats.PinBuild)()
 
 	// migrate the wallet cache balance to pin tx - reconcile balances,
@@ -826,24 +950,15 @@ func (p *NodeTxPin) buildPin(head pinHead, sites []*Node, smcTxs []tx.Transactio
 	// Keep that in mind when updating balances here
 	// The most important aspect: detect balance conflicts
 
-	// sort sites based on time in an ascending order - from past to future
-	sort.SliceStable(sites, func(i, j int) bool {
-		return sites[i].time.Before(sites[j].time)
-	})
-
-	// The two accounts each site moves value between, converted once.
-	// BytesToAddress hex-encodes and allocates, and this was called eight times
-	// per site: twice to look the balances up, and six more times to index the
-	// same two maps and the cache again while writing the pin out.
-	type siteWallets struct{ sender, recipient string }
-	wallets := make([]siteWallets, len(sites))
+	// The sites arrive already sorted and already serialised; see prepareSites.
+	// Nothing below reads the graph.
 
 	// What each account holds as this build sees it: the wallet cache first,
 	// and the chain behind it. One value per account, where there used to be a
 	// slice per account of which only the last entry was ever read - and every
 	// entry in it was the same lookup repeated, because nothing between them
 	// changed the cache.
-	balances := make(map[string]*big.Int, 2*len(sites))
+	balances := make(map[string]*big.Int, 2*len(prepared))
 	// settlingBalance - the balance to state for an account this pin settles
 	// for. Loud about a miss, because a payment whose sender has no balance is
 	// the shape a double spend takes.
@@ -861,59 +976,46 @@ func (p *NodeTxPin) buildPin(head pinHead, sites []*Node, smcTxs []tx.Transactio
 		balances[wallet] = b
 		return b
 	}
-	for i, vertex := range sites {
-		w := siteWallets{
-			sender:    grape1crypto.BytesToAddress(vertex.tx.GetSender()),
-			recipient: grape1crypto.BytesToAddress(vertex.tx.GetRecipient()),
-		}
-		wallets[i] = w
-		settlingBalance(w.sender, "Sender")
+	for _, ps := range prepared {
+		settlingBalance(ps.sender, "Sender")
 		// the receiver may not be known to us at all at this point
-		settlingBalance(w.recipient, "Receiver")
+		settlingBalance(ps.recipient, "Receiver")
 	}
 
 	pin := pb.NewTxPin(head.prev)
 	// Sized up front: one entry per site each, and this is the allocation the
 	// heap profile finds the node holding most of its live bytes in.
-	pin.Nodes = make([]*pb.Node, 0, len(sites))
-	pin.Sites = make([]*pb.SiteID, 0, len(sites))
+	pin.Nodes = make([]*pb.Node, 0, len(prepared))
+	pin.Sites = make([]*pb.SiteID, 0, len(prepared))
 	built := &builtPin{
 		pin:        pin,
-		invalidate: make([]string, 0, 2*len(sites)),
+		invalidate: make([]string, 0, 2*len(prepared)),
 		smcTxs:     smcTxs,
 	}
 	// each sites indicates a new transaction - process all transactions
-	for i, val := range sites {
-		w := wallets[i]
+	for _, ps := range prepared {
 		// store sites in pin [for now] - need for synch
-		pin.Nodes = append(pin.Nodes, val.ToPbNode())
-		// Copied, not sliced. Slicing takes a reference into the live Node's
-		// uuid array, so every commit transaction the node retains keeps every
-		// site it settled reachable - with its edge slices - and slicing them
-		// out of the graph frees nothing. Sixteen bytes per site against
-		// holding the site itself.
-		s := &pb.SiteID{
-			Id:      append([]byte(nil), val.id.id[:]...),
-			Address: val.id.address,
-			IdMajor: val.id.idMajor,
-			IdMinor: val.id.idMinor,
-		}
+		pin.Nodes = append(pin.Nodes, ps.node)
 		// for each site update the balance, when valid
-		senderBalance := balances[w.sender]
+		senderBalance := balances[ps.sender]
 		if senderBalance.Sign() < 0 {
-			// this transaction cannot be processed
-			val.valid = false
+			// this transaction cannot be processed. Written without the graph
+			// lock, which is what the rest of this function is arranged to
+			// avoid; it is left here because taking the graph lock inside a
+			// build is the deadlock, and the field is a local validity flag
+			// rather than anything the pin states.
+			ps.vertex.valid = false
 			logger.Warnf("[@DEVNOTE] Need to revert balances in cache")
-			logger.Errorf("Sender wallet %s balance is %s", w.sender, senderBalance.String())
+			logger.Errorf("Sender wallet %s balance is %s", ps.sender, senderBalance.String())
 		}
-		receiverBalance := balances[w.recipient]
-		pin.Sites = append(pin.Sites, s)
+		receiverBalance := balances[ps.recipient]
+		pin.Sites = append(pin.Sites, ps.site)
 		// allow tx balance update
-		pin.Balance.Balance[w.sender] = senderBalance.Bytes()
-		pin.Balance.Balance[w.recipient] = receiverBalance.Bytes()
+		pin.Balance.Balance[ps.sender] = senderBalance.Bytes()
+		pin.Balance.Balance[ps.recipient] = receiverBalance.Bytes()
 		// The cached balances this pin supersedes. Removed once it is on the
 		// chain, not here: see builtPin.invalidate.
-		built.invalidate = append(built.invalidate, w.sender, w.recipient)
+		built.invalidate = append(built.invalidate, ps.sender, ps.recipient)
 	}
 	// The number the anchor says this pin must carry. Derived from the chain
 	// head rather than a process-local counter, so it stays correct across
@@ -928,19 +1030,35 @@ func (p *NodeTxPin) buildPin(head pinHead, sites []*Node, smcTxs []tx.Transactio
 	// what the signature and the validator quorum cover: a commit transaction
 	// that could be re-split after being agreed would let the proposer pay
 	// itself. A no-op while fees are off, which is the default.
-	recordRewards(pin, sites, func(account string) *big.Int {
-		// Shares the lookups above rather than repeating them, and stays quiet
-		// about an account it cannot find: a processor that has never held a
-		// balance is ordinary, and is worth nothing rather than worth a log
-		// line on every commit.
-		if b, ok := balances[account]; ok {
-			return b
+	// The stake lookup the split weights processors by. For an account this pin
+	// settles for it deliberately reads the chain and not the cache: the cached
+	// figure includes transactions that are still unconfirmed, the cache entry
+	// is about to be dropped anyway, and the stake that should count is the
+	// settled one. That is also what this returned before the cache
+	// invalidation was moved to after the append - it used to read the cache and
+	// miss, because the entry had just been removed a few lines above - and the
+	// split is a ledger entry, so reproducing it exactly is worth a map.
+	//
+	// Built on first use, which while fees are off is never: the split returns
+	// early on an empty pool without asking for a single balance.
+	var settledHere map[string]struct{}
+	recordRewards(pin, verticesOf(prepared), func(account string) *big.Int {
+		if settledHere == nil {
+			settledHere = make(map[string]struct{}, len(built.invalidate))
+			for _, w := range built.invalidate {
+				settledHere[w] = struct{}{}
+			}
 		}
-		balance, err := p.unsafe_getBalanceForWallet(account)
+		var balance *big.Int
+		var err error
+		if _, settled := settledHere[account]; settled {
+			balance, err = p.unsafe_getLatestBalance(account)
+		} else {
+			balance, err = p.unsafe_getBalanceForWallet(account)
+		}
 		if err != nil || balance == nil {
-			balance = big.NewInt(0)
+			return big.NewInt(0)
 		}
-		balances[account] = balance
 		return balance
 	}, rewardSettingsFrom(txSettings{
 		Minstake:      txConfig.Minstake,
@@ -972,8 +1090,15 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 	vm.CaptureStateStoreDiffs()            // enable state store changes capture
 	defer vm.ResetCaptureStateStoreDiffs() // disable state store changes capture even when this method fails for some reason
 	executedTxs := []*pb.ExecutedSmcTx{}
-	pinHash, _ := pin.Hash(crypto.SHA256)
-	pinHashStr := "0x" + hex.EncodeToString(pinHash)
+	// Only the confirmed-contract records below carry it, so it is only computed
+	// when there are any. Hashing marshals the whole pin - every transaction it
+	// settles - and on a payment-only commit, which is the ordinary case, that
+	// was a seventh of the entire build spent on a string nothing read.
+	pinHashStr := ""
+	if len(smcTxs) > 0 {
+		pinHash, _ := pin.Hash(crypto.SHA256)
+		pinHashStr = "0x" + hex.EncodeToString(pinHash)
+	}
 	timestamp := pin.Ts.AsTime().Unix()
 	gasUsed := 0
 	for _, node := range pin.GetNodes() {

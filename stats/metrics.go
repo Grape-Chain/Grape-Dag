@@ -221,6 +221,24 @@ func RegisterQueue(name string, q QueueStats) {
 	}, read(func(q QueueStats) float64 { return q.EnqueueWaitSeconds() })))
 }
 
+// ---------------------------------------------------------- publish path
+
+var (
+	// TxPublishDropped - transactions taken off the publish queue that never
+	// became a site, by reason.
+	//
+	// This has to be counted, not logged. A transaction reaching the publish
+	// queue is one a client was told had been accepted, so a drop here is an
+	// accepted payment that never entered the graph and never will. It used to
+	// be a `continue` after a dequeue, which loses the transaction and leaves no
+	// number behind saying so.
+	TxPublishDropped = newCounterVec("tx_publish_dropped_total", "Accepted transactions that never became a site.", "reason")
+	// TxPublishRetries - inserts retried after a refusal that might not repeat.
+	// A steady rate here is the tip-selection race showing up rather than a
+	// fault, but it should not be invisible.
+	TxPublishRetries = newCounter("tx_publish_retries_total", "Insert attempts retried after a transient refusal.")
+)
+
 // ---------------------------------------------------------- verifier pipeline
 
 var (

@@ -538,6 +538,12 @@ func TestEverySiteCanReachTheApprovalThreshold(t *testing.T) {
 		confirmed += len(tr.pop())
 	}
 
+	// Driven by real selection, so this is where a tip index that drifts under
+	// sampling or under the collision fallback shows up. The tracker's own unit
+	// tests drive those calls directly; this one drives them the way the node
+	// does.
+	assertTipIndexIsConsistent(t, tr, "after 600 selected inserts")
+
 	_, tips, _ := tr.stats()
 
 	if walkMisses > steps/10 {
@@ -599,6 +605,143 @@ func TestSelectTipsResolvesACollisionOnANarrowFrontier(t *testing.T) {
 		}
 		if tips[0].id.id == tips[1].id.id {
 			t.Fatalf("trial %d: selection offered the same site twice", trial)
+		}
+	}
+}
+
+// The three narrow reads selection makes of the tip set have to answer what the
+// whole-set read did. They exist so that selection does not copy the tip set to
+// take one element of it, and each of them is a place where "cheaper" could
+// quietly become "different".
+
+// A site already chosen for one of this site's approvals must not be offered for
+// the other. Approving the same site twice is one approval, not two, so a
+// selection that does it makes half the approvals it was asked for and the graph
+// stops widening. This is the fallback path selection takes when the walks keep
+// colliding, so it is not reached by driving selection on a healthy graph.
+func TestATipAlreadyTakenIsNotOfferedAgain(t *testing.T) {
+	tr := newConfirmTracker(0, 1000)
+	root := tnode(0)
+	tr.add(root)
+	a, b := tnode(1), tnode(2)
+	tlink(a, root)
+	tlink(b, root)
+	tr.add(a)
+	tr.add(b)
+
+	taken := map[uuid.UUID]struct{}{a.id.id: {}}
+	for trial := 0; trial < 100; trial++ {
+		got := tr.tipExcept(taken)
+		if got == nil {
+			t.Fatalf("trial %d: no tip was offered while one was free", trial)
+		}
+		if got.id.id == a.id.id {
+			t.Fatalf("trial %d: a tip already taken was offered again", trial)
+		}
+	}
+	// And nothing is offered once everything is taken, rather than a duplicate.
+	taken[b.id.id] = struct{}{}
+	if got := tr.tipExcept(taken); got != nil {
+		t.Fatalf("a tip was offered when every tip was already taken: %s", got.id.id.String())
+	}
+}
+
+// Throwing the particle back has to pick uniformly among the approvals a site
+// made. Always taking the same one turns the paper's W into a walk down one
+// fixed branch, so the sites on every other branch are never reachable from a
+// throw and only ever get approved by the uniform fallback.
+func TestThrowingAParticleBackChoosesUniformlyAmongApprovals(t *testing.T) {
+	tr := newConfirmTracker(0, 1000)
+	targets := make([]*Node, 0, 3)
+	for i := 0; i < 3; i++ {
+		n := tnode(i)
+		tr.add(n)
+		targets = append(targets, n)
+	}
+	// A tip on its own branch, so the three approvals below are not confirmed by
+	// the whole tip set the moment they are approved. Without it they would be,
+	// and they would leave the region before anything could step back to them.
+	tr.add(tnode(8))
+
+	from := tnode(9)
+	for _, target := range targets {
+		tlink(from, target)
+	}
+	tr.add(from)
+
+	const draws = 3000
+	hits := map[uuid.UUID]int{}
+	for i := 0; i < draws; i++ {
+		got := tr.stepBack(from)
+		if got == nil {
+			t.Fatalf("draw %d: nothing to step back to while three approvals are in the region", i)
+		}
+		hits[got.id.id]++
+	}
+	// Generous: this is a fairness check, not a test of the generator.
+	want := draws / len(targets)
+	for _, target := range targets {
+		if got := hits[target.id.id]; got < want/2 || got > want*2 {
+			t.Fatalf("approval %s was stepped back to %d times in %d draws, expected about %d",
+				target.id.id.String(), got, draws, want)
+		}
+	}
+}
+
+// Sampling the tip set has to reach all of it. The sample is drawn by shuffling
+// the set in place, so a shuffle that does not move anything returns the same
+// sites every time - the uniform fallback would then hand out the same approval
+// targets for the life of the process, and every other tip would go unapproved.
+func TestSamplingTheTipSetReachesEveryTip(t *testing.T) {
+	tr := newConfirmTracker(0, 1000)
+	root := tnode(0)
+	tr.add(root)
+	tips := make([]*Node, 0, 6)
+	for i := 1; i <= 6; i++ {
+		n := tnode(i)
+		tlink(n, root)
+		tr.add(n)
+		tips = append(tips, n)
+	}
+
+	const rounds = 2000
+	hits := map[uuid.UUID]int{}
+	for i := 0; i < rounds; i++ {
+		for _, n := range tr.sampleTips(2, nil) {
+			hits[n.id.id]++
+		}
+	}
+	want := rounds * 2 / len(tips)
+	for _, tip := range tips {
+		if got := hits[tip.id.id]; got < want/2 || got > want*2 {
+			t.Fatalf("tip %s was sampled %d times in %d rounds of two, expected about %d",
+				tip.id.id.String(), got, rounds, want)
+		}
+	}
+}
+
+// A walk reuses one set of buffers for every step it takes and every walk one
+// selection makes, so the buffers have to give exactly the answers fresh ones
+// would. A buffer that is appended to rather than reset leaves the previous
+// step's weights in front of this step's candidates, and weightedChoice reads
+// as many weights as it has candidates - so the walk would be biased by a
+// comparison it made somewhere else, with nothing to show for it.
+func TestReusingAWalkBufferGivesTheSameWeights(t *testing.T) {
+	cases := [][]int{{9, 7, 3}, {4}, {6, 6}, {}}
+	// Deliberately dirty, and longer than any of the cases below.
+	buf := []float64{99, 98, 97, 96, 95, 94}
+	for i, next := range cases {
+		want := transitionWeights(10, next, 0.5)
+		buf = transitionWeightsInto(10, next, 0.5, buf)
+		if len(buf) != len(next) {
+			t.Fatalf("case %d: the reused buffer holds %d weights for %d candidates",
+				i, len(buf), len(next))
+		}
+		for j := range want {
+			if buf[j] != want[j] {
+				t.Fatalf("case %d: reused buffer gave weight %v at %d, a fresh one gives %v",
+					i, buf[j], j, want[j])
+			}
 		}
 	}
 }
@@ -894,6 +1037,8 @@ func TestConfirmationConvergesUnderConcurrentArrival(t *testing.T) {
 				}
 				confirmed += len(tr.pop())
 			}
+
+			assertTipIndexIsConsistent(t, tr, "after the run")
 
 			inserted := id - 1
 			active, tips, _ := tr.stats()
