@@ -74,6 +74,12 @@ goroutine** — `grape_queue_depth{queue="publish"}` sits pinned at its 32,768 c
 CPU (1.26 of 4 cores used) and not lock contention (`AddTxDag` is 1.97% of mutex delay,
 down from 63.54%).
 
+## The work list
+
+`docs/roadmap.md` is the durable task list — phases, file ownership, and what the geth
+decision **cancels** (about half the previously-identified defect inventory is now wasted
+work, because it only makes code correct that is about to be deleted).
+
 ## Current work: replacing the contract VM with go-ethereum's EVM
 
 Decided. See `docs/evm-migration.md` for the plan and the evidence behind it.
