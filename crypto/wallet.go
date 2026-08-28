@@ -148,9 +148,19 @@ func HexToBytesNil(h string) []byte {
 	return bytes
 }
 
+// AddressLength - how many bytes an address is. Named because several packages
+// were checking against a literal 20, and one of them was rendering a log line.
+const AddressLength = 20
+
+// BytesToAddress - an address as its hex string.
+//
+// Panics on the wrong length, on purpose: every caller here has already
+// established that what it holds is an address, so a wrong length is a bug in
+// this process rather than bad input, and the panic is how it gets found. Code
+// that is describing something it has not checked wants a renderer instead.
 func BytesToAddress(address []byte) string {
-	if len(address) != 20 {
-		panic(fmt.Errorf("wrong length of address bytes, expected 20 got %d", len(address)))
+	if len(address) != AddressLength {
+		panic(fmt.Errorf("wrong length of address bytes, expected %d got %d", AddressLength, len(address)))
 	}
 	return "0x" + hex.EncodeToString(address)
 }

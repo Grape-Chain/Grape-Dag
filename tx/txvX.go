@@ -15,12 +15,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	pb "github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/types"
 	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/wallet"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
-	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	eth "github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -711,16 +711,43 @@ func (t *Txv1) MarshalJSON() ([]byte, error) {
 		ChainType: uint8(t.Chain_Type),
 		// Depth:      t.Depth,
 		SenderPubk: hex.EncodeToString(t.Sender_Pubk),
-		Sender:     grape1crypto.BytesToAddress(t.Sender),
-		Recepient:  grape1crypto.ZeroBytesToAddress(t.Recepient),
-		Amount:     big.NewInt(0).SetBytes(t.Amount).Uint64(),
-		Nonce:      t.Nonce,
-		Timestamp:  t.Timestamp,
-		FuelLimit:  big.NewInt(0).SetBytes(t.Fuel_Limit).Uint64(),
-		FuelPrice:  big.NewInt(0).SetBytes(t.Fuel_Price).Uint64(),
-		Data:       t.Data,
+		// Rendered rather than converted. Both addresses used to go through the
+		// crypto package's conversions, which panic on anything that is not
+		// twenty bytes long - and String() is called from log lines on the
+		// publish path, on transactions that arrived over the network and have
+		// not been checked yet. So describing a malformed transaction crashed the
+		// node that received it. A malformed transaction has to be describable:
+		// describing it is how it gets refused.
+		Sender:    renderAddress(t.Sender),
+		Recepient: renderAddress(t.Recepient),
+		Amount:    big.NewInt(0).SetBytes(t.Amount).Uint64(),
+		Nonce:     t.Nonce,
+		Timestamp: t.Timestamp,
+		FuelLimit: big.NewInt(0).SetBytes(t.Fuel_Limit).Uint64(),
+		FuelPrice: big.NewInt(0).SetBytes(t.Fuel_Price).Uint64(),
+		Data:      t.Data,
 	})
 
+}
+
+// renderAddress - an address as it should appear in a log line or an error,
+// whatever is actually in the field.
+//
+// Deliberately not crypto.BytesToAddress: that function asserts the twenty-byte
+// length and panics otherwise, which is the right behaviour for code that has
+// already established the address is valid and the wrong behaviour for code
+// whose job is to describe something that might not be. A length that is not
+// twenty is stated rather than hidden, so a log line about a refused transaction
+// says what was wrong with it.
+func renderAddress(address []byte) string {
+	switch {
+	case len(address) == 0:
+		return "0x"
+	case len(address) == grape1crypto.AddressLength:
+		return grape1crypto.BytesToAddress(address)
+	default:
+		return fmt.Sprintf("0x%s (%d bytes, not %d)", hex.EncodeToString(address), len(address), grape1crypto.AddressLength)
+	}
 }
 
 func (t *Txv1) String() string {
