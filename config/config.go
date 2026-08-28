@@ -39,9 +39,21 @@ func validateAddress(addr string) error {
 
 var grapepeer *Grapepeer
 
+// LoadGrapePeerFromConfig - load the peer configuration, or return nil when
+// there is no configuration file to load.
+//
+// The nil return is the contract, and it used to be unreachable: LoadGrapepeer
+// returns nil for a missing file, and this function then assigned through that
+// nil to set Host. So a node started without a configuration file died with a
+// segmentation fault inside the config package, and the nil check its own caller
+// already had could never run. That is a new developer's very first command, and
+// what it printed was a stack trace.
 func LoadGrapePeerFromConfig(hc *HostConfig) *Grapepeer {
 	if grapepeer == nil {
 		grapepeer = LoadGrapepeer(hc)
+	}
+	if grapepeer == nil {
+		return nil
 	}
 	grapepeer.Host = *hc
 	return grapepeer
@@ -106,7 +118,13 @@ func ParseCliArgs() *HostConfig {
 		}
 	}
 	conf.Config = strings.Trim(conf.Config, "\"")
-	fmt.Printf("Config file supplied is %s\n", conf.Config)
+	// Printed only when a path was actually given. It used to print
+	// unconditionally, so the first line a new user saw was "Config file supplied
+	// is " with nothing after it, immediately above the error saying there was no
+	// configuration file.
+	if len(conf.Config) > 0 {
+		fmt.Printf("Config file: %s\n", conf.Config)
+	}
 
 	RENDEZVOUS = []string{
 		fmt.Sprintf("%s/%s", PRE_RENDEZVOUS_ID, conf.Rendezvous),

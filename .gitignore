@@ -61,3 +61,7 @@ config.local.*
 # broken source file in the tree next to the real one.
 *.mutbak
 *.go.bak
+
+# Local development network: generated configs, wallets, ledger data and logs.
+# Contains node private keys - never commit it.
+.localnet/

@@ -74,5 +74,17 @@ bench-node-rate: txgen ## Offer a fixed rate to the node at TXGEN_PORT: make ben
 bench-txgen: ## Run the txgen unit tests, pacing and metrics included
 	$(GO) test -race -count=1 ./tools/txgen/
 
+setup: ## Check this machine can build and run a node (--verify to build and test)
+	./scripts/setup-dev.sh $(SETUP_ARGS)
+
+localnet: ## Start a two-node local network (leader + peer) with fresh data
+	./scripts/localnet.sh up
+
+localnet-down: ## Stop the local network
+	./scripts/localnet.sh down
+
+localnet-measure: ## Provision, load and measure a local network end to end
+	./scripts/localnet.sh measure $(DURATION) $(WORKERS)
+
 clean: ## Remove build artifacts
 	rm -rf bin/ dist/ build/ coverage.* *.out
