@@ -1,10 +1,12 @@
 package stats
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -48,8 +50,18 @@ func TestMetricsEndpointServesTheSeriesWeMeasureOn(t *testing.T) {
 	}
 }
 
+// testMetricSeq gives each registration in this file a name of its own.
+//
+// The registry rejects a duplicate name by panicking, which is the right
+// behaviour for a process - two metrics under one name is a bug that should stop
+// start-up - but it meant this file could not survive go test -count=2, and
+// -count is how a flaky test gets found. The sequence is the smallest thing that
+// fixes the test without weakening the guard in the code being tested.
+var testMetricSeq atomic.Uint64
+
 func TestTimeRecordsTheElapsedTime(t *testing.T) {
-	h := newHistogram("test_elapsed_seconds", "Test only.")
+	name := fmt.Sprintf("test_elapsed_%d_seconds", testMetricSeq.Add(1))
+	h := newHistogram(name, "Test only.")
 	done := Time(h)
 	time.Sleep(2 * time.Millisecond)
 	done()
@@ -57,12 +69,12 @@ func TestTimeRecordsTheElapsedTime(t *testing.T) {
 	rec := httptest.NewRecorder()
 	MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body, _ := io.ReadAll(rec.Body)
-	if !strings.Contains(string(body), "grape_test_elapsed_seconds_count 1") {
+	if !strings.Contains(string(body), "grape_"+name+"_count 1") {
 		t.Fatal("Time() did not record an observation")
 	}
 	// The 2ms sleep must land above the smallest bucket, or the timer is not
 	// measuring anything.
-	if strings.Contains(string(body), `grape_test_elapsed_seconds_bucket{le="5e-05"} 1`) {
+	if strings.Contains(string(body), fmt.Sprintf("grape_%s_bucket{le=\"5e-05\"} 1", name)) {
 		t.Fatal("a 2ms interval was recorded in the 50us bucket")
 	}
 }

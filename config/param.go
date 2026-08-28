@@ -103,10 +103,22 @@ type PeerConfiguration struct {
 	StateServerPort int    // port of the gRPC server serving state for SMC VM
 	VmServerPort    int    // port of the smart contract vm server where send contracts to
 	Logging         int    // Log level: -1 Debug (through CLI only), 0 - Info, 1 - Warn, 2 - Error
-	Qsize           int    // pubsub outbound queue size in mb
-	Msize           int    // pubsub max message size in mb
-	Qsync           bool   // this flag tells the lock free queues to use channel for sync
-	SnapshotSync    bool   // sync empty node using leader's balance snapshot or not
+	// Peeroutboundqueue - how many messages may be queued for one peer before
+	// gossipsub starts dropping them. Messages, not bytes; the library's own
+	// default is 32.
+	//
+	// This replaces Qsize, which was documented as "pubsub outbound queue size in
+	// mb" and passed to WithPeerOutboundQueueSize, whose unit is messages. At the
+	// default of 16 that asked for 16,777,216 queued messages per peer - not an
+	// allocation, because the queue grows lazily, but a drop boundary moved far
+	// past what the process could survive reaching. Renamed rather than
+	// reinterpreted: silently changing what qsize: 16 means would give an
+	// operator a 16-message queue, below the library default, and drops instead
+	// of a fix.
+	Peeroutboundqueue int
+	Msize             int  // pubsub max message size in mb
+	Qsync             bool // this flag tells the lock free queues to use channel for sync
+	SnapshotSync      bool // sync empty node using leader's balance snapshot or not
 }
 
 type DagConfiguration struct {

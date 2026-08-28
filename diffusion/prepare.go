@@ -35,9 +35,13 @@ process could survive. A peer that stops reading accumulates RPCs, with their
 payloads, until the node dies instead of being dropped.
 
 Peer.Qsize is deliberately not wired to this any more. Its documented unit is
-megabytes, which is not this option's unit, and correcting the field's meaning
-is a change in config/ - see the report. The count below is what governs, and
-GRAPE_PEER_OUTBOUND_QUEUE overrides it per process.
+megabytes, which is not this option's unit. That field is gone: it is now
+Peer.Peeroutboundqueue, a message count, renamed rather than reinterpreted so
+that an operator's existing qsize: 16 cannot silently become a 16-message queue -
+below the library default, and drops instead of a fix.
+
+Resolution order: GRAPE_PEER_OUTBOUND_QUEUE, then the configured count, then the
+default below.
 */
 const (
 	// defaultPeerOutboundQueue - 1024 messages, against a library default of
@@ -55,6 +59,9 @@ func peerOutboundQueueSize() int {
 			return n
 		}
 		logger.Warnf("Ignoring GRAPE_PEER_OUTBOUND_QUEUE=%q: expected a positive message count", env)
+	}
+	if c := config.GetConfig(); c != nil && c.Peer.Peeroutboundqueue > 0 {
+		return c.Peer.Peeroutboundqueue
 	}
 	return defaultPeerOutboundQueue
 }

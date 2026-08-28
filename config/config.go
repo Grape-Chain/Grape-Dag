@@ -198,7 +198,7 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("peer.visualize", 0)
 	viper.SetDefault("peer.purge", 0)
 	viper.SetDefault("peer.stats", 0)
-	viper.SetDefault("peer.qsize", 16)
+	viper.SetDefault("peer.peeroutboundqueue", 1024)
 	viper.SetDefault("peer.msize", 16)
 	viper.SetDefault("peer.qsync", true)
 	viper.SetDefault("peer.network", 2)
