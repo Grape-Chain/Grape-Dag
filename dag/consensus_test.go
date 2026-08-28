@@ -1008,3 +1008,106 @@ func TestAProposalCarryingReportsFromAnotherEpochIsRefused(t *testing.T) {
 		t.Fatalf("the validator voted on evidence from another epoch (%d vote(s) held)", votes)
 	}
 }
+
+// A proposal travels as one gossip message carrying the whole candidate commit
+// transaction, and every validator rebuilds and checks it inside the voting
+// window. Neither is bounded by the protocol, so the settled set has to be:
+// twenty thousand confirmed sites made a proposal too large to carry and too
+// slow to build, and the chain stopped settling anything while the backlog it
+// could not clear kept growing.
+func TestACommitTransactionSettlesABoundedNumberOfSites(t *testing.T) {
+	sites := testSites(maxSettledPerPin + 250)
+	c := newTestCluster(t, 4, sites)
+
+	c.startEpoch(1)
+	c.advance(c.interval / 4)
+
+	if len(c.published) != 1 {
+		t.Fatalf("expected one commit transaction, got %d", len(c.published))
+	}
+	if got := len(c.published[0].Sites); got != maxSettledPerPin {
+		t.Fatalf("a commit transaction settled %d sites, want the bound of %d", got, maxSettledPerPin)
+	}
+}
+
+// The bound is a prefix of an ordered set, so every validator takes the same
+// one without exchanging anything - and the sites over the bound are not lost,
+// they are simply the next commit transaction's.
+func TestTheSettledBoundIsTheSamePrefixEverywhere(t *testing.T) {
+	c := newTestCluster(t, 4, testSites(maxSettledPerPin+250))
+	c.startEpoch(1)
+	c.advance(c.interval / 4)
+
+	want := c.engines[0].settleable()
+	for i, e := range c.engines {
+		got := e.settleable()
+		if len(got) != len(want) {
+			t.Fatalf("validator %d would settle %d sites, validator 0 would settle %d", i, len(got), len(want))
+		}
+		for j := range got {
+			if got[j] != want[j] {
+				t.Fatalf("validator %d and validator 0 disagree on site %d of the bounded set", i, j)
+			}
+		}
+	}
+}
+
+// A report is a message and a report is counted, so an unbounded one is both
+// too large for the topic and too slow to count. Eighty-seven thousand
+// confirmed sites made every round cost tens of seconds, so rounds expired
+// before anyone could vote and the backlog that caused it kept growing.
+func TestAReportIsBounded(t *testing.T) {
+	sites := testSites(reportCap + 1000)
+	got := reportableSites(sites)
+	if len(got) != reportCap {
+		t.Fatalf("a report of %d confirmed sites named %d of them, want the cap of %d",
+			len(sites), len(got), reportCap)
+	}
+}
+
+// Two validators holding nearly the same set must report nearly the same
+// prefix of it, or the intersection a quorum needs would not be there. The
+// order is by site id, so the prefix is the same wherever it is taken.
+func TestReportsFromDifferentValidatorsOverlap(t *testing.T) {
+	shared := testSites(reportCap + 1000)
+
+	// Each validator holds the shared set in a different order, plus a few of
+	// its own - which is what actually happens: sites arrive in different orders
+	// and one node has seen a handful the other has not.
+	a := append(append([]uuid.UUID(nil), shared...), testSites(50)...)
+	b := append([]uuid.UUID(nil), testSites(50)...)
+	for i := len(shared) - 1; i >= 0; i-- {
+		b = append(b, shared[i])
+	}
+
+	reportedA := map[uuid.UUID]struct{}{}
+	for _, id := range reportableSites(a) {
+		reportedA[id] = struct{}{}
+	}
+	overlap := 0
+	for _, id := range reportableSites(b) {
+		if _, ok := reportedA[id]; ok {
+			overlap++
+		}
+	}
+	// Room for the settlement bound with slack to spare.
+	if overlap < maxSettledPerPin {
+		t.Fatalf("two validators holding nearly the same set overlap on only %d site(s), too few to settle the bound of %d",
+			overlap, maxSettledPerPin)
+	}
+}
+
+// A report smaller than the cap is left exactly as it is: the ordinary case
+// must not pay for the bound.
+func TestASmallReportIsNotReordered(t *testing.T) {
+	sites := testSites(10)
+	got := reportableSites(sites)
+	if len(got) != len(sites) {
+		t.Fatalf("a report of %d sites named %d", len(sites), len(got))
+	}
+	for i := range got {
+		if got[i] != sites[i] {
+			t.Fatalf("site %d was moved; a report under the cap should be untouched", i)
+		}
+	}
+}

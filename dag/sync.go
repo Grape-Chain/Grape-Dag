@@ -95,6 +95,15 @@ func (h DepthHandler) Notify(txvl TxVL) {
 			}
 		})
 	}
+	// A site can be in the graph before its transaction is: an approval target
+	// named by a site that arrived first is inserted as a placeholder and filled
+	// in when the transaction turns up. Asking such a placeholder what kind of
+	// transaction it carries dereferences nothing and takes the node down - seen
+	// on a validator catching up eleven commit transactions at once, where
+	// placeholders are created faster than they are resolved.
+	if txvl.vertex.tx == nil {
+		return
+	}
 	if txvl.vertex.tx.GetTransactionType() == tx.SERVICE_PIN || txvl.vertex.tx.GetTransactionType() == tx.SERVICE_GENESIS {
 		graph.GetGraphPinStack().Push(txvl.vertex.id.id)
 		if graph.GetGraphPinStack().Len() > 1 {
@@ -366,10 +375,18 @@ func respondAllPinsFrom(rec *tx.Syncv1) error {
 	fromIntValue := fromMsg.(*wrapperspb.Int32Value)
 	from := fromIntValue.GetValue()
 	allPins := p.getAllFrom(int(from))
-	logger.Infof("Found %d pins from height %d, id=%s", len(allPins), from, rec.Tracking_Id.String())
-	pbLength, _ := anypb.New(wrapperspb.Int32(int32(len(allPins))))
+	// One message, so it has to fit in one message. A commit transaction under
+	// a validator quorum carries every transaction it settles, which at load is
+	// megabytes each; nine of them went over the pubsub limit and were dropped
+	// in silence, and the node that asked timed out and stayed behind for ever.
+	// Send what fits and let the requester ask again from where this batch left
+	// it - the catch-up already re-triggers on the next announcement.
+	batch, sent := pinsThatFit(allPins, catchUpBudget())
+	logger.Infof("Found %d pins from height %d, sending %d of them (%d bytes), id=%s",
+		len(allPins), from, len(batch), sent, rec.Tracking_Id.String())
+	pbLength, _ := anypb.New(wrapperspb.Int32(int32(len(batch))))
 	stx.Details = append(stx.Details, pbLength)
-	for _, pin := range allPins {
+	for _, pin := range batch {
 		pinBytes, _ := pin.MarshalBinary()
 		pinBytesWrapper, _ := anypb.New(wrapperspb.Bytes(pinBytes))
 		stx.Details = append(stx.Details, pinBytesWrapper)
@@ -1032,4 +1049,38 @@ func txDifference(left, right *tx.Syncv1) ([]uuid.UUID, []uuid.UUID) {
 		rid = append(rid, i.(uuid.UUID))
 	})
 	return lid, rid
+}
+
+// pinsThatFit - as many commit transactions from the front of the slice as will
+// fit in one gossip message, and how many bytes that came to.
+//
+// Budgeted at half of peer.msize: the pins are the bulk of the message but not
+// all of it, and a message over the limit is not an error the sender sees - the
+// receiving side drops it while reading, so the only symptom is a peer that
+// asked for a range and never heard back. At least one pin is always sent, even
+// if it alone is over budget: a batch of none can never make progress, and a
+// single oversized commit transaction is a problem to see rather than to stall
+// on quietly.
+func pinsThatFit(pins []*pb.TxPin, budget int) ([]*pb.TxPin, int) {
+	out := make([]*pb.TxPin, 0, len(pins))
+	total := 0
+	for _, pin := range pins {
+		size := proto.Size(pin)
+		if len(out) > 0 && total+size > budget {
+			break
+		}
+		out = append(out, pin)
+		total += size
+	}
+	return out, total
+}
+
+// catchUpBudget - how many bytes of commit transactions one catch-up response
+// may carry. Half of peer.msize, because the pins are the bulk of the message
+// but not all of it.
+func catchUpBudget() int {
+	if cfg := config.GetConfig(); cfg != nil && cfg.Peer.Msize > 0 {
+		return cfg.Peer.Msize * config.MB / 2
+	}
+	return 8 * config.MB
 }

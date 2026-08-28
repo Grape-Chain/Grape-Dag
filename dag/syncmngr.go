@@ -587,26 +587,22 @@ func processPin(pin *pb.TxPin) {
 
 	// Open the channel and request the missing range before handing off, so the
 	// response cannot arrive before there is somewhere to put it.
-	_pins_.openPinDownloading()
-	downloads := _pins_.downloadedPins
-	if err := sendPindDownloadRequest(int(currentHeight) + 1); err != nil {
-		pinGapSyncing.Store(false)
-		logger.Errorf("[Gap detected] downloading missing pins to catch up with leader: %s, will try again on next leader's new pin announce", err.Error())
-		return
-	}
-
-	// The catch-up must not run on the caller's goroutine. processPin is called
-	// from the sync subscriber loop, and that same loop is what dispatches the
-	// leader's download response into this channel - waiting here would block
-	// the producer and guarantee the timeout.
-	go drainDownloadedPins(downloads)
+	requestPinCatchUp(int64(currentHeight), pin.PinNumber)
 }
 
 // drainDownloadedPins - apply the pins the leader sent for a gap, in order.
 // The producer (handleDownloadedPinsFromLeader) closes the channel when it has
 // queued the whole batch, which is what ends this loop.
-func drainDownloadedPins(downloads chan *pb.TxPin) {
-	defer pinGapSyncing.Store(false)
+// drainDownloadedPins - apply one batch. startedAt is the height we asked from,
+// target the height we are trying to reach, so a batch that made progress but
+// did not finish can ask for the next one.
+func drainDownloadedPins(downloads chan *pb.TxPin, startedAt, target int64) {
+	caughtUp := false
+	defer func() {
+		if !caughtUp {
+			pinGapSyncing.Store(false)
+		}
+	}()
 	timer := time.After(time.Second * 120)
 	logged := false
 pinProcessing:
@@ -640,4 +636,33 @@ pinProcessing:
 		}
 	}
 	logger.Infof("[Gap detected] Processed pins up to %d height", _pins_.CurrentHeight())
+
+	// A batch is capped to what fits in one message, so one round of it rarely
+	// closes a wide gap. Ask again from where this batch left us rather than
+	// waiting for the next announcement, which on a quiet chain may not come.
+	// Only if the batch actually moved us forward: asking again from the same
+	// height would loop for ever against a peer that cannot answer.
+	if height := int64(_pins_.CurrentHeight()); height < target && height > startedAt {
+		logger.Infof("[Gap detected] Still %d pin(s) behind, asking for the next batch from %d",
+			target-height, height+1)
+		caughtUp = true // the next round owns the flag
+		requestPinCatchUp(height, target)
+	}
+}
+
+// requestPinCatchUp - open the download channel and ask for everything from the
+// height after ours, then drain it off this goroutine. The caller must already
+// hold the pinGapSyncing flag.
+func requestPinCatchUp(currentHeight, target int64) {
+	_pins_.openPinDownloading()
+	downloads := _pins_.downloadedPins
+	if err := sendPindDownloadRequest(int(currentHeight) + 1); err != nil {
+		pinGapSyncing.Store(false)
+		logger.Errorf("[Gap detected] downloading missing pins to catch up: %s, will try again on the next announcement", err.Error())
+		return
+	}
+	// Not on the caller's goroutine when that goroutine is the sync subscriber:
+	// the same loop dispatches the response into this channel, so waiting here
+	// would block the producer and guarantee the timeout.
+	go drainDownloadedPins(downloads, currentHeight, target)
 }

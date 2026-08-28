@@ -274,7 +274,7 @@ func (e *consensusEngine) unsafeStartEpoch(epoch int64) {
 // unsafeReport - say what we hold confirmed for the epoch that is open. Caller
 // holds the lock.
 func (e *consensusEngine) unsafeReport() {
-	sites := e.net.confirmedSites()
+	sites := reportableSites(e.net.confirmedSites())
 	msg := &pb.ConfirmedSet{Epoch: e.epoch}
 	for _, id := range sites {
 		msg.SiteIds = append(msg.SiteIds, append([]byte(nil), id[:]...))
@@ -289,6 +289,32 @@ func (e *consensusEngine) unsafeReport() {
 	}
 	// Kept signed, so a proposal we make can carry it as evidence.
 	e.reportEnvelopes[e.selfKey] = env
+}
+
+// reportCap - how many sites one report may name.
+//
+// Twice the settlement bound, so the agreed set has room to be the bound even
+// when validators hold slightly different sets. A report is a message and a
+// report is counted: an unbounded one is both too large for the topic and too
+// slow to count. Eighty-seven thousand confirmed sites made every round cost
+// tens of seconds, so rounds expired before anyone could vote and the backlog
+// that caused it kept growing.
+const reportCap = 2 * maxSettledPerPin
+
+// reportableSites - the sites to report, bounded and in a stable order.
+//
+// Ordered by site id and cut, which is what makes the bound agree across
+// validators without exchanging anything: two validators holding nearly the
+// same set report nearly the same prefix of it, so the intersection a quorum
+// needs is still there. Sites past the cut are not dropped - they are still
+// confirmed, and they are reported as the ones before them settle.
+func reportableSites(sites []uuid.UUID) []uuid.UUID {
+	if len(sites) <= reportCap {
+		return sites
+	}
+	ordered := append([]uuid.UUID(nil), sites...)
+	sort.Slice(ordered, func(i, j int) bool { return bytes.Compare(ordered[i][:], ordered[j][:]) < 0 })
+	return ordered[:reportCap]
 }
 
 // rebroadcastReport - say again what we hold confirmed, for the epoch already
@@ -416,6 +442,34 @@ func (e *consensusEngine) absorbEvidence(reports []*pb.ConsensusEnvelope) {
 		e.recordReport(key, sites)
 		e.reportEnvelopes[key] = env
 	}
+}
+
+// maxSettledPerPin - how many sites one commit transaction may settle.
+//
+// A proposal travels as one gossip message carrying the whole candidate commit
+// transaction, and every validator has to rebuild and check it inside the
+// voting window. Neither of those is bounded by the protocol, so a backlog is:
+// twenty thousand confirmed sites made a proposal too large for the topic to
+// carry and too slow to build, and the chain stopped settling anything at all
+// while the backlog it could not clear kept growing.
+//
+// Five thousand is the design target expressed as a bound - a thousand
+// transactions a second at the five-second commit cadence. Sites over the bound
+// are not lost, they are settled by the next commit transaction, and because
+// the agreed set is ordered by site id the same bound gives every validator the
+// same prefix.
+const maxSettledPerPin = 5000
+
+// settleable - the sites to propose settling: what a quorum agreed, bounded.
+// Caller holds the lock.
+func (e *consensusEngine) settleable() []uuid.UUID {
+	sites := e.agreedSites()
+	if len(sites) <= maxSettledPerPin {
+		return sites
+	}
+	logger.Infof("[consensus] Epoch %d: %d site(s) are settleable, proposing the first %d; the rest follow in the next commit transaction",
+		e.epoch, len(sites), maxSettledPerPin)
+	return sites[:maxSettledPerPin]
 }
 
 // justified - can this site be settled on the evidence we hold? Used to check a
@@ -556,7 +610,7 @@ func (e *consensusEngine) unsafeOpenVoting() {
 	if e.phase != phaseCollecting {
 		return
 	}
-	sites := e.agreedSites()
+	sites := e.settleable()
 	if len(sites) == 0 {
 		// Nothing a quorum agrees is settled yet. Keep collecting rather than
 		// opening a vote on nothing: an epoch is not over because it is not
@@ -740,7 +794,7 @@ func (e *consensusEngine) unsafeAdvanceRound() {
 	if e.proposerFor(e.epoch, e.round) != e.selfKey {
 		return
 	}
-	sites := e.agreedSites()
+	sites := e.settleable()
 	if len(sites) == 0 {
 		e.phase = phaseDone
 		return
