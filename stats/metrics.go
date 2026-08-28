@@ -2,6 +2,7 @@ package stats
 
 import (
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -188,6 +189,15 @@ func MetricsHandler() http.Handler {
 // Registry - exposed so a test can read the collected values back.
 func Registry() *prometheus.Registry { return registry }
 
+// Sampling rates for the contention profiles. Only in effect when the
+// diagnostics server is started, which is behind -profile.
+const (
+	mutexProfileRate = 5
+	// 10 microseconds: coarse enough not to matter, fine enough to catch a lock
+	// held across an insert.
+	blockProfileRate = 10000
+)
+
 // StartDiagnosticsServer - serve pprof and /metrics on one address.
 //
 // pprof registers its handlers on http.DefaultServeMux when net/http/pprof is
@@ -198,6 +208,17 @@ func StartDiagnosticsServer(addr string) {
 	if addr == "" {
 		addr = "127.0.0.1:6060"
 	}
+	// Contention profiling, off in Go unless asked for. Without these two the
+	// /debug/pprof/mutex and /debug/pprof/block endpoints answer with an empty
+	// profile, which reads as "nothing is contended" rather than as "nobody
+	// measured" - and a node that is not CPU-bound and not going faster is
+	// exactly the case they exist to explain.
+	//
+	// The rates are the ones the runtime documents as cheap enough to leave on:
+	// one mutex event in every mutexProfileRate contentions, and block events
+	// sampled at blockProfileRate nanoseconds of blocking.
+	runtime.SetMutexProfileFraction(mutexProfileRate)
+	runtime.SetBlockProfileRate(blockProfileRate)
 	mux := http.DefaultServeMux
 	mux.Handle("/metrics", MetricsHandler())
 	srv := &http.Server{
