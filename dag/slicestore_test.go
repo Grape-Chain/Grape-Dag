@@ -124,3 +124,79 @@ func TestTheArchiveWindowIsMeasuredInCommitTransactions(t *testing.T) {
 		t.Fatalf("archive reports %d site(s), want 50", a.Len())
 	}
 }
+
+// The archive holds pointers to the commit-transaction chain's own pb.Node
+// values, so its window and the chain's window have to be the same window. If
+// the archive keeps a body the chain has released, the chain's release frees
+// nothing at all and its bound becomes decorative.
+//
+// This is not a hypothetical. The chain's bound was changed from a pin count to
+// a site count and this one was left on the pin count; a heap profile of a node
+// five minutes into a saturation run still put 42% of the live heap in the site
+// bodies the chain had dutifully let go of.
+func TestTheArchiveHonoursTheSiteBoundAsWellAsThePinBound(t *testing.T) {
+	restoreSites, restorePins := pinBodyRetainSites, pinBodyRetainPins
+	pinBodyRetainSites, pinBodyRetainPins = 50, 1000 // sites must bite first
+	t.Cleanup(func() { pinBodyRetainSites, pinBodyRetainPins = restoreSites, restorePins })
+
+	a := newRamArchive()
+	var everyID []uuid.UUID
+	for pin := int64(0); pin < 20; pin++ {
+		nodes, ids := archivedSites(t, int(pin)*100, 10)
+		everyID = append(everyID, ids...)
+		a.Archive(pin, nodes)
+	}
+
+	a.mu.RLock()
+	held := len(a.bodies)
+	a.mu.RUnlock()
+	// Bounded above, because that is the bug this is about; and bounded below,
+	// because over-releasing is its own failure. If the held counter ever drifts
+	// upward - say it is incremented on archive but not decremented on release -
+	// the site bound reads as permanently exceeded and the archive throws away
+	// everything except the newest commit on every call. Nothing breaks: Has and
+	// PinOf still answer, so no settled site becomes unknown. It just quietly
+	// stops being a cache, which is exactly the kind of regression that survives
+	// a test asserting only "not too much".
+	if held > pinBodyRetainSites+10 {
+		t.Errorf("the archive holds %d bodies against a %d-site bound and a %d-pin bound - the pin bound is governing when the site bound should",
+			held, pinBodyRetainSites, pinBodyRetainPins)
+	}
+	if floor := pinBodyRetainSites / 2; held < floor {
+		t.Errorf("the archive holds only %d bodies against a %d-site budget - it is releasing far more than the bound asks for", held, pinBodyRetainSites)
+	}
+
+	// Releasing a body must never make a settled site unknown. That is the
+	// property the whole archive exists for, and the one a size bound is most
+	// likely to break.
+	for _, id := range everyID {
+		if !a.Has(id) {
+			t.Fatalf("site %s stopped being known once its body was released", id)
+		}
+		if _, ok := a.PinOf(id); !ok {
+			t.Fatalf("site %s lost the commit transaction that settled it", id)
+		}
+	}
+}
+
+// A commit larger than the whole body budget must not empty the archive: the
+// newest commit is the one every lookup is about.
+func TestACommitLargerThanTheBudgetStillKeepsItsBodies(t *testing.T) {
+	restoreSites, restorePins := pinBodyRetainSites, pinBodyRetainPins
+	pinBodyRetainSites, pinBodyRetainPins = 10, 1000
+	t.Cleanup(func() { pinBodyRetainSites, pinBodyRetainPins = restoreSites, restorePins })
+
+	a := newRamArchive()
+	nodes, ids := archivedSites(t, 9000, 100)
+	a.Archive(0, nodes)
+
+	found := 0
+	for _, id := range ids {
+		if _, ok := a.Lookup(id); ok {
+			found++
+		}
+	}
+	if found == 0 {
+		t.Errorf("a single commit of %d sites against a %d-site budget left no bodies at all", len(nodes), pinBodyRetainSites)
+	}
+}

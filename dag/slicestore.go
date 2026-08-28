@@ -65,6 +65,9 @@ type ramArchive struct {
 	// whole pin's worth can be released without scanning the body map, which is
 	// the difference between constant and linear work per commit.
 	window []archivedPin
+	// held - bodies currently in the window. Counted rather than taken from
+	// len(bodies), so that the volume bound costs nothing to evaluate.
+	held   int
 	newest int64
 	seen   bool
 }
@@ -99,6 +102,7 @@ func (a *ramArchive) Archive(pinNumber int64, sites []*pb.Node) {
 	}
 	if len(entry.ids) > 0 {
 		a.window = append(a.window, entry)
+		a.held += len(entry.ids)
 	}
 	if !a.seen || pinNumber > a.newest {
 		a.newest, a.seen = pinNumber, true
@@ -109,18 +113,39 @@ func (a *ramArchive) Archive(pinNumber int64, sites []*pb.Node) {
 // releaseOldBodies - drop the bodies of sites settled outside the retain
 // window. Caller holds a.mu.
 //
-// Driven by the newest pin seen rather than by a count of bodies, so the window
-// means the same thing here as it does for the commit-transaction chain however
-// many sites a pin happens to settle.
+// Both bounds, and they have to be the same two the commit-transaction chain
+// uses, because this map holds pointers to that chain's own pb.Node values. The
+// chain replacing a pin with a body-less copy frees nothing at all while these
+// pointers are still here, so a window here that is wider than the chain's makes
+// the chain's bound decorative.
+//
+// That is not hypothetical - it is what happened. The chain's bound was changed
+// from pins to sites and this one was left on pins, and a heap profile of a node
+// five minutes into a saturation run still put 727 MB, 42% of the live heap, in
+// Node.ToPbNode reached through serialiseSites, with the chain dutifully
+// releasing bodies that this map went on holding.
 func (a *ramArchive) releaseOldBodies() {
-	if pinBodyRetainPins <= 0 {
-		return
+	oldest := int64(-1)
+	if pinBodyRetainPins > 0 {
+		oldest = a.newest - int64(pinBodyRetainPins)
 	}
-	oldest := a.newest - int64(pinBodyRetainPins)
-	for len(a.window) > 0 && a.window[0].pin <= oldest {
+	for len(a.window) > 0 {
+		overPins := pinBodyRetainPins > 0 && a.window[0].pin <= oldest
+		overSites := pinBodyRetainSites > 0 && a.held > pinBodyRetainSites
+		if !overPins && !overSites {
+			return
+		}
+		// Never release the only entry on the site bound alone: a single commit
+		// larger than the whole budget would otherwise leave the archive holding
+		// no bodies at all, and the newest commit is the one every lookup is
+		// about.
+		if !overPins && len(a.window) == 1 {
+			return
+		}
 		for _, id := range a.window[0].ids {
 			delete(a.bodies, id)
 		}
+		a.held -= len(a.window[0].ids)
 		a.window[0] = archivedPin{}
 		a.window = a.window[1:]
 	}
