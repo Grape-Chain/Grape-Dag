@@ -39,14 +39,39 @@ func TestRevertTwoAccountsChangeBalanceAndNonce(t *testing.T) {
 	storage.revert()
 	acc1, _ = storage.getAccount(acc1.AddressBytes())
 	acc2, _ = storage.getAccount(acc2.AddressBytes())
-	if acc1.Balance != "10000" && acc2.Balance != "120000000000000000000000000000" {
-		t.Errorf("Revert is not  working, balance were %s and %s,but expected were 10000 and 120000000000000000000000000000", acc1.Balance, acc2.Balance)
-	}
 
-	if acc1.Nonce != "0" && acc2.Nonce != "0" {
-		t.Errorf("Revert is not  working, t.Errorf, expected nonce were 0 and 0, but were %s and %s", acc1.Nonce, acc2.Nonce)
+	// Reverting the second checkpoint restores what the first one stored.
+	// These conditions were joined with && and expected "10000" for a balance
+	// that was stored as "100000", so the assertion could not fail.
+	if acc1.Balance != "100000" {
+		t.Errorf("after revert acc1 balance is %s, want 100000", acc1.Balance)
 	}
+	if acc2.Balance != "120000000000000000000000000000" {
+		t.Errorf("after revert acc2 balance is %s, want 120000000000000000000000000000", acc2.Balance)
+	}
+	if acc1.Nonce != "0" {
+		t.Errorf("after revert acc1 nonce is %s, want 0", acc1.Nonce)
+	}
+	if acc2.Nonce != "0" {
+		t.Errorf("after revert acc2 nonce is %s, want 0", acc2.Nonce)
+	}
+}
 
+// An address carrying the 0x prefix must not take the process down: putAccount
+// strips the prefix when storing, so callers routinely still hold it.
+func TestAddressBytesAcceptsThePrefix(t *testing.T) {
+	prefixed := StoredAccount{Address: "0x00004001"}
+	plain := StoredAccount{Address: "00004001"}
+	got, want := prefixed.AddressBytes(), plain.AddressBytes()
+	if len(want) == 0 {
+		t.Fatalf("unprefixed address did not decode")
+	}
+	if string(got) != string(want) {
+		t.Fatalf("prefixed address decoded to %x, want %x", got, want)
+	}
+	if bad := (StoredAccount{Address: "nothex"}).AddressBytes(); bad != nil {
+		t.Fatalf("a non-hex address decoded to %x, want nil", bad)
+	}
 }
 
 func TestRevertChangesAfterCommit(t *testing.T) {
@@ -100,12 +125,20 @@ func TestRevertChangesAfterCommit(t *testing.T) {
 	acc1, _ = storage.getAccount(acc1.AddressBytes())
 	acc2, _ = storage.getAccount(acc2.AddressBytes())
 
-	if acc1.Balance != "10000" && acc2.Balance != "120000000000000000000000000000" {
-		t.Errorf("Revert is not  working, balance were %s and %s,but expected were 10000 and 120000000000000000000000000000", acc1.Balance, acc2.Balance)
+	// Reverting back past every checkpoint restores the state the accounts were
+	// first stored with. These were joined with && and expected "10000" for a
+	// balance stored as "100000", so they could not fail.
+	if acc1.Balance != "100000" {
+		t.Errorf("after revert acc1 balance is %s, want 100000", acc1.Balance)
 	}
-
-	if acc1.Nonce != "0" && acc2.Nonce != "0" {
-		t.Errorf("Revert is not  working, t.Errorf, expected nonce were 0 and 0, but were %s and %s", acc1.Nonce, acc2.Nonce)
+	if acc2.Balance != "120000000000000000000000000000" {
+		t.Errorf("after revert acc2 balance is %s, want 120000000000000000000000000000", acc2.Balance)
+	}
+	if acc1.Nonce != "0" {
+		t.Errorf("after revert acc1 nonce is %s, want 0", acc1.Nonce)
+	}
+	if acc2.Nonce != "0" {
+		t.Errorf("after revert acc2 nonce is %s, want 0", acc2.Nonce)
 	}
 
 }
@@ -147,12 +180,20 @@ func TestRecoverAfterRevert(t *testing.T) {
 	storage.revert()
 	acc1, _ = storage.getAccount(acc1.AddressBytes())
 	acc2, _ = storage.getAccount(acc2.AddressBytes())
-	if acc1.Balance != "10000" && acc2.Balance != "120000000000000000000000000000" {
-		t.Errorf("Revert is not  working, balance were %s and %s,but expected were 10000 and 120000000000000000000000000000", acc1.Balance, acc2.Balance)
+	// Reverting back past every checkpoint restores the state the accounts were
+	// first stored with. These were joined with && and expected "10000" for a
+	// balance stored as "100000", so they could not fail.
+	if acc1.Balance != "100000" {
+		t.Errorf("after revert acc1 balance is %s, want 100000", acc1.Balance)
 	}
-
-	if acc1.Nonce != "0" && acc2.Nonce != "0" {
-		t.Errorf("Revert is not  working, t.Errorf, expected nonce were 0 and 0, but were %s and %s", acc1.Nonce, acc2.Nonce)
+	if acc2.Balance != "120000000000000000000000000000" {
+		t.Errorf("after revert acc2 balance is %s, want 120000000000000000000000000000", acc2.Balance)
+	}
+	if acc1.Nonce != "0" {
+		t.Errorf("after revert acc1 nonce is %s, want 0", acc1.Nonce)
+	}
+	if acc2.Nonce != "0" {
+		t.Errorf("after revert acc2 nonce is %s, want 0", acc2.Nonce)
 	}
 	acc1.Balance, acc2.Balance = "8000000", "9000000000000"
 	acc1.Nonce, acc2.Nonce = "11", "1"
@@ -160,12 +201,18 @@ func TestRecoverAfterRevert(t *testing.T) {
 	storage.putAccount(acc2)
 	acc1, _ = storage.getAccount(acc1.AddressBytes())
 	acc2, _ = storage.getAccount(acc2.AddressBytes())
-	if acc1.Balance != "8000000" && acc2.Balance != "9000000000000" {
-		t.Errorf("Revert is not  working, balance were %s and %s,but expected were 8000000 and 19000000000000", acc1.Balance, acc2.Balance)
+	// Writes made after a revert are ordinary writes and must be readable.
+	if acc1.Balance != "8000000" {
+		t.Errorf("acc1 balance is %s, want 8000000", acc1.Balance)
 	}
-
-	if acc1.Nonce != "11" && acc2.Nonce != "1" {
-		t.Errorf("Revert is not  working, t.Errorf, expected nonce were 11 and 1, but were %s and %s", acc1.Nonce, acc2.Nonce)
+	if acc2.Balance != "9000000000000" {
+		t.Errorf("acc2 balance is %s, want 9000000000000", acc2.Balance)
+	}
+	if acc1.Nonce != "11" {
+		t.Errorf("acc1 nonce is %s, want 11", acc1.Nonce)
+	}
+	if acc2.Nonce != "1" {
+		t.Errorf("acc2 nonce is %s, want 1", acc2.Nonce)
 	}
 
 }
@@ -223,14 +270,19 @@ func TestNestedRevert(t *testing.T) {
 	storage.revert()
 
 	acc1, _ = storage.getAccount(acc1.AddressBytes())
-	acc2, _ = storage.getAccount(acc2.AddressBytes())
+	acc2, acc2Exists := storage.getAccount(acc2.AddressBytes())
 
-	if acc1.Balance != "10000" && acc2.Balance != "" {
-		t.Errorf("Revert is not  working, balance were %s and %s,but expected were 10000 and ", acc1.Balance, acc2.Balance)
+	// acc1 goes back to what it held at the first checkpoint. acc2 was created
+	// inside the reverted range - committing the inner checkpoint does not make
+	// it survive an outer revert - so it must be gone entirely.
+	if acc1.Balance != "100000" {
+		t.Errorf("after revert acc1 balance is %s, want 100000", acc1.Balance)
 	}
-
-	if acc1.Nonce != "0" && acc2.Nonce != "" {
-		t.Errorf("Revert is not  working, t.Errorf, expected nonce were 0 and 0, but were %s and %s", acc1.Nonce, acc2.Nonce)
+	if acc1.Nonce != "0" {
+		t.Errorf("after revert acc1 nonce is %s, want 0", acc1.Nonce)
+	}
+	if acc2Exists {
+		t.Errorf("acc2 was created inside the reverted range but is still stored: %v", acc2)
 	}
 
 }
@@ -307,12 +359,11 @@ func TestRevertNestedCommitedAccount(t *testing.T) {
 		t.Errorf("Account2 should be reverted and mustn't be present in storage, actual acc2 state is %v", acc3)
 	}
 
-	if acc1.Balance != "10000" && acc1.Nonce != "0" {
-		t.Errorf("Revert is not  working expected balance was 10000, but was %s and expected nonce was 0, but was %s", acc1.Balance, acc1.Nonce)
+	if acc1.Balance != "100000" {
+		t.Errorf("after revert acc1 balance is %s, want 100000", acc1.Balance)
 	}
-
-	if acc1.Nonce != "0" && acc2.Nonce != "0" && acc3.Nonce != "0" {
-		t.Errorf("Revert is not  working, t.Errorf, expected nonce were 0, 0 and 0, but were %s, %s and %s", acc1.Nonce, acc2.Nonce, acc3.Nonce)
+	if acc1.Nonce != "0" {
+		t.Errorf("after revert acc1 nonce is %s, want 0", acc1.Nonce)
 	}
 
 }

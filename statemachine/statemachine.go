@@ -62,7 +62,8 @@ func (sm *StateMachine) SyncChangeTo(newState State, signal bool) error {
 		// logger.Infof("[*] Signaling state change: %s", newState)
 		sm.ch <- newState
 	}
-	if config.GetConfig().Host.Verbose > 3 {
+	// config may not be loaded yet (or at all, under test) - do not assume it
+	if cfg := config.GetConfig(); cfg != nil && cfg.Host.Verbose > 3 {
 		logger.Infof("State Change: %s -> %s", current_sm, sm.currentState)
 	}
 	// logger.Infof("%s  ~ %s  STATE CHANGED FROM %s to %s", emoji.ControlKnobs, emoji.CheckBoxWithCheck, current_sm, newState)

@@ -10,16 +10,17 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/Grape-Chain/Grape-Dag/dag"
 	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
 	"github.com/Grape-Chain/Grape-Dag/smc"
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/types"
 	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/vm"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
-	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/golang/protobuf/ptypes/timestamp"
 	"google.golang.org/protobuf/proto"
 )
@@ -82,11 +83,48 @@ func (ts *TransactionServiceImpl) CallReadContract(contractAddress string, contr
 	return response.Msg, nil
 }
 
+// parseVmError - a revert payload from the VM carries an ABI-encoded reason;
+// anything else is a message from the VM itself.
 func parseVmError(err string) error {
+	if eth.IsRevertPayload(err) {
+		return eth.ParseRevert(err)
+	}
 	return fmt.Errorf("system VM error during tx execution: %s", err)
 }
 
+// SendRawTransaction - accept a transaction over the API.
+//
+// A thin wrapper, so that the offered load can be counted separately from the
+// accepted load: a benchmark that reports only what the node took in has no way
+// to tell a node keeping up from a node refusing work. Note that the inner
+// function panics on some inputs and its callers recover, so acceptance is
+// recorded only after it returns - a panic counts as a refusal, which is what it
+// is from the client's point of view.
+//
+// The reason label is deliberately coarse. Metric labels multiply series, and an
+// error string is unbounded, so a caller sending malformed transactions in a loop
+// could otherwise grow the metric without limit.
 func (ts *TransactionServiceImpl) SendRawTransaction(pbTx string) (ExecutionResult, error) {
+	start := time.Now()
+	outcome := "panic"
+	defer func() {
+		stats.Since(stats.TxIngress, start)
+		if outcome == "" {
+			stats.TxAccepted.Inc()
+			return
+		}
+		stats.TxRejected.WithLabelValues(outcome).Inc()
+	}()
+	res, err := ts.sendRawTransaction(pbTx)
+	if err != nil {
+		outcome = "rejected"
+	} else {
+		outcome = ""
+	}
+	return res, err
+}
+
+func (ts *TransactionServiceImpl) sendRawTransaction(pbTx string) (ExecutionResult, error) {
 	startProcessingTime := time.Now()
 	utils.ColorizeInfo(logger, "Process transaction %s", shortenString(pbTx, 16))
 	defer func() {
@@ -159,8 +197,12 @@ func (ts *TransactionServiceImpl) SendRawTransaction(pbTx string) (ExecutionResu
 		if senderBalance.Cmp(txTotal) < 0 {
 			return execResult, fmt.Errorf("not enough funds: required %d, got %s", txTotal, senderBalance.Text(10))
 		}
-		if transaction.GetFuelLimit().String() != "0" || transaction.GetFuelPrice().String() != "0" {
-			return execResult, fmt.Errorf("payment transaction must have zero fuelLimit and fuelPrice, got %s and %s correspondingly", transaction.GetFuelLimit().String(), transaction.GetFuelPrice().String())
+		// What the payment owes, judged at the height the node is at. Before
+		// tx.feestartpin this is the pre-fee rule - no fuel on a payment - and
+		// once fees start it is fuel_limit of 1 at no less than the minimum
+		// price. See services/fees.go and docs/economics.md.
+		if feeErr := validatePaymentFuel(transaction, currentPinNumber()); feeErr != nil {
+			return execResult, feeErr
 		}
 		execResult, txExecErr = executePaymentTx(transaction)
 	}
@@ -174,9 +216,20 @@ func (ts *TransactionServiceImpl) SendRawTransaction(pbTx string) (ExecutionResu
 func executePaymentTx(transaction tx.Transaction) (ExecutionResult, error) {
 	hash := transaction.GetHash()
 	execResult := ExecutionResult{}
+	pinNumber := currentPinNumber()
+	// Checked here as well as in sendRawTransaction, not instead of it. This is
+	// the last point before the transaction is queued for diffusion, so a caller
+	// arriving by another route - a future ingress path, a replay of a queued
+	// transaction - cannot put an underpaying payment on the wire that every
+	// peer then has to refuse. Only the fee floor is applied, not the fees-off
+	// "no fuel at all" rule, which belongs to the API edge: internal producers
+	// that build their own payments are not the ones being policed here.
+	if feeErr := validatePaymentFee(transaction, pinNumber); feeErr != nil {
+		return execResult, feeErr
+	}
 	txqueue.GetPublishQueue().Enqueue(transaction)
-	// set zero fee here
-	execResult.GasUsed = 0
+	// The fee this payment actually pays, which is nought until fees start.
+	execResult.GasUsed = paymentFeeCharged(transaction, pinNumber)
 	execResult.Successful = true
 	logger.Infof("Added tx %s to publish queue", hash.String())
 	return execResult, nil

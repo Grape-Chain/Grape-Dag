@@ -37,4 +37,17 @@ message GrapeTxRecord {
     uint32 txidminor = 13;
 
     bytes txidid = 14;
+
+    // Processor attribution for the site this record's transaction was
+    // encapsulated into, mirroring Node fields 9-11. It has to travel on the
+    // record as well as on the site: a subscribing peer does not rebuild the
+    // sender's site from a pb.Node, it builds its own from the transaction (see
+    // diffusion/subscribe.go), so the record is the only place the attribution
+    // could reach it.
+    //
+    // 15-17 are the next free numbers: 1-6 and 12-14 are in use, 7-9 are
+    // reserved, and 10-11 belong to the `transaction` oneof.
+    bytes processor_address = 15;
+    bytes processor_pk = 16;
+    bytes processor_sig = 17;
 }

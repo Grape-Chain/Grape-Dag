@@ -6,25 +6,51 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"runtime/debug"
 	"sync/atomic"
 	"syscall"
 	"time" // fmt.Printf("\n[Transact] From %s $%d to %s move $%d\n", wsb.WalletAddress(), lastKnownBalance.Uint64(), wrb.WalletAddress(), delta.Uint64())
 
 	"github.com/Grape-Chain/Grape-Dag/app"
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/dag"
 	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/wallet"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/enescakir/emoji"
 	golog "github.com/ipfs/go-log/v2"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const PREFIX = "grpc-trader"
+
+// recoverUnary - turn a panic in any handler into an error for that one call.
+//
+// grpc-go does not recover panics, so before this a single malformed request to
+// any method took the whole node down with it. The handlers on this service read
+// request fields directly in several places - PublishTx dereferenced a nil
+// transaction, WatchDog divided by a retry count of zero - and every one of them
+// is reachable by anyone who can open a connection. Fixing each is right and
+// done, but a public endpoint should not depend on having found them all.
+//
+// The panic is logged with its stack, because a recovered panic that leaves no
+// trace is a bug that never gets fixed, and returned as Internal so the caller
+// sees a failed call rather than a silent success.
+func recoverUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf("[%s] Panic in %s: %v\n%s", PREFIX, info.FullMethod, r, debug.Stack())
+			resp, err = nil, status.Errorf(codes.Internal, "%s failed", info.FullMethod)
+		}
+	}()
+	return handler(ctx, req)
+}
 
 type RoboTraderServer struct {
 	pb.UnimplementedRoboTraderServer
@@ -186,18 +212,105 @@ func (ps *RoboTraderServer) GenerateTx(ctx context.Context, req *pb.TxGenerateRe
 	return res, nil
 }
 
+// Statuses PublishTx answers with. Zero has always meant success and clients
+// test for it, so the refusals start at one.
+// addressBytes - the length of an address everywhere in the system.
+const addressBytes = grape1crypto.AddressLength
+
+// tracePublish - render every published transaction into the log.
+//
+// Off unless -verbose is given, and read before the argument is built rather
+// than left to the logger: Debugf's arguments are evaluated whatever the level
+// is, and String() marshals the whole transaction to JSON. At the rates this
+// path runs at that is thousands of JSON documents a second, built and thrown
+// away. The same mistake on the insert path was the largest single consumer of
+// CPU in a profile of a loaded node.
+var tracePublish bool
+
+const (
+	publishAccepted   = 0
+	publishNoTx       = 1 // the request carried no transaction to publish
+	publishUnusableTx = 2 // the transaction could not be read
+)
+
+// PublishTx - accept a transaction over gRPC and queue it for diffusion.
+//
+// Two things this used to get wrong, both found while trying to establish what
+// the node's throughput actually is.
+//
+// It read the request's fields through the message rather than through the
+// generated getters, by way of Txv1.UnmarshalBinary, and direct field access on
+// a nil message is a nil dereference. The server is created with no recovery
+// interceptor, so grpc-go let that panic unwind into the process: an empty
+// publish request - three bytes on the wire, no credentials, no valid
+// transaction - stopped the node. There is a recovery interceptor now as well,
+// but a handler should not need one, so the nil case is answered here.
+//
+// And nothing on this path was counted. TxIngress, TxAccepted and TxRejected
+// were wired only into the REST entry point, so a five-minute saturation run
+// offering 739,785 transactions over gRPC left grape_tx_accepted_total reading
+// zero and the ingress histogram empty. A gauge that stays at zero under load
+// is worse than a missing one, because it reads as an answer.
+//
+// Acceptance here means queued for diffusion, and that is the whole claim: the
+// signature is checked by the subscriber and the balance by the DAG, both after
+// this returns. The queue blocks rather than drops once it is full, so a client
+// that keeps getting acceptances is being held at the node's real drain rate
+// rather than being lied to.
 func (ps *RoboTraderServer) PublishTx(ctx context.Context, req *pb.TxPublishRequest) (*pb.TxPublishResponse, error) {
+	start := time.Now()
+	defer stats.Since(stats.TxIngress, start)
+
 	pbtx := req.GetTx()
+	if pbtx == nil {
+		stats.TxRejected.WithLabelValues("no transaction").Inc()
+		return &pb.TxPublishResponse{Status: publishNoTx, Msg: "no transaction in the request"}, nil
+	}
 
-	tx := tx.NewTxv1(chaintype)
+	newTx, err := readPublishedTx(pbtx)
+	if err != nil {
+		stats.TxRejected.WithLabelValues("unusable transaction").Inc()
+		logger.Warnf("[%s] Refusing an unusable transaction: %s", PREFIX, err.Error())
+		return &pb.TxPublishResponse{Status: publishUnusableTx, Msg: err.Error()}, nil
+	}
+	// Guarded rather than passed straight to Debugf: the argument would be built
+	// whatever the log level is, and String() renders the whole transaction as
+	// JSON. At the rates this path runs at that is thousands of throwaway JSON
+	// documents a second.
+	if tracePublish {
+		logger.Debugf("[%s] Request to publish tx:\n%s", PREFIX, newTx.String())
+	}
 
-	tx.UnmarshalBinary(pbtx)
-	logger.Debugf("[%s] Request to publish tx:\n%s", PREFIX, tx.String())
+	txqueue.GetPublishQueue().Enqueue(newTx)
 
-	txqueue.GetPublishQueue().Enqueue(tx)
+	stats.TxAccepted.Inc()
+	return &pb.TxPublishResponse{Status: publishAccepted, Msg: "success"}, nil
+}
 
-	res := &pb.TxPublishResponse{Status: 0, Msg: "success"}
-	return res, nil
+// readPublishedTx turns the wire message into a transaction, converting a panic
+// in the unmarshaller into an error.
+//
+// The recover is here rather than trusted away because UnmarshalBinary reads
+// fields off the message directly, and it takes only one more nil-valued nested
+// message for a request to reach a dereference the way the empty request did.
+// A malformed transaction is a client's problem; it must not be the node's.
+func readPublishedTx(pbtx *pb.Txv1) (t *tx.Txv1, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			t, err = nil, fmt.Errorf("transaction could not be read: %v", r)
+		}
+	}()
+	newTx := tx.NewTxv1(chaintype)
+	newTx.UnmarshalBinary(pbtx)
+	// The one shape check made here rather than left to the verifier. An address
+	// is twenty bytes everywhere else in the system, and several things that
+	// handle a transaction downstream - including rendering it for a log line -
+	// assume it. Refusing it at the boundary is cheaper than making every one of
+	// them defensive, and a transaction with no sender was never going to verify.
+	if len(pbtx.GetSender()) != addressBytes {
+		return nil, fmt.Errorf("sender address is %d bytes, want %d", len(pbtx.GetSender()), addressBytes)
+	}
+	return newTx, nil
 }
 
 func (rts *RoboTraderServer) GetTxCount(ctx context.Context, req *pb.TxCountRequest) (*pb.TxCountResponse, error) {
@@ -231,21 +344,50 @@ func (rts *RoboTraderServer) GetWallets(ctx context.Context, req *pb.WalletsRequ
 	return resp, err
 }
 
+// WatchDog - answer whether this node has joined the network yet, waiting up to
+// the caller's timeout for it to happen.
+//
+// Two nil-and-zero cases handled before anything else, both reachable by anyone
+// who can open a connection. The retry count divides the timeout, and an integer
+// division by zero panics; and the sync manager is looked up out of the app,
+// which the gRPC service can start before, so a WatchDog call arriving early
+// dereferenced a nil pointer. Neither had a recovery interceptor in front of it
+// until now, so either one stopped the node.
+//
+// The argument check comes first because it is about the request rather than
+// about this node's state: a caller that sent nonsense should be told so whether
+// or not the node has joined.
 func (rts *RoboTraderServer) WatchDog(ctx context.Context, req *pb.WatchDogRequest) (*pb.WatchDogResponse, error) {
+	if req.GetRetries() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "retries must be greater than zero")
+	}
+	if req.GetTimeout() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "timeout must be greater than zero")
+	}
 
-	if app.GetApp().App_dagsyncmgr.HaveJoined.Load() {
+	joined := func() bool {
+		a := app.GetApp()
+		return a != nil && a.App_dagsyncmgr != nil && a.App_dagsyncmgr.HaveJoined.Load()
+	}
+	if joined() {
 		return &pb.WatchDogResponse{Status: pb.WatchDogResponse_RUNNING}, nil
 	}
 
-	ticker := req.Timeout / int64(req.Retries)
+	ticker := req.GetTimeout() / int64(req.GetRetries())
 	logger.Infof("%s [WatchDog] ~ Ticker %f sec; Retries %d", emoji.ServiceDog, time.Duration(ticker).Seconds(), req.Retries)
 	t := time.NewTicker(time.Duration(ticker))
 	defer t.Stop()
 	count := 0
 	for {
-		<-t.C
-		have_joined := app.GetApp().App_dagsyncmgr.HaveJoined.Load()
-		if have_joined {
+		// The caller's context is watched alongside the tick so that a client that
+		// hangs up does not leave this loop running to its retry limit - which
+		// ends in os.Exit, so an abandoned watchdog is not a harmless goroutine.
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+		if joined() {
 			return &pb.WatchDogResponse{Status: pb.WatchDogResponse_RUNNING}, nil
 		}
 		if count == int(req.Retries) {
@@ -264,6 +406,9 @@ func (rts *RoboTraderServer) WatchDog(ctx context.Context, req *pb.WatchDogReque
 }
 
 func RunRoboTraderService(port int) chan<- bool {
+	if c := config.GetConfig(); c != nil {
+		tracePublish = c.Host.Verbose > 0
+	}
 	lis, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
 		logger.Errorf("[%s] Failed to start. err: %s", PREFIX, err.Error())
@@ -275,6 +420,7 @@ func RunRoboTraderService(port int) chan<- bool {
 	opts := []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(10 * mb),
 		grpc.MaxSendMsgSize(10 * mb),
+		grpc.ChainUnaryInterceptor(recoverUnary),
 	}
 	srv := grpc.NewServer(opts...)
 

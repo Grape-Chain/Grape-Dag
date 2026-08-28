@@ -149,13 +149,18 @@ func handleSyncBalanceResponse(rec *tx.Syncv1) {
 
 func handleMissPinRequest(rec *tx.Syncv1) {
 	logger.Infof("%s  ~ Handle missing pin tx request", emoji.HammerAndWrench)
-	// let's find a pin tx that matches the signature in the request
-	_pins_.mu.Lock()
-	defer _pins_.mu.Unlock()
-	for _, p := range _pins_.pins {
+	// let's find a pin tx that matches the signature in the request.
+	// Collect matches under the lock, then publish without holding it:
+	// publishMissPinResponse waits on the sync state machine, and blocking every
+	// pin reader for that long would stall the node's whole read path.
+	matches := []*pb.TxPin{}
+	for _, p := range _pins_.snapshotPins() {
 		if bytes.Equal(p.Sign, rec.Data) {
-			publishMissPinResponse(rec.Tracking_Id, p)
+			matches = append(matches, p)
 		}
+	}
+	for _, p := range matches {
+		publishMissPinResponse(rec.Tracking_Id, p)
 	}
 }
 

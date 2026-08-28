@@ -7,9 +7,9 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/google/uuid"
 	"go.uber.org/atomic"
 
@@ -57,7 +57,19 @@ type Node struct {
 	sources        []*Node // nodes in the dag that point to this node
 	targets        []*Node // nodes in the dag this node points to
 	missingTargets map[string]bool
+	// slicedTargets - approvals this site made whose sites have since been
+	// settled into a slice. The edge pointer is dropped so the settled site can
+	// be collected, but the id is kept so the approval is still reported.
+	slicedTargets []uuid.UUID
 	// [earlier nodes] <==targets== [this node] <==sources== [later nodes]
+
+	// Processor attribution - the node that encapsulated this site's transaction
+	// into the site, and its signature over the site's identity. See
+	// attribution.go. Empty on a site from a peer built before attribution
+	// existed, which is a valid site that simply earns nobody a fee.
+	processorAddress []byte
+	processorPk      []byte
+	processorSig     []byte
 }
 
 func (x *Node) String() string {
@@ -99,6 +111,16 @@ func (n *Node) ToPbNode() *pb.Node {
 	for _, v := range n.targets {
 		pbn.MissingTargets[v.id.id.String()] = true
 	}
+	// Approvals whose sites have been settled still have to be reported, or a
+	// peer rebuilding this site's edges would come up short.
+	for _, id := range n.slicedTargets {
+		pbn.MissingTargets[id.String()] = true
+	}
+	// Attribution travels as-is. Copied out rather than shared so a peer
+	// serialising a site cannot be handed a slice that aliases the live site.
+	pbn.ProcessorAddress = append([]byte(nil), n.processorAddress...)
+	pbn.ProcessorPk = append([]byte(nil), n.processorPk...)
+	pbn.ProcessorSig = append([]byte(nil), n.processorSig...)
 	return pbn
 }
 
@@ -122,6 +144,12 @@ func (n *Node) FromPbNode(pbn *pb.Node) {
 	n.txWeight = float64(pbn.TxWeight)
 	n.valid = pbn.Valid
 	n.missingTargets = pbn.MissingTargets
+	// Taken verbatim, including absent. A site from a peer that predates
+	// attribution leaves all three nil, which verifyProcessor reports as
+	// unattributed rather than invalid.
+	n.processorAddress = pbn.ProcessorAddress
+	n.processorPk = pbn.ProcessorPk
+	n.processorSig = pbn.ProcessorSig
 }
 
 func (n *Node) GetMinHeight() uint64 {
@@ -163,13 +191,23 @@ func (n *Node) NodeToVertex() *tx.Vertex {
 	}
 }
 
+// NewDagNode - wrap a transaction in a new site.
+//
+// The major id is taken with one atomic add rather than an increment followed by
+// a read. Two goroutines call this concurrently - the publisher for a
+// transaction this node accepted, and the subscriber for one a peer announced -
+// so the two-statement version was both a data race and a way for two sites to
+// end up with the same major id.
 func NewDagNode(tx tx.Transaction, verifyRequired bool) *Node {
-	_dag_.prevMajor++
+	if _dag_ == nil {
+		logger.Errorf("[NewDagNode] No graph to add a site to yet")
+		return nil
+	}
 	n := &Node{
 		id: NodeID{
 			id:      uuid.New(),
 			address: "",
-			idMajor: _dag_.prevMajor,
+			idMajor: _dag_.prevMajor.Add(1),
 			idMinor: _dag_.prevMinor,
 		},
 		cumWeight: *atomic.NewFloat64(0),
@@ -205,8 +243,15 @@ func (n *Node) GetID() uuid.UUID {
 // it will also update the wallet cache which keeps track of the balances for all wallets
 // in the current dag slice
 func (n *Node) UpdateBalanceIfValid() bool {
-	// add to wallet cache
-	subInt := big.NewInt(0).SetBytes(n.tx.GetAmount().Bytes())
+	// Escrow: the sender pays the amount and the fee, the recipient receives the
+	// amount, and the difference is what the commit transaction divides between
+	// the processors that settled it (see dag/rewardbuild.go).
+	//
+	// Debiting only the amount would pay rewards out of money nobody had paid
+	// in, so the supply would grow by the fee on every payment. The fee is
+	// nought until fees are switched on, so this is the same arithmetic it has
+	// always been until then.
+	subInt := new(big.Int).Add(n.tx.GetAmount(), settledFee(n))
 	if bytes.Compare(n.tx.GetSender(), n.tx.GetRecipient()) != 0 {
 		err := walletCache.sub(grape1crypto.BytesToAddress(n.tx.GetSender()), n.id.id.String(), subInt)
 		if err != nil {
@@ -220,6 +265,8 @@ func (n *Node) UpdateBalanceIfValid() bool {
 			}
 			return false
 		}
+		// The amount only: the recipient does not receive the fee, and does not
+		// pay it either.
 		addInt := big.NewInt(0).SetBytes(n.tx.GetAmount().Bytes())
 		err = walletCache.add(grape1crypto.BytesToAddress(n.tx.GetRecipient()), n.id.id.String(), addInt)
 		if err != nil {

@@ -63,6 +63,9 @@ const (
 	STX_SNAPSHOT_BALANCE_RESPONSE
 	STX_PIN_DOWNLOAD_REQUEST
 	STX_PIN_DOWNLOAD_RESPONSE
+	// STX_CONSENSUS - a validator consensus message: a confirmed-set report, a
+	// proposal, a vote or a view change, carried in Details. See dag/consensus.go.
+	STX_CONSENSUS
 )
 
 func (e SyncMsgType) String() string {
@@ -82,6 +85,7 @@ func (e SyncMsgType) String() string {
 		"STX_SNAPSHOT_BALANCE_RESPONSE",
 		"STX_PIN_DOWNLOAD_REQUEST",
 		"STX_PIN_DOWNLOAD_RESPONSE",
+		"STX_CONSENSUS",
 	}[e]
 }
 

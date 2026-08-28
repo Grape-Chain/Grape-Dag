@@ -15,12 +15,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	pb "github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/types"
 	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/wallet"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
-	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
 	eth "github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -666,24 +666,35 @@ func (t *Txv1) generateSignature(pk *grape_wallet.PrivateKey) []byte {
 	return t.Signature
 }
 
+// Verify - check the sender's signature over this transaction.
+//
+// The payload is the transaction with its signature field empty, because that is
+// what was signed. This used to be done by blanking t.Signature on the receiver,
+// hashing, and putting it back - which made verification a write. That is a
+// hazard nobody had written down: the subscriber now verifies on several
+// goroutines at once, and while each holds its own freshly unmarshalled record
+// today, anything that ever verified one shared transaction from two goroutines
+// would have them blanking and restoring the same field against each other. The
+// hash is taken on a copy instead, so verifying is a read and the question does
+// not arise.
+//
+// It also used to return nil - success - when the marshalling failed, having
+// already blanked the signature and not yet restored it. A transaction that
+// could not be hashed was therefore reported as verified, and lost its signature
+// on the way through.
 func (t *Txv1) Verify() error {
 	sz := len(t.Signature)
 	if sz < 64 {
 		return errors.Errorf("Invalid tx signature of length %d", sz)
 	}
-	// We assume that signature is empty when calculating hash, so, make a copy and set it to empty
-	// before calculating the hash value
-	sigbuf := make([]byte, sz)
-	copy(sigbuf, t.Signature)
-	t.Signature = []byte{} // reset the sig value before calculating hash
-	payload, err := t.Hash(crypto.SHA256)
+	// A shallow copy is enough: the only field that has to differ is Signature,
+	// and assigning to the copy's field cannot reach the original's bytes.
+	unsigned := *t
+	unsigned.Signature = nil
+	payload, err := unsigned.Hash(crypto.SHA256)
 	if err != nil {
-		logger.Errorf("[signature] Tx marshal binary error: %s", err.Error())
-		return nil
+		return errors.Wrap(err, "cannot hash the transaction to verify it")
 	}
-	// restore signature value for the transaction
-	t.Signature = make([]byte, sz)
-	copy(t.Signature, sigbuf)
 
 	valid := grape_wallet.NewDSA().Verify(t.Sender_Pubk, t.Signature, payload)
 	if !valid {
@@ -711,16 +722,43 @@ func (t *Txv1) MarshalJSON() ([]byte, error) {
 		ChainType: uint8(t.Chain_Type),
 		// Depth:      t.Depth,
 		SenderPubk: hex.EncodeToString(t.Sender_Pubk),
-		Sender:     grape1crypto.BytesToAddress(t.Sender),
-		Recepient:  grape1crypto.ZeroBytesToAddress(t.Recepient),
-		Amount:     big.NewInt(0).SetBytes(t.Amount).Uint64(),
-		Nonce:      t.Nonce,
-		Timestamp:  t.Timestamp,
-		FuelLimit:  big.NewInt(0).SetBytes(t.Fuel_Limit).Uint64(),
-		FuelPrice:  big.NewInt(0).SetBytes(t.Fuel_Price).Uint64(),
-		Data:       t.Data,
+		// Rendered rather than converted. Both addresses used to go through the
+		// crypto package's conversions, which panic on anything that is not
+		// twenty bytes long - and String() is called from log lines on the
+		// publish path, on transactions that arrived over the network and have
+		// not been checked yet. So describing a malformed transaction crashed the
+		// node that received it. A malformed transaction has to be describable:
+		// describing it is how it gets refused.
+		Sender:    renderAddress(t.Sender),
+		Recepient: renderAddress(t.Recepient),
+		Amount:    big.NewInt(0).SetBytes(t.Amount).Uint64(),
+		Nonce:     t.Nonce,
+		Timestamp: t.Timestamp,
+		FuelLimit: big.NewInt(0).SetBytes(t.Fuel_Limit).Uint64(),
+		FuelPrice: big.NewInt(0).SetBytes(t.Fuel_Price).Uint64(),
+		Data:      t.Data,
 	})
 
+}
+
+// renderAddress - an address as it should appear in a log line or an error,
+// whatever is actually in the field.
+//
+// Deliberately not crypto.BytesToAddress: that function asserts the twenty-byte
+// length and panics otherwise, which is the right behaviour for code that has
+// already established the address is valid and the wrong behaviour for code
+// whose job is to describe something that might not be. A length that is not
+// twenty is stated rather than hidden, so a log line about a refused transaction
+// says what was wrong with it.
+func renderAddress(address []byte) string {
+	switch {
+	case len(address) == 0:
+		return "0x"
+	case len(address) == grape1crypto.AddressLength:
+		return grape1crypto.BytesToAddress(address)
+	default:
+		return fmt.Sprintf("0x%s (%d bytes, not %d)", hex.EncodeToString(address), len(address), grape1crypto.AddressLength)
+	}
 }
 
 func (t *Txv1) String() string {

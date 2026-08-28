@@ -6,6 +6,14 @@
 *.test
 *.out
 
+# Web wallet build outputs (produced by `make wallet`):
+# the signer binary and the loader copied out of the Go distribution
+/web/wallet/wallet.wasm
+/web/wallet/wallet.wasm.gz
+/web/wallet/wasm_exec.js
+# scratch output of scripts/wallet_e2e.mjs
+/web/wallet/.e2e-signed.json
+
 # Coverage
 coverage.txt
 coverage.html
@@ -35,6 +43,9 @@ Thumbs.db
 *.swo
 *~
 
+# Runtime artifacts written by a running peer
+*.pid
+
 # Logs
 *.log
 logs/
@@ -43,3 +54,14 @@ logs/
 *.local.yml
 *.local.yaml
 config.local.*
+
+# Backups written by a mutation-testing run. A mutation harness copies the file
+# it is about to break so it can put it back; a run interrupted at the wrong
+# moment leaves the copy behind, and committing one would put a deliberately
+# broken source file in the tree next to the real one.
+*.mutbak
+*.go.bak
+
+# Local development network: generated configs, wallets, ledger data and logs.
+# Contains node private keys - never commit it.
+.localnet/

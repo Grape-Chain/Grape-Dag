@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/vm"
 	"github.com/Grape-Chain/Grape-Dag/wallet"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/ledongthuc/goterators"
 
 	grape_wallet "github.com/Grape-Chain/Grape-Dag/crypto"
@@ -38,7 +38,8 @@ func newDag(dagConfig config.DagConfiguration) *Dag {
 
 	var inDagPins []*Node = []*Node{}
 	mapped_vertices := make(map[uuid.UUID]*Node)
-	if config.GetConfig().Host.Leader {
+	// A leader with a stored chain recovers it rather than opening a new one.
+	if config.GetConfig().Host.Leader && !recoveringChain {
 		dag = append(dag, genesis)
 		mapped_vertices[genesis.id.id] = genesis
 		inDagPins = []*Node{genesis}
@@ -50,18 +51,22 @@ func newDag(dagConfig config.DagConfiguration) *Dag {
 
 	__dag__ := &Dag{_dag_: dag,
 		_links_:         nil,
-		prevMajor:       0,
 		prevMinor:       0,
 		txCh:            nil, // we set this when we call RunSynchronization (to be able to turn sync off)
 		stopCh:          make(chan bool, 1),
-		mux:             sync.Mutex{},
 		mapped_vertices: mapped_vertices,
 		mapped_edges:    make(map[uuid.UUID][]uuid.UUID),
 		mu_map:          sync.RWMutex{},
 		pins:            inDagPins,
 		exodusWallets:   nil,
+		genesis:         genesis,
 		width:           uint8(dagConfig.Initialwidth), // this param determines the num of direct links to genesis before we
 		// start using the random walk algo for linking sites
+	}
+	// The leader starts with genesis already in the graph; a joining node picks
+	// it up from the network. Either way the count reflects what has been added.
+	if len(dag) > 0 {
+		__dag__.sitesAdded.Store(uint64(len(dag)))
 	}
 
 	//	__dag__.addToDag(genesis, []*Node{})
@@ -149,11 +154,11 @@ func GenerateWideDag(dagWidth uint8) *Dag {
 	goterators.ForEach(dag[1:], func(node *Node) {
 		links = append(links, Link{source: node, target: genesis})
 	})
-	switch dagConfig.Algorithm {
+	switch dagAlgorithm() {
 	case DAG_ALGO_MCMCP.Type():
-		ReverseSlice(dag)
+		// See insert.go: the node slice is already in the order
+		// updateCumWeights needs.
 		dag = updateCumWeights(dag, links)
-		ReverseSlice(dag)
 	}
 	//dag = updateFwdWeights(dag, links)
 	// form our second pin tx - exodus nodes
@@ -161,9 +166,11 @@ func GenerateWideDag(dagWidth uint8) *Dag {
 	if err != nil {
 		panic(err)
 	}
-	return &Dag{_dag_: dag,
+	// prevMajor is set after construction rather than in the literal: an
+	// atomic.Uint64 carries a noCopy marker, so copying one into a composite
+	// literal is what go vet complains about.
+	d := &Dag{_dag_: dag,
 		_links_:         links,
-		prevMajor:       prevMajor,
 		prevMinor:       prevMinor,
 		txCh:            nil, // we set this when we call RunSynchronization (to be able to turn sync off)
 		stopCh:          make(chan bool, 1),
@@ -173,6 +180,8 @@ func GenerateWideDag(dagWidth uint8) *Dag {
 		exodusWallets:   exodusWallets,
 		width:           dagWidth,
 	}
+	d.prevMajor.Store(prevMajor)
+	return d
 }
 
 func GenerateRandomDag(width uint8, height uint32) *Dag {

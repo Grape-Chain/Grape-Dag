@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Run a node</title>
+<!--
+  Reference implementation of the processing-node control surface. A wallet
+  application is expected to build its own; this page exists so that the
+  endpoints can be driven, and read, without one.
+
+  Deliberately one file with no build step, no framework and no external
+  reference of any kind. A node operator should be able to read the whole
+  control surface of their own machine, and a page that fetches anything from
+  a third party is a page that reports on the operator to that third party.
+-->
+<style>
+  :root {
+    --bg: #faf9fb;
+    --panel: #ffffff;
+    --text: #1c1a20;
+    --muted: #6c6676;
+    --line: #e3dfe8;
+    --accent: #6b2fa0;
+    --accent-text: #ffffff;
+    --ok: #1c7d4d;
+    --warn: #9a6b00;
+    --off: #6c6676;
+    --err: #b3261e;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14121a;
+      --panel: #1d1a25;
+      --text: #ece9f1;
+      --muted: #a49db2;
+      --line: #332c40;
+      --accent: #b07fe0;
+      --accent-text: #1a1020;
+      --ok: #6fd39b;
+      --warn: #e0b552;
+      --off: #a49db2;
+      --err: #f2857c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  main { max-width: 720px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px;
+  }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .toggle { display: grid; gap: 14px; justify-items: center; text-align: center; }
+  button#toggle {
+    font: inherit; font-size: 17px; font-weight: 600;
+    padding: 16px 28px; min-width: 260px; cursor: pointer;
+    border: 1px solid var(--accent); border-radius: 10px;
+    background: var(--accent); color: var(--accent-text);
+  }
+  button#toggle[data-mode="stop"] { background: transparent; color: var(--accent); }
+  button#toggle:disabled { opacity: .5; cursor: default; }
+  .state { font-size: 15px; font-weight: 600; }
+  .state[data-state="processing"] { color: var(--ok); }
+  .state[data-state="syncing"]    { color: var(--warn); }
+  .state[data-state="ready"]      { color: var(--warn); }
+  .state[data-state="stopped"]    { color: var(--off); }
+  .note { color: var(--muted); font-size: 13px; margin: 0; max-width: 46ch; }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; }
+  dt { color: var(--muted); font-size: 13px; }
+  dd { margin: 0; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 600; padding: 0 8px 6px 0; }
+  td { padding: 6px 8px 6px 0; border-top: 1px solid var(--line); font-family: var(--mono); }
+  td.wrap { font-family: inherit; }
+  .empty { color: var(--muted); font-size: 13px; margin: 0; }
+  #problem {
+    display: none; color: var(--err); font-size: 13px; margin: 0 0 12px;
+  }
+  #problem[data-shown="yes"] { display: block; }
+</style>
+</head>
+<body>
+<header><h1>Run a node</h1></header>
+
+<main>
+  <section class="toggle">
+    <p id="problem"></p>
+    <div>Processing is <span class="state" id="state" data-state="">unknown</span></div>
+    <button id="toggle" disabled>Loading&hellip;</button>
+    <p class="note" id="explain">Reading the node&rsquo;s state&hellip;</p>
+  </section>
+
+  <section>
+    <h2>Node</h2>
+    <dl>
+      <dt>Wallet</dt><dd id="wallet">&mdash;</dd>
+      <dt>Pin height</dt><dd id="pin">&mdash;</dd>
+      <dt>Peers</dt><dd id="peers">&mdash;</dd>
+      <dt>Your contribution</dt><dd id="tps">&mdash;</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Earnings</h2>
+    <dl>
+      <dt>Settled</dt><dd id="lifetime">&mdash;</dd>
+      <dt>Pending</dt><dd id="pending">&mdash;</dd>
+    </dl>
+    <div id="credits"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+// Paths are relative to this page so the whole thing keeps working behind a
+// reverse proxy that mounts the node under a prefix.
+var STATUS = "status", EARNINGS = "earnings", PROCESSING = "processing";
+var POLL_MS = 2000;
+
+// What each state means, in the terms the person clicking the button cares
+// about. Every one of them except "stopped" is a node that is working.
+var EXPLAIN = {
+  processing: "This machine is packing transactions into sites and earning the fees on them.",
+  syncing: "Catching up with the network. Processing starts on its own once this finishes.",
+  ready: "Caught up, but not connected to any peer yet, so a site built here would reach nobody.",
+  stopped: "Not packing transactions and not earning. The node is still syncing and still validating — the pin height above keeps rising."
+};
+
+var el = function (id) { return document.getElementById(id); };
+var processing = null;   // last known gate position; null until the first read
+var inFlight = false;
+
+function problem(message) {
+  var p = el("problem");
+  if (message) {
+    p.textContent = message;
+    p.setAttribute("data-shown", "yes");
+  } else {
+    p.textContent = "";
+    p.removeAttribute("data-shown");
+  }
+}
+
+function get(path) {
+  return fetch(path, { headers: { "Accept": "application/json" }, cache: "no-store" })
+    .then(function (r) {
+      if (!r.ok) { throw new Error(path + " answered " + r.status); }
+      return r.json();
+    });
+}
+
+function renderStatus(s) {
+  processing = s.state !== "stopped";
+
+  var state = el("state");
+  state.textContent = s.state;
+  state.setAttribute("data-state", s.state);
+  el("explain").textContent = EXPLAIN[s.state] || "";
+
+  var button = el("toggle");
+  button.disabled = false;
+  button.textContent = processing ? "Stop processing" : "Start processing";
+  button.setAttribute("data-mode", processing ? "stop" : "start");
+
+  el("wallet").textContent = s.wallet || "not configured";
+  el("pin").textContent = s.pinHeight;
+  el("peers").textContent = s.peers;
+  el("tps").textContent = Number(s.tpsContribution).toFixed(2) + " tx/s";
+}
+
+function renderEarnings(e) {
+  el("lifetime").textContent = e.lifetime;
+  el("pending").textContent = e.pending;
+
+  var box = el("credits");
+  box.textContent = "";
+  if (!e.recent || e.recent.length === 0) {
+    var none = document.createElement("p");
+    none.className = "empty";
+    none.textContent = "No credits yet.";
+    box.appendChild(none);
+    return;
+  }
+  var table = document.createElement("table");
+  var head = table.insertRow();
+  ["Commit", "Amount", "When"].forEach(function (name) {
+    var th = document.createElement("th");
+    th.textContent = name;
+    head.appendChild(th);
+  });
+  e.recent.forEach(function (c) {
+    var row = table.insertRow();
+    row.insertCell().textContent = c.pin;
+    row.insertCell().textContent = c.amount;
+    var when = row.insertCell();
+    when.className = "wrap";
+    when.textContent = c.at;
+  });
+  box.appendChild(table);
+}
+
+function refresh() {
+  return Promise.all([get(STATUS), get(EARNINGS)])
+    .then(function (both) {
+      renderStatus(both[0]);
+      renderEarnings(both[1]);
+      problem(null);
+    })
+    .catch(function (err) {
+      problem("Cannot reach the node: " + err.message);
+    });
+}
+
+el("toggle").addEventListener("click", function () {
+  if (processing === null || inFlight) { return; }
+  inFlight = true;
+  var button = el("toggle");
+  button.disabled = true;
+  fetch(PROCESSING, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: !processing })
+  })
+    .then(function (r) {
+      if (!r.ok) { throw new Error("the node answered " + r.status); }
+      return r.json();
+    })
+    // The endpoint answers with the whole status, so the button lands in its new
+    // position without waiting for the next poll.
+    .then(function (s) { renderStatus(s); problem(null); })
+    .catch(function (err) { problem("Could not change processing: " + err.message); })
+    .then(function () { inFlight = false; el("toggle").disabled = false; });
+});
+
+refresh();
+setInterval(refresh, POLL_MS);
+</script>
+</body>
+</html>

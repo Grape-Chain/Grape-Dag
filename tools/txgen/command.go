@@ -8,10 +8,10 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/wallet"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
 )
 
 type CommandArgs struct {
@@ -188,6 +188,9 @@ const (
 	GEN_MODE_COUNT
 	GEN_MODE_CHECK
 	GEN_MODE_WATCHDOG
+	// GEN_MODE_BENCH must stay last: GenMode.Type indexes a slice by the enum
+	// value, so inserting a mode anywhere else renames every mode after it.
+	GEN_MODE_BENCH
 )
 
 func (gm GenMode) Type() string {
@@ -200,7 +203,8 @@ func (gm GenMode) Type() string {
 		"wallet",
 		"count",
 		"check",
-		"watchdog"}[gm]
+		"watchdog",
+		"bench"}[gm]
 }
 
 func Must(gm GenMode, ok bool) GenMode {
@@ -221,6 +225,7 @@ func ModeMapper(k string) (GenMode, bool) {
 		GEN_MODE_COUNT.Type():    GEN_MODE_COUNT,
 		GEN_MODE_CHECK.Type():    GEN_MODE_CHECK,
 		GEN_MODE_WATCHDOG.Type(): GEN_MODE_WATCHDOG,
+		GEN_MODE_BENCH.Type():    GEN_MODE_BENCH,
 	}[k]
 	return v, ok
 }

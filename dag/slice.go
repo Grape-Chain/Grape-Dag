@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
-
-	"github.com/Grape-Chain/Grape-Dag/config"
 )
 
 /*
@@ -81,12 +79,11 @@ func (wc *WalletCache) add(wallet string, txId string, amount *big.Int) error {
 	// since the operation may fail and we do nothing to revert the balance
 	// to previous state
 	tmpBalance := big.NewInt(0)
-	verbose := config.GetConfig().Host.Verbose
-	if verbose > 0 {
+	if traceBalances {
 		logger.Infof("[wallet cache] Add %s to %s, current balance %s", amount.String(), wallet, loadedBalance.String())
 	}
 	tmpBalance.Add(loadedBalance, amount)
-	if verbose > 0 {
+	if traceBalances {
 		logger.Infof("[wallet cache] Result %s balance %s", wallet, tmpBalance.String())
 	}
 	if tmpBalance.Sign() == -1 {
@@ -94,7 +91,7 @@ func (wc *WalletCache) add(wallet string, txId string, amount *big.Int) error {
 	}
 	// append to cache
 	wc.cache[wallet] = append(wc.cache[wallet], newPair(txId, tmpBalance))
-	if verbose > 0 {
+	if traceBalances {
 		logger.Infof("[wallet cache] Final balance for %s is %s", wallet, wc.cache[wallet][len(wc.cache[wallet])-1].second.String())
 	}
 	return nil
@@ -170,13 +167,45 @@ func (wc *WalletCache) remove(wallet string, txIds []string) error {
 	return nil
 }
 
-func (wc *WalletCache) copyFrom(another *WalletCache) error {
+// setBalance - replace what the cache holds for a wallet, without arithmetic.
+// Used when rebuilding from the commit-transaction chain, where each pin states
+// the balance outright rather than a delta.
+func (wc *WalletCache) setBalance(wallet string, balance *big.Int) {
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
-	wc.cache = make(map[string][]*Pair[string, *big.Int])
-	for address, balances := range another.cache {
-		wc.cache[address] = copyBalances(balances)
+	wc.cache[wallet] = []*Pair[string, *big.Int]{newPair("recovered", big.NewInt(0).Set(balance))}
+}
+
+// snapshot - a copy of what this cache holds, taken under its own lock.
+func (wc *WalletCache) snapshot() map[string][]*Pair[string, *big.Int] {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	out := make(map[string][]*Pair[string, *big.Int], len(wc.cache))
+	for address, balances := range wc.cache {
+		out[address] = copyBalances(balances)
 	}
+	return out
+}
+
+// copyFrom - replace what this cache holds with what another one holds.
+//
+// The source is read through snapshot(), under the source's own lock. Reading
+// it directly took only the destination's lock, which is not the lock that
+// guards the map being iterated: a copy taken while any other goroutine wrote
+// to the source crashed the process with "concurrent map iteration and map
+// write". That was survivable while the only copy happened under the pin lock;
+// a validator snapshotting the live cache before building a commit transaction
+// made it reachable from the ordinary path.
+//
+// The two locks are never held at once, so there is no order to get wrong.
+func (wc *WalletCache) copyFrom(another *WalletCache) error {
+	if another == nil {
+		return nil
+	}
+	copied := another.snapshot()
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	wc.cache = copied
 	return nil
 }
 

@@ -10,18 +10,19 @@ import (
 	"math/big"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
+	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/Grape-Chain/Grape-Dag/smc"
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/utils"
 	"github.com/Grape-Chain/Grape-Dag/vm"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
-	"github.com/Grape-Chain/Grape-Dag/crypto/eth"
 	"github.com/enescakir/emoji"
 	"github.com/golang-collections/collections/set"
 	"github.com/google/uuid"
@@ -29,49 +30,350 @@ import (
 )
 
 var storageNode NodeTxPin
-var pinsQuantity int64
 
 type NodeTxPin struct {
-	NodeType       int
-	pins           []*pb.TxPin
-	mu             sync.Mutex
-	last           string
-	ready          bool
+	NodeType int
+	pins     []*pb.TxPin
+	mu       sync.Mutex
+	last     string
+	ready    bool
+	// view - an immutable copy of the chain published on every mutation, so
+	// readers (REST, eth-RPC, balance lookups) never take p.mu. Taking the
+	// mutex on the read path would serialise every query behind pin
+	// application, which re-executes smart contracts against the VM over gRPC
+	// and can therefore block for a long time - or indefinitely, if the VM is
+	// unreachable.
+	view atomic.Pointer[[]*pb.TxPin]
+	// buildMu - only one commit transaction may be under construction at a
+	// time.
+	//
+	// This used to be a side effect of add() holding p.mu across the whole
+	// build. It no longer does, and building is not re-entrant: the
+	// smart-contract stage enables diff capture on the VM state store, and
+	// vm.CaptureStateStoreDiffs panics outright if capture is already on. Two
+	// builds at once is a reachable state - genPinTx runs on the dag watcher
+	// and again from Dag.SyncUp, which the diffusion goroutines call - so the
+	// serialisation that was accidental is now stated.
+	//
+	// Always taken before p.mu, never while p.mu is held: add() holds it across
+	// the whole attempt, including the two short windows in which it holds the
+	// pin lock. The quorum path has to take it through LockBuild before it takes
+	// the pin lock, for the same reason.
+	buildMu sync.Mutex
+	// downloadedPins carries a batch of pins fetched to close a gap. dlMu and
+	// dlClosed exist because the producer closes the channel to signal the end
+	// of a batch, and a late send on a closed channel would panic the node.
 	downloadedPins chan *pb.TxPin
+	dlMu           sync.Mutex
+	dlClosed       bool
+	// retained - what the body-retention window is currently holding. See
+	// pinBodyRetainSites.
+	retained retainedBodies
+}
+
+// pinBodyRetainPins - how many commit transactions at the head of the chain
+// keep the transactions they settled.
+//
+// The chain itself is retained in full: every pin keeps its signature, its
+// predecessor, its number, the site ids it settled and the balances it stated,
+// because those are what the readers of the chain ask for and several of them
+// (gap detection, the balance lookups, the wallet enumeration) walk all the way
+// back. What is released past the window is pin.Nodes - a protobuf copy of
+// every transaction the pin settled, which is the bulk of the bytes and which
+// only the query paths read - together with the contract transactions and state
+// diffs.
+//
+// A var rather than a const so that a test can shrink the window; nothing else
+// writes it.
+//
+// Sixty-four commit transactions is about five minutes at the default commit
+// interval, which covers the query paths' working set and any gap a peer closes
+// by asking for pins. It is deliberately not "enough for any peer, ever": the
+// store holds the whole chain, and serving a deep catch-up from disk is the
+// right fix, not an unbounded cache. See getAllFrom, which refuses to hand out
+// a pin whose transactions have been released rather than serve one that the
+// receiver would reject as unsigned.
+var pinBodyRetainPins = 64
+
+// pinBodyRetainSites - how many settled transactions the window may hold across
+// all the pins in it, whatever the pin count says.
+//
+// The pin count alone is the wrong unit, and measurement is what showed it.
+// Sixty-four commit transactions was chosen as "about five minutes at the
+// default interval", which is a statement about time; what the window actually
+// costs is a protobuf copy of every transaction in it. Under load a commit
+// settles what arrived in five seconds, so at 2,600 sites a second that is
+// thirteen thousand transactions per pin and roughly eight hundred thousand
+// across sixty-four of them. A heap profile of a node eight minutes into a
+// saturation run put 48% of the live heap in exactly that: Node.ToPbNode
+// reached through serialiseSites, 0.80 GB of 1.65 GB, with the live graph down
+// at seventy-six sites because slicing was doing its job perfectly. Resident
+// memory was 2.9 GB and climbing, on a chain seventy commits long.
+//
+// So the window is now whichever bound bites first. On a quiet chain the pin
+// count governs and the behaviour is unchanged; under load the site count
+// governs and the window shortens to as few as one or two commits, which is
+// still the working set every query path and every catching-up peer actually
+// asks for. Anything deeper comes from the store, which is where the whole
+// chain lives.
+//
+// 100,000 is about 120 MB of pb.Node at the sizes measured here, and about
+// forty seconds of a 2,600-a-second stream. A var so a test can shrink it.
+var pinBodyRetainSites = 100000
+
+// retainedBodies - settled transactions currently held in the window, and a
+// hint at the oldest pin still holding any.
+//
+// Counted rather than recomputed: the point of the window is to avoid walking
+// the chain on every append. The hint is a hint precisely because
+// insertIfNotFound splices pins in and shifts every index after it, so the
+// release loop scans forward from it rather than trusting it - which
+// self-corrects in one pass and stays amortised constant, since each pin is
+// released exactly once however far the hint has drifted.
+type retainedBodies struct {
+	sites  int
+	oldest int
+}
+
+// pinHead - the chain head a commit transaction is built against.
+//
+// A build reads two things from the chain: the head's signature, which becomes
+// the new pin's Prev, and its number, which decides the new pin's number. Both
+// are taken once, under a short lock, so that the build itself - which reads
+// balances, executes contracts and signs - can run with the lock released. The
+// pair is then checked again before the append: see appendIfHeadUnmoved.
+type pinHead struct {
+	prev   []byte
+	number int64 // the number the next pin must carry
+	height int64 // the head's own number, -1 when the chain is empty
+}
+
+// unsafe_head - the head as a build anchor. Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_head() pinHead {
+	last := p.unsafe_getLastPin()
+	if last == nil {
+		return pinHead{prev: []byte{}, number: 0, height: -1}
+	}
+	return pinHead{prev: last.Sign, number: last.PinNumber + 1, height: last.PinNumber}
+}
+
+// headSnapshot - the head as a build anchor, taken under a short lock.
+func (p *NodeTxPin) headSnapshot() pinHead {
+	p.lock("headSnapshot")
+	defer p.unlock()
+	return p.unsafe_head()
+}
+
+// appendIfHeadUnmoved - append a commit transaction built against head, and
+// report whether it went on the chain.
+//
+// The number and the signature are both checked. The number alone would miss a
+// head replaced at the same number, which insertIfNotFound can do to the
+// opening pin; the signature alone would miss nothing, but the pair is what the
+// new pin actually names.
+func (p *NodeTxPin) appendIfHeadUnmoved(head pinHead, pin *pb.TxPin) bool {
+	p.lock("appendIfHeadUnmoved")
+	defer p.unlock()
+	now := p.unsafe_head()
+	if now.height != head.height || !bytes.Equal(now.prev, head.prev) {
+		return false
+	}
+	p.unsafe_appendPin(pin)
+	return true
+}
+
+// chain - the current published view of the pin chain. Lock-free; the returned
+// slice is never mutated in place, only replaced.
+func (p *NodeTxPin) chain() []*pb.TxPin {
+	if v := p.view.Load(); v != nil {
+		return *v
+	}
+	return nil
+}
+
+// unsafe_publish - republish the reader view after mutating p.pins.
+// Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_publish() {
+	cp := make([]*pb.TxPin, len(p.pins))
+	copy(cp, p.pins)
+	p.view.Store(&cp)
+}
+
+// unsafe_appendPin - add a pin to the chain and republish the reader view.
+// Every mutation of p.pins must go through here (or call unsafe_publish
+// itself), otherwise readers keep seeing a stale chain. Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_appendPin(pin *pb.TxPin) {
+	p.pins = append(p.pins, pin)
+	p.unsafe_releaseOldBodies()
+	p.unsafe_publish()
+}
+
+// unsafe_releaseOldBodies - drop the settled transactions from pins that have
+// fallen out of the retain window. Caller must hold p.mu.
+//
+// The pin is replaced rather than emptied in place. A reader may be holding the
+// pointer - the published view hands them out, and eth-RPC keeps one while it
+// marshals a block - so mutating it would be a data race and would change a pin
+// under a reader's feet. Replacing costs one small allocation per pin and lets
+// whoever still holds the old pointer keep the whole thing until they are done
+// with it.
+//
+// Index 0 is never released: on a recovered node it is the chain's opening
+// statement, and dag.Init reads the genesis site back out of its Nodes to
+// restore the graph root. Releasing it would make a restarted node mint a new
+// root instead of keeping the one its chain was built on.
+//
+// Two bounds, and whichever bites first governs: the pin count, and the number
+// of settled transactions held across the window. See pinBodyRetainSites for why
+// the count alone was not enough - it is a bound on time, and what the window
+// costs is bytes.
+//
+// Amortised constant despite the loop. Each pin is released exactly once, so the
+// total work over the life of the chain is one release per pin however many a
+// single append has to catch up on; and the scan forward from the hint exists
+// only because insertIfNotFound can splice pins in and shift the indices under
+// it.
+func (p *NodeTxPin) unsafe_releaseOldBodies() {
+	p.retained.sites += len(p.pins[len(p.pins)-1].GetNodes())
+
+	for p.unsafe_overRetention() {
+		i := p.unsafe_oldestWithBody()
+		// Index 0 is never released, and nothing older than it exists, so
+		// reaching the head means there is nothing left to give back.
+		if i <= 0 || i >= len(p.pins)-1 {
+			return
+		}
+		p.retained.sites -= len(p.pins[i].GetNodes())
+		p.pins[i] = pinWithoutBody(p.pins[i])
+		p.retained.oldest = i + 1
+	}
+}
+
+// unsafe_overRetention - whether the window is holding more than either bound
+// allows. Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_overRetention() bool {
+	if pinBodyRetainSites > 0 && p.retained.sites > pinBodyRetainSites {
+		return true
+	}
+	return pinBodyRetainPins > 0 && len(p.pins)-1-p.retained.oldest >= pinBodyRetainPins
+}
+
+// unsafe_oldestWithBody - the index of the oldest pin that still carries its
+// settled transactions, starting from the hint. Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_oldestWithBody() int {
+	i := p.retained.oldest
+	if i < 1 {
+		i = 1
+	}
+	for i < len(p.pins) && (p.pins[i] == nil || len(p.pins[i].GetNodes()) == 0) {
+		i++
+	}
+	p.retained.oldest = i
+	return i
+}
+
+// unsafe_servable - whether the pin at this index is whole enough to send to a
+// peer. Caller must hold p.mu.
+//
+// Positional, because that is exactly how releasing works: index 0 is kept
+// whole, and every index below the window edge has had its transactions
+// released. The pin itself cannot be asked - an empty Nodes list does not
+// distinguish a released pin from the genesis pin, which names the site it
+// settles without carrying it - so asking it was a bug that refused to serve
+// the opening pin of every leader-started chain.
+//
+// The content check is belt and braces for insertIfNotFound, the one path that
+// shifts positions without releasing anything, which can leave the edge off by
+// as many pins as it spliced in.
+func (p *NodeTxPin) unsafe_servable(i int) bool {
+	pin := p.pins[i]
+	if pin == nil {
+		return false
+	}
+	if i == 0 {
+		return true
+	}
+	// Whether this pin still has its transactions, not where it sits: the two
+	// bounds mean the window's depth in pins is no longer fixed, so a positional
+	// test would refuse pins that are whole and offer pins that are not.
+	if i < p.retained.oldest {
+		return false
+	}
+	return len(pin.Nodes) > 0 || len(pin.Sites) == 0
+}
+
+// pinWithoutBody - the same commit transaction with the settled transactions,
+// the contract transactions and the state diffs left out.
+//
+// Everything else is carried over, including the signature. The signature no
+// longer verifies against what is left, which is deliberate: a pin in this form
+// is a local record, and anything that would put it back on the wire has to
+// refuse it rather than send something a peer will reject as unauthorised.
+func pinWithoutBody(pin *pb.TxPin) *pb.TxPin {
+	return &pb.TxPin{
+		Prev:         pin.Prev,
+		Ts:           pin.Ts,
+		Sites:        pin.Sites,
+		Balance:      pin.Balance,
+		Pk:           pin.Pk,
+		Sign:         pin.Sign,
+		PinNumber:    pin.PinNumber,
+		Quorum:       pin.Quorum,
+		Proposer:     pin.Proposer,
+		FeePool:      pin.FeePool,
+		Rewards:      pin.Rewards,
+		FeeRemainder: pin.FeeRemainder,
+		Coinbase:     pin.Coinbase,
+	}
 }
 
 func (p *NodeTxPin) GetPin(number int) *pb.TxPin {
-	if len(p.pins) > 0 {
-		if number >= len(p.pins) || number < 0 {
-			return nil
+	pins := p.chain()
+	// Prefer the pin whose number matches. Indexing by position only works
+	// while the chain starts at zero: a node that joined via a balance snapshot
+	// holds pins numbered from wherever the leader was.
+	if number >= 0 && number < len(pins) && pins[number].PinNumber == int64(number) {
+		return pins[number]
+	}
+	for _, pin := range pins {
+		if pin.PinNumber == int64(number) {
+			return pin
 		}
-		directPin := p.pins[number]
-		if directPin.PinNumber == int64(number) {
-			return directPin
-		} else {
-			logger.Warnf("Gap in pins detected. Pin with number %d was found in position %d", directPin.PinNumber, number)
-			for _, pin := range p.pins {
-				if pin.PinNumber == int64(number) {
-					return pin
-				}
-			}
-			return nil
-		}
-
 	}
 	return nil
 }
 
 func (p *NodeTxPin) GetLastPin() *pb.TxPin {
+	pins := p.chain()
+	if len(pins) > 0 {
+		return pins[len(pins)-1]
+	}
+	return nil
+}
+
+// unsafe_getLastPin - caller must hold p.mu
+func (p *NodeTxPin) unsafe_getLastPin() *pb.TxPin {
 	if len(p.pins) > 0 {
 		return p.pins[len(p.pins)-1]
 	}
 	return nil
 }
 
+// unsafe_nextPinNumber - the number the next pin appended to the chain must
+// carry: one past the current head, or 0 for an empty chain (the genesis pin).
+// Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_nextPinNumber() int64 {
+	if last := p.unsafe_getLastPin(); last != nil {
+		return last.PinNumber + 1
+	}
+	return 0
+}
+
 func (p *NodeTxPin) unlock() {
-	p.mu.Unlock()
+	// clear the diagnostic before releasing, or concurrent lock/unlock pairs
+	// race on the field itself
 	p.last = ""
+	p.mu.Unlock()
 }
 
 func (p *NodeTxPin) lock(caller string) {
@@ -122,16 +424,45 @@ func (p *NodeTxPin) set(genesis *Node, wallet string) {
 	defer p.unlock()
 	pin := pb.NewTxPin([]byte{})
 	s := &pb.SiteID{
-		Id:      genesis.id.id[:],
+		Id:      append([]byte(nil), genesis.id.id[:]...),
 		Address: genesis.id.address,
 		IdMajor: genesis.id.idMajor,
 		IdMinor: genesis.id.idMinor,
 	}
 	pin.Balance.Balance[wallet] = genesis.tx.GetAmount().Bytes()
 	pin.Sites = append(pin.Sites, s)
+	// The genesis pin is number 0. This must be set before signing: the
+	// signature covers the marshalled pin, PinNumber included.
+	pin.PinNumber = p.unsafe_nextPinNumber()
 	pin.SignTx(_dag_.Wallet())
 
-	p.pins = append(p.pins, pin)
+	p.unsafe_appendPin(pin)
+	// This node has a chain of its own now, so it is ready to apply commit
+	// transactions from others. Only a node that synced one from a peer used to
+	// set this, because in leader mode the node that starts a chain is also the
+	// only node that ever settles it. Under a validator quorum every validator
+	// publishes when it is the proposer, so a chain-starting node that never
+	// became ready would refuse every commit transaction it did not build - it
+	// would watch the rest of the network settle the ledger and stay at its own
+	// genesis.
+	p.ready = true
+	// The genesis pin is where the initial offering enters the ledger, so it is
+	// both the store's record of the chain's identity and the only statement of
+	// where the money came from.
+	chainStartCommitted(pin)
+	// The genesis site reaches a pin without going through the confirmed pool,
+	// so record it as harvested here: otherwise the first two sites to approve
+	// genesis promote it and it lands in a second pin.
+	if confirmationCounter != nil {
+		confirmationCounter.markHarvested(genesis.id.id)
+	}
+}
+
+// snapshotPins - a shallow copy of the pin chain, taken under the pin lock.
+// Readers iterate the copy so that an append (which may reallocate the backing
+// array) cannot race them.
+func (p *NodeTxPin) snapshotPins() []*pb.TxPin {
+	return p.chain()
 }
 
 func (p *NodeTxPin) getLast() *pb.TxPin {
@@ -143,17 +474,65 @@ func (p *NodeTxPin) getLast() *pb.TxPin {
 	return nil
 }
 
+// getAllFrom - the chain from this pin number onwards, for a peer closing a gap.
+//
+// Selected by pin number rather than by position. The two agree only on a chain
+// that starts at zero; a node that joined from a balance snapshot holds pins
+// numbered from wherever the leader was, and indexing by position there either
+// returned the wrong pins or, more often, nothing at all.
+//
+// A pin whose transactions have been released past the retain window is not
+// served. The receiver derives balances from those transactions and verifies the
+// signature over the whole pin, so sending one would either be refused as
+// unauthorised or - worse, if authorisation were ever relaxed - applied as a pin
+// that settled nothing. The requester is told nothing rather than told a lie,
+// and the gap is closed by serving the chain from the store; see
+// pinBodyRetainPins.
 func (p *NodeTxPin) getAllFrom(fromPinNumber int) []*pb.TxPin {
 	p.lock("getAllFrom")
 	defer p.unlock()
-	if len(p.pins) > 0 && len(p.pins) > fromPinNumber && fromPinNumber >= 0 {
-		return p.pins[fromPinNumber:]
+	if fromPinNumber < 0 {
+		return nil
 	}
-	return nil
+	from := -1
+	for i, pin := range p.pins {
+		if pin != nil && pin.PinNumber >= int64(fromPinNumber) {
+			from = i
+			break
+		}
+	}
+	if from < 0 {
+		return nil
+	}
+	// The longest run from there that can honestly be sent. A copy of the
+	// pointers, not a window onto p.pins: the caller marshals them with the
+	// lock released, and the slice it was handed used to be the live one, so an
+	// append that reallocated - or a release that replaced an element - changed
+	// what was being sent while it was being sent.
+	out := []*pb.TxPin{}
+	for i := from; i < len(p.pins); i++ {
+		if !p.unsafe_servable(i) {
+			var number int64 = -1
+			if p.pins[i] != nil {
+				number = p.pins[i].PinNumber
+			}
+			logger.Errorf("[pin] Cannot serve pin=%d from memory: its transactions were released past the %d-pin retain window. A peer catching up from %d has to be served from the store.",
+				number, pinBodyRetainPins, fromPinNumber)
+			break
+		}
+		out = append(out, p.pins[i])
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (p *NodeTxPin) openPinDownloading() {
+	p.dlMu.Lock()
+	defer p.dlMu.Unlock()
 	p.downloadedPins = make(chan *pb.TxPin, 1000)
+	p.dlClosed = false
 }
 
 func (p *NodeTxPin) GetBalance(wallet []byte) (*big.Int, error) {
@@ -165,10 +544,26 @@ func (p *NodeTxPin) GetBalance(wallet []byte) (*big.Int, error) {
 }
 
 func (p *NodeTxPin) AddDownloadedPin(pin *pb.TxPin) {
-	p.downloadedPins <- pin
+	p.dlMu.Lock()
+	defer p.dlMu.Unlock()
+	if p.dlClosed || p.downloadedPins == nil {
+		logger.Warnf("[Gap detected] Discarding pin=%d: no download in progress", pin.PinNumber)
+		return
+	}
+	select {
+	case p.downloadedPins <- pin:
+	default:
+		logger.Warnf("[Gap detected] Download buffer full, discarding pin=%d", pin.PinNumber)
+	}
 }
 
 func (p *NodeTxPin) ClosePinDownloading() {
+	p.dlMu.Lock()
+	defer p.dlMu.Unlock()
+	if p.dlClosed || p.downloadedPins == nil {
+		return
+	}
+	p.dlClosed = true
 	close(p.downloadedPins)
 }
 
@@ -182,11 +577,13 @@ func (p *NodeTxPin) ClosePinDownloading() {
 //	*big.Int - if wallet address is found, return is last known balance
 //	error - if an error occurs, such as there is no information on the wallet
 func (p *NodeTxPin) unsafe_getLatestBalance(wallet_address string) (*big.Int, error) {
-	// p.lock("getLatestBalance")
-	// defer p.unlock()
+	// Reads the published view rather than p.pins, so callers that hold only
+	// their own lock (the wallet cache, on the payment hot path) do not race
+	// the appends made under p.mu.
+	pins := p.chain()
 	// lookups take place in reverce order to that we always find the latest first
-	for ri := len(p.pins) - 1; ri >= 0; ri-- {
-		if v, ok := p.pins[ri].Balance.Balance[wallet_address]; ok {
+	for ri := len(pins) - 1; ri >= 0; ri-- {
+		if v, ok := pins[ri].Balance.Balance[wallet_address]; ok {
 			return big.NewInt(0).SetBytes(v), nil
 		}
 	}
@@ -196,6 +593,9 @@ func (p *NodeTxPin) unsafe_getLatestBalance(wallet_address string) (*big.Int, er
 func (p *NodeTxPin) insertIfNotFound(ptx *pb.TxPin) {
 	p.lock("inserIfNotFound")
 	defer p.unlock()
+	// this function splices p.pins in several branches; republish the reader
+	// view once, whichever branch ran
+	defer p.unsafe_publish()
 	logger.Infof("%s  ~ %s Inserting pin tx \nS:%s P:%s",
 		emoji.RoundPushpin,
 		emoji.ClockwiseVerticalArrows,
@@ -299,7 +699,11 @@ func (p *NodeTxPin) insertIfNotFound(ptx *pb.TxPin) {
 func (p *NodeTxPin) unsafe_getBalanceForWallet(wallet string) (*big.Int, error) {
 	sb, err := walletCache.get(wallet)
 	if err != nil && sb == nil {
-		sb, err = _pins_.unsafe_getLatestBalance(wallet)
+		// p, not the package global: the two are the same object on a running
+		// node, but reaching for the global from a method that has a receiver
+		// made this unusable from a test and would have followed a nil global on
+		// any path that ran before Init.
+		sb, err = p.unsafe_getLatestBalance(wallet)
 		if err != nil {
 			// we did not have luck finding this wallet in pin txs
 			err = fmt.Errorf("[pin tx] Balance for wallet %s cannot be found. Out of sync or DS", wallet)
@@ -338,14 +742,285 @@ func (p *NodeTxPin) getById(id uuid.UUID) *Node {
 //
 //	error if a balancing error occurs
 
+// add - build a commit transaction over these sites and append it to the chain.
+// The single-signer path: what a leader does, where building it and committing
+// it are the same act because nobody else has to agree first.
+//
+// The pin lock is taken twice and briefly: once to read the head the pin is
+// built against, once to append it. The build in between runs with the lock
+// released, which is the whole point - it reads balances, executes the
+// smart-contract transactions against the VM, and signs a payload that is
+// megabytes at load, and every reader of the chain (REST balances, eth-RPC,
+// CurrentHeight, the consensus driver, the insert path's balance lookups) used
+// to wait behind all of it. dag/syncmngr.go appendPinUnderLock splits an
+// incoming pin the same way and for the same reason.
+//
+// If the head moves while the build is unlocked the built commit transaction is
+// stale - it names a predecessor that is no longer the head and a number that is
+// taken - and it is discarded, never appended. A commit transaction is the
+// ledger's only irrevocable statement, so the build is thrown away and repeated
+// against the new head; the sites are still in hand, so nothing is lost by
+// repeating it. If the head moves again the attempt is abandoned and reported:
+// the caller consumed these sites from the confirmed pool, so losing them is
+// worth being loud about, but appending a stale pin would be worse.
 func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
-	p.lock("add")
-	defer p.unlock()
-	var prev []byte = []byte{}
+	// The graph read first, and on its own: what a commit transaction says about
+	// a site it settles is read under the graph lock, before any pin lock is
+	// taken, and the same messages are reused if the build has to be repeated.
+	// See prepareSites for what is being protected and why it cannot be done
+	// inside the build.
+	prepared := prepareSites(sites)
 
-	if len(p.pins) > 0 {
-		prev = p.pins[len(p.pins)-1].Sign
+	// One build at a time, and for the whole attempt rather than only around the
+	// build: what makes a discarded build undoable is a VM checkpoint, and
+	// checkpoints nest, so a second build opening its own between this one's
+	// checkpoint and the decision to keep or revert would have the two unwound
+	// in the wrong order - reverting a commit transaction that is already on the
+	// chain. See buildMu.
+	p.LockBuild()
+	defer p.UnlockBuild()
+
+	const attempts = 2
+	var lastHead pinHead
+	for attempt := 1; attempt <= attempts; attempt++ {
+		head := p.headSnapshot()
+		built, err := p.buildCheckpointed(head, prepared, smcTxs)
+		if err != nil {
+			return err
+		}
+		if p.appendIfHeadUnmoved(head, built.pin) {
+			built.keep()
+			return nil
+		}
+		built.discard()
+		lastHead = head
+		logger.Warnf("[pin] Discarding the commit transaction built for pin=%d: the chain head moved from %d while it was being built (attempt %d of %d)",
+			head.number, head.height, attempt, attempts)
 	}
+	return fmt.Errorf("the chain head moved away from pin %d while a commit transaction was being built for it; %d site(s) were not settled",
+		lastHead.height, len(sites))
+}
+
+// LockBuild, UnlockBuild - claim the right to build a commit transaction.
+//
+// Exported for the quorum path, which builds with the pin lock held and so
+// cannot take buildMu from inside the builder without inverting the order. It
+// has to take it around its own LockPin/UnlockPin pair instead. Not strictly
+// required today - a node is either in leader mode or in quorum mode, and the
+// two builders never run together - but the panic if they ever did is in the VM,
+// several frames away from anything that would explain it.
+func (p *NodeTxPin) LockBuild()   { p.buildMu.Lock() }
+func (p *NodeTxPin) UnlockBuild() { p.buildMu.Unlock() }
+
+// buildCheckpointed - form a commit transaction against head, with the state
+// store marked so that the build can be undone.
+//
+// Runs with the pin lock released and buildMu held. Everything it reads is
+// either taken from head, published lock-free (unsafe_getLatestBalance reads the
+// atomic view), or behind a lock of its own: the wallet cache, the VM, the
+// contract pool.
+func (p *NodeTxPin) buildCheckpointed(head pinHead, prepared []preparedSite, smcTxs []tx.Transaction) (*builtPin, error) {
+	// Marked before the smart-contract stage runs, so that a build the head
+	// invalidates can put the state store back. The quorum path takes its own
+	// checkpoint around unsafe_buildPin; checkpoints nest, so the two do not
+	// interfere.
+	vm.Checkpoint()
+	built, err := p.buildPin(head, prepared, smcTxs)
+	if err != nil {
+		vm.RevertCheckpoint()
+		return nil, err
+	}
+	built.vmMarked = true
+	return built, nil
+}
+
+// builtPin - a commit transaction that has been formed but not yet appended,
+// with the consequences of forming it and how to settle them.
+//
+// Forming one is not free of consequence: the smart-contract stage executes its
+// transactions against the state store and moves them out of the unconfirmed
+// pool, and the balances the pin states supersede what the wallet cache holds
+// for those accounts. Whether that stands depends on whether the pin goes on the
+// chain, which is not known until the head has been checked again.
+type builtPin struct {
+	pin *pb.TxPin
+	// invalidate - accounts whose cached balance this pin supersedes. Applied
+	// only once the pin is on the chain: removing them earlier - which is what
+	// the builder used to do, inline - leaves a window in which a balance
+	// lookup falls through to the previous pin and so forgets the very
+	// transactions this pin settles, which is a window in which they could be
+	// spent again.
+	invalidate []string
+	smcTxs     []tx.Transaction
+	vmMarked   bool
+}
+
+// keep - the pin is on the chain, so the build stands.
+func (b *builtPin) keep() {
+	if b.vmMarked {
+		vm.DropCheckpoint()
+		b.vmMarked = false
+	}
+	b.invalidateCache()
+}
+
+// invalidateCache - drop the cached balances this pin has superseded, so the
+// next lookup reads them from the chain.
+func (b *builtPin) invalidateCache() {
+	for _, wallet := range b.invalidate {
+		walletCache.remove(wallet, nil)
+	}
+}
+
+// discard - the pin is not going on the chain, so the build must not stand.
+//
+// The same three undos as pinCandidate in dag/consensusnet.go, minus the wallet
+// cache, which this path has not touched yet. Not shared with it because that
+// type also carries the epoch and candidate bookkeeping the quorum protocol
+// needs, and because the two paths differ in exactly this: the quorum path has
+// to snapshot and restore the cache, this one only has to not invalidate it.
+func (b *builtPin) discard() {
+	if b.vmMarked {
+		vm.RevertCheckpoint()
+		b.vmMarked = false
+	}
+	// Back to the unconfirmed pool: from the network's point of view the
+	// execution never happened. AddUnconfirmed also takes them out of the
+	// confirmed pool, which is where the stage put them.
+	for _, t := range b.smcTxs {
+		if t != nil {
+			smc.AddUnconfirmed(t)
+		}
+	}
+}
+
+// preparedSite - a confirmed site turned into the form a commit transaction
+// carries, plus the two accounts its payment moves value between.
+//
+// It exists so that reading the graph and building the pin are separate steps.
+// ToPbNode reads a site's approval targets, its sliced-target ids, its height
+// and its processor claim, every one of which the insert path writes as new
+// sites arrive and slicing rewrites when a commit transaction settles them. A
+// torn read there is not merely a wrong answer: it is what gets signed and sent
+// to peers as the ledger's statement of what it settled.
+type preparedSite struct {
+	vertex    *Node
+	node      *pb.Node
+	site      *pb.SiteID
+	sender    string
+	recipient string
+}
+
+// prepareSites - serialise the sites a commit transaction will settle, under the
+// graph's read lock.
+//
+// The graph lock has to be taken before the pin lock and never after it - that
+// is the documented inversion, and dag/syncmngr.go applyPin is shaped the way it
+// is to respect it - so this is a step of its own that runs before a build
+// begins rather than the first loop inside the builder. add() calls it while
+// holding no lock at all.
+func prepareSites(sites []*Node) []preparedSite {
+	if _dag_ == nil {
+		return serialiseSites(sites)
+	}
+	_dag_.rlock()
+	defer _dag_.runlock()
+	return serialiseSites(sites)
+}
+
+// serialiseSites - the same conversion with no graph lock held.
+//
+// For the quorum path only, which calls unsafe_buildPin with the pin lock
+// already held and so must not take the graph lock. That path therefore still
+// races the insert path, exactly as it did before the two steps were separated;
+// closing it means calling prepareSites in dag/consensusnet.go buildPin before
+// it takes the pin lock, and handing the result to unsafe_buildPinPrepared.
+func serialiseSites(sites []*Node) []preparedSite {
+	// sort sites based on time in an ascending order - from past to future
+	sort.SliceStable(sites, func(i, j int) bool {
+		return sites[i].time.Before(sites[j].time)
+	})
+	out := make([]preparedSite, 0, len(sites))
+	for _, val := range sites {
+		if val == nil || val.tx == nil {
+			continue
+		}
+		out = append(out, preparedSite{
+			vertex: val,
+			node:   val.ToPbNode(),
+			// Copied, not sliced. Slicing takes a reference into the live
+			// Node's uuid array, so every commit transaction the node retains
+			// keeps every site it settled reachable - with its edge slices -
+			// and slicing them out of the graph frees nothing. Sixteen bytes
+			// per site against holding the site itself.
+			site: &pb.SiteID{
+				Id:      append([]byte(nil), val.id.id[:]...),
+				Address: val.id.address,
+				IdMajor: val.id.idMajor,
+				IdMinor: val.id.idMinor,
+			},
+			// Converted once. BytesToAddress hex-encodes and allocates, and the
+			// builder used to call it eight times per site: twice to look the
+			// balances up, and six more times to index the same two maps and
+			// the cache again while writing the pin out.
+			sender:    grape1crypto.BytesToAddress(val.tx.GetSender()),
+			recipient: grape1crypto.BytesToAddress(val.tx.GetRecipient()),
+		})
+	}
+	return out
+}
+
+// verticesOf - the sites behind these prepared messages, for the reward split,
+// which recomputes from the sites themselves.
+func verticesOf(prepared []preparedSite) []*Node {
+	out := make([]*Node, 0, len(prepared))
+	for _, ps := range prepared {
+		out = append(out, ps.vertex)
+	}
+	return out
+}
+
+// unsafe_buildPin - form a commit transaction over these sites, signed and
+// numbered, but not appended to the chain.
+//
+// Split out of add() for the quorum path, where a validator proposes a commit
+// transaction and only appends it once the rest of the set has agreed. Building
+// it is not free of consequence - the smart-contract stage executes, and the
+// wallet cache is invalidated for every account it touches - so a proposer that
+// loses its round has to undo that; see pinCandidate in dag/consensusnet.go.
+// Caller holds the pin lock, which is why the sites are serialised here without
+// the graph lock; see serialiseSites.
+func (p *NodeTxPin) unsafe_buildPin(sites []*Node, smcTxs []tx.Transaction) (*pb.TxPin, error) {
+	return p.unsafe_buildPinPrepared(serialiseSites(sites), smcTxs)
+}
+
+// unsafe_buildPinPrepared - the same, over sites that have already been
+// serialised, so that the caller can have done that under the graph's read lock.
+// Caller holds the pin lock.
+func (p *NodeTxPin) unsafe_buildPinPrepared(prepared []preparedSite, smcTxs []tx.Transaction) (*pb.TxPin, error) {
+	built, err := p.buildPin(p.unsafe_head(), prepared, smcTxs)
+	if err != nil {
+		return nil, err
+	}
+	// The quorum path expects the cache to have been invalidated by the time
+	// this returns: pinCandidate restores the cache from a snapshot when it
+	// rolls a lost round back, and would have nothing to restore if the entries
+	// had never been removed. add() defers it instead, to the point where the
+	// pin is on the chain - see builtPin.invalidate.
+	built.invalidateCache()
+	return built.pin, nil
+}
+
+// buildPin - the body of a build, anchored to the head it was given rather than
+// to whatever the chain head happens to be while it runs.
+//
+// Reads no part of p.pins, so it does not need the pin lock: balances come from
+// the wallet cache and, behind it, the published chain view, and the head's
+// signature and number come from the anchor. That is what lets add() run it
+// unlocked; unsafe_buildPin calls it with the lock held because its caller is
+// already holding it for other reasons.
+func (p *NodeTxPin) buildPin(head pinHead, prepared []preparedSite, smcTxs []tx.Transaction) (*builtPin, error) {
+	defer stats.Time(stats.PinBuild)()
 
 	// migrate the wallet cache balance to pin tx - reconcile balances,
 	// detect conflicts, update balances for confirmed tx
@@ -355,88 +1030,133 @@ func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
 	// Keep that in mind when updating balances here
 	// The most important aspect: detect balance conflicts
 
-	// sort sites based on time in an ascending order - from past to future
-	sort.SliceStable(sites, func(i, j int) bool {
-		return sites[i].time.Before(sites[j].time)
-	})
+	// The sites arrive already sorted and already serialised; see prepareSites.
+	// Nothing below reads the graph.
 
-	// get the latest balances from cache first,
-	// and when missing, from prev pin tx
-	senders := map[string][]*big.Int{}
-	receivers := map[string][]*big.Int{}
-	for _, vertex := range sites {
-		// Get all senders' balances first
-		// Look in cache first
-		wallet := grape1crypto.BytesToAddress(vertex.tx.GetSender())
-		senderBalance, err := p.unsafe_getBalanceForWallet(wallet)
+	// What each account holds as this build sees it: the wallet cache first,
+	// and the chain behind it. One value per account, where there used to be a
+	// slice per account of which only the last entry was ever read - and every
+	// entry in it was the same lookup repeated, because nothing between them
+	// changed the cache.
+	balances := make(map[string]*big.Int, 2*len(prepared))
+	// settlingBalance - the balance to state for an account this pin settles
+	// for. Loud about a miss, because a payment whose sender has no balance is
+	// the shape a double spend takes.
+	settlingBalance := func(wallet, role string) *big.Int {
+		if b, ok := balances[wallet]; ok {
+			return b
+		}
+		b, err := p.unsafe_getBalanceForWallet(wallet)
 		if err != nil {
 			logger.Error(err.Error())
 			// this is a fatal error - perhaps it's related to double spending, fraud, etc.
-			logger.Warn("[@DEVNOTE] This is not normal. Decide what to do with this.")
-			senderBalance = big.NewInt(0)
+			logger.Warnf("[@DEVNOTE] %s balance not found. This is not normal. Decide what to do with this.", role)
+			b = big.NewInt(0)
 		}
-		senders[wallet] = append(senders[wallet], senderBalance)
-		// get all receivers' balances
-		// Look in cache first
-		wallet = grape1crypto.BytesToAddress(vertex.tx.GetRecipient())
-		receiverBalance, err := p.unsafe_getBalanceForWallet(wallet)
-		if err != nil {
-			logger.Error(err.Error())
-			// this is a fatal error - perhaps it's related to double spending, fraud, etc.
-			logger.Warn("[@DEVNOTE] Receiver balance not found. Decide what to do with this.")
-			receiverBalance = big.NewInt(0)
-		}
-		receivers[wallet] = append(receivers[wallet], receiverBalance)
+		balances[wallet] = b
+		return b
+	}
+	for _, ps := range prepared {
+		settlingBalance(ps.sender, "Sender")
+		// the receiver may not be known to us at all at this point
+		settlingBalance(ps.recipient, "Receiver")
 	}
 
-	pin := pb.NewTxPin(prev)
+	pin := pb.NewTxPin(head.prev)
+	// Sized up front: one entry per site each, and this is the allocation the
+	// heap profile finds the node holding most of its live bytes in.
+	pin.Nodes = make([]*pb.Node, 0, len(prepared))
+	pin.Sites = make([]*pb.SiteID, 0, len(prepared))
+	built := &builtPin{
+		pin:        pin,
+		invalidate: make([]string, 0, 2*len(prepared)),
+		smcTxs:     smcTxs,
+	}
 	// each sites indicates a new transaction - process all transactions
-	for _, val := range sites {
+	for _, ps := range prepared {
 		// store sites in pin [for now] - need for synch
-		pin.Nodes = append(pin.Nodes, val.ToPbNode())
-		s := &pb.SiteID{
-			Id:      val.id.id[:],
-			Address: val.id.address,
-			IdMajor: val.id.idMajor,
-			IdMinor: val.id.idMinor,
-		}
+		pin.Nodes = append(pin.Nodes, ps.node)
 		// for each site update the balance, when valid
-		// 1. Find the latest balance update for the sender
-		senderBalanceTx := senders[grape1crypto.BytesToAddress(val.tx.GetSender())]
-		senderBalance := senderBalanceTx[len(senderBalanceTx)-1]
-		if senderBalance.Cmp(big.NewInt(0)) < 0 {
-			// this transaction cannot be processed
-			val.valid = false
+		senderBalance := balances[ps.sender]
+		if senderBalance.Sign() < 0 {
+			// this transaction cannot be processed. Written without the graph
+			// lock, which is what the rest of this function is arranged to
+			// avoid; it is left here because taking the graph lock inside a
+			// build is the deadlock, and the field is a local validity flag
+			// rather than anything the pin states.
+			ps.vertex.valid = false
 			logger.Warnf("[@DEVNOTE] Need to revert balances in cache")
-			logger.Errorf("Sender wallet %s balance is %d", grape1crypto.BytesToAddress(val.tx.GetSender()), senderBalance.Uint64())
+			logger.Errorf("Sender wallet %s balance is %s", ps.sender, senderBalance.String())
 		}
-		// 2. Find the latest balance update for the recipient
-		// receiver may not be known to us at all at this point
-		receiverBalanceTx := receivers[grape1crypto.BytesToAddress(val.tx.GetRecipient())]
-		receiverBalance := receiverBalanceTx[len(receiverBalanceTx)-1]
-		pin.Sites = append(pin.Sites, s)
+		receiverBalance := balances[ps.recipient]
+		pin.Sites = append(pin.Sites, ps.site)
 		// allow tx balance update
-		pin.Balance.Balance[grape1crypto.BytesToAddress(val.tx.GetSender())] = senderBalance.Bytes()
-		pin.Balance.Balance[grape1crypto.BytesToAddress(val.tx.GetRecipient())] = receiverBalance.Bytes()
-		// remove from wallet cache
-		walletCache.remove(grape1crypto.BytesToAddress(val.tx.GetSender()), []string{val.Id()})
-		walletCache.remove(grape1crypto.BytesToAddress(val.tx.GetRecipient()), []string{val.Id()})
+		pin.Balance.Balance[ps.sender] = senderBalance.Bytes()
+		pin.Balance.Balance[ps.recipient] = receiverBalance.Bytes()
+		// The cached balances this pin supersedes. Removed once it is on the
+		// chain, not here: see builtPin.invalidate.
+		built.invalidate = append(built.invalidate, ps.sender, ps.recipient)
 	}
-	pin.PinNumber = pinsQuantity
-	pinsQuantity++
-	p.runSmartContractStage(pin, smcTxs)
+	// The number the anchor says this pin must carry. Derived from the chain
+	// head rather than a process-local counter, so it stays correct across
+	// restarts and after syncing pins from a peer. Set before signing and
+	// before the smart-contract stage, which reports it to the VM as the block
+	// number.
+	pin.PinNumber = head.number
+	p.runSmartContractStage(pin, smcTxs, &built.invalidate)
 
-	// now that all the information has been collected, sign it and store
+	// The fee split, once the smart-contract stage has said what its
+	// transactions actually burned. Before signing, because the split is part of
+	// what the signature and the validator quorum cover: a commit transaction
+	// that could be re-split after being agreed would let the proposer pay
+	// itself. A no-op while fees are off, which is the default.
+	// The stake lookup the split weights processors by. For an account this pin
+	// settles for it deliberately reads the chain and not the cache: the cached
+	// figure includes transactions that are still unconfirmed, the cache entry
+	// is about to be dropped anyway, and the stake that should count is the
+	// settled one. That is also what this returned before the cache
+	// invalidation was moved to after the append - it used to read the cache and
+	// miss, because the entry had just been removed a few lines above - and the
+	// split is a ledger entry, so reproducing it exactly is worth a map.
+	//
+	// Built on first use, which while fees are off is never: the split returns
+	// early on an empty pool without asking for a single balance.
+	var settledHere map[string]struct{}
+	recordRewards(pin, verticesOf(prepared), func(account string) *big.Int {
+		if settledHere == nil {
+			settledHere = make(map[string]struct{}, len(built.invalidate))
+			for _, w := range built.invalidate {
+				settledHere[w] = struct{}{}
+			}
+		}
+		var balance *big.Int
+		var err error
+		if _, settled := settledHere[account]; settled {
+			balance, err = p.unsafe_getLatestBalance(account)
+		} else {
+			balance, err = p.unsafe_getBalanceForWallet(account)
+		}
+		if err != nil || balance == nil {
+			return big.NewInt(0)
+		}
+		return balance
+	}, rewardSettingsFrom(txSettings{
+		Minstake:      txConfig.Minstake,
+		Stakecapmilli: txConfig.Stakecapmilli,
+	}, dagConfig.Coinbaseaccount))
+
+	// now that all the information has been collected, sign it
 	pin.SignTx(dagWallet)
-
-	// append the latest pinning transaction to the slice of all pinning tx
-	p.pins = append(p.pins, pin)
-	// b, _ := pin.MarshalJSON()
-	// logger.Infof("%s", string(b))
-	return nil
+	return built, nil
 }
 
-func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction) {
+// runSmartContractStage - execute the contract transactions this pin carries and
+// fold what they changed into it.
+//
+// invalidate collects the accounts whose cached balance the stage has
+// superseded, rather than removing them from the cache here: the caller decides
+// when that becomes true, which is when the pin reaches the chain.
+func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction, invalidate *[]string) {
 	// Smart contracts execution stage
 	// First step is balances synchronization - put updated balances from this pin tx into VM state store
 	// Second step - execute smart contract transactions and get receipts (execution results) with logs produced during execution
@@ -444,14 +1164,21 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 	// Fourth step - synchronize balances affected during sc execution back to pin.Balance.Balace
 	// Fifth step - remove temporary cached balances within wallet_cache (affected during sc execution)
 	// to force it to update balance on next lookup
-	logger.Infof("Smart contract stage started, pin=%d, txs=%d", len(p.pins), len(smcTxs))
+	logger.Infof("Smart contract stage started, pin=%d, txs=%d", pin.PinNumber, len(smcTxs))
 	startTime := time.Now()
 	vm.SyncBalances(pin.Balance.Balance)   // sync balances to storage
 	vm.CaptureStateStoreDiffs()            // enable state store changes capture
 	defer vm.ResetCaptureStateStoreDiffs() // disable state store changes capture even when this method fails for some reason
 	executedTxs := []*pb.ExecutedSmcTx{}
-	pinHash, _ := pin.Hash(crypto.SHA256)
-	pinHashStr := "0x" + hex.EncodeToString(pinHash)
+	// Only the confirmed-contract records below carry it, so it is only computed
+	// when there are any. Hashing marshals the whole pin - every transaction it
+	// settles - and on a payment-only commit, which is the ordinary case, that
+	// was a seventh of the entire build spent on a string nothing read.
+	pinHashStr := ""
+	if len(smcTxs) > 0 {
+		pinHash, _ := pin.Hash(crypto.SHA256)
+		pinHashStr = "0x" + hex.EncodeToString(pinHash)
+	}
 	timestamp := pin.Ts.AsTime().Unix()
 	gasUsed := 0
 	for _, node := range pin.GetNodes() {
@@ -461,7 +1188,7 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 	}
 	for smcTxIdx, smcTx := range smcTxs {
 
-		execResult, err := p.executeSMCTx(smcTx, int64(timestamp))
+		execResult, err := p.executeSMCTx(smcTx, int64(timestamp), pin.PinNumber)
 		if err != nil {
 			hash := smcTx.GetHash()
 			logger.Warnf("Transaction %s is invalid (during execution), removing from smc pool", "0x"+hex.EncodeToString(hash))
@@ -474,7 +1201,7 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 		}
 		gasUsed += int(execResult.GasUsed)
 		smc.AddConfirmed(tx.ConfirmedTx{IdentifiableTx: tx.IdentifiableTx{Transaction: smcTx},
-			Status: status, StatusMessage: execResult.Output, PinTxNumber: len(p.pins), UsedFuel: int(execResult.GasUsed),
+			Status: status, StatusMessage: execResult.Output, PinTxNumber: int(pin.PinNumber), UsedFuel: int(execResult.GasUsed),
 			PinTxHash: pinHashStr, TxIndex: len(pin.Nodes) + smcTxIdx, CumulativeGasUsed: gasUsed})
 		receipt := execResultToReceipt(execResult)
 		execSmc := pb.ExecutedSmcTx{Tx: smcTx.MarshalBinary(), Receipt: receipt}
@@ -490,7 +1217,11 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 			balance := new(big.Int)
 			balance, _ = balance.SetString(diff.Account.Balance, 10)
 			pin.Balance.Balance[address] = balance.Bytes()
-			walletCache.remove(address, []string{}) // remove from cache to force balance update on next lookup
+			// Queued rather than removed here, to force a balance update on the
+			// next lookup once this pin is on the chain.
+			if invalidate != nil {
+				*invalidate = append(*invalidate, address)
+			}
 			logger.Infof("Account %s balance was synchronized with dag, now balance -  %v", address, balance)
 		}
 	}
@@ -498,7 +1229,7 @@ func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction
 }
 
 func (pin *NodeTxPin) runSmartContractStageFullNode(balances map[string][]byte, recentPin *pb.TxPin) error {
-	logger.Infof("Smart contract stage started at full node, pin=%d, txs=%d", len(pin.pins), len(recentPin.SmcTxs))
+	logger.Infof("Smart contract stage started at full node, pin=%d, txs=%d", recentPin.PinNumber, len(recentPin.SmcTxs))
 	vm.SyncBalances(balances)
 	vm.CaptureStateStoreDiffs()
 	defer vm.ResetCaptureStateStoreDiffs()
@@ -509,7 +1240,7 @@ func (pin *NodeTxPin) runSmartContractStageFullNode(balances map[string][]byte, 
 		realTx := tx.UnmarshalBinary(smcTx.Tx)
 		realJson := realTx.String()
 		logger.Infof("Transaction info:  %s", realJson)
-		execResult, err := pin.executeSMCTx(realTx, int64(timestamp))
+		execResult, err := pin.executeSMCTx(realTx, int64(timestamp), recentPin.PinNumber)
 		if err != nil {
 			hash := realTx.GetHash()
 			logger.Warnf("Synchronization failed! Transaction %s is invalid (during execution)", "0x"+hex.EncodeToString(hash))
@@ -568,18 +1299,28 @@ func (pin *NodeTxPin) runSmartContractStageFullNode(balances map[string][]byte, 
 }
 
 func (p *NodeTxPin) CurrentHeight() int {
+	pins := p.chain()
+	if len(pins) == 0 {
+		return 0
+	}
+	return int(pins[len(pins)-1].PinNumber)
+}
+
+// unsafe_currentHeight - the pin number at the head of the chain.
+// Caller must hold p.mu.
+func (p *NodeTxPin) unsafe_currentHeight() int {
 	if len(p.pins) == 0 {
 		return 0
-	} else {
-		return int(p.pins[len(p.pins)-1].PinNumber)
 	}
+	return int(p.pins[len(p.pins)-1].PinNumber)
 }
 
 func (p *NodeTxPin) CurrentTS() int64 {
-	if len(p.pins) == 0 {
+	pins := p.chain()
+	if len(pins) == 0 {
 		return 0
 	}
-	return p.pins[len(p.pins)-1].Ts.AsTime().Unix()
+	return pins[len(pins)-1].Ts.AsTime().Unix()
 }
 
 func (p *NodeTxPin) UpdateIfValid(wallet string, amount *big.Int) bool {
@@ -736,68 +1477,19 @@ func execResultToReceipt(r ExecutionResult) *pb.TxReceipt {
 	return &receipt
 }
 
+// parseVmError - a revert payload from the VM carries an ABI-encoded reason;
+// anything else is a message from the VM itself.
+//
+// This used to be parsed inline here, with a panic on every unexpected shape -
+// a short payload, unparseable hex, an offset that did not fit. That turned
+// malformed contract output into a dead node, on the pin path of all places.
+// The decoding now lives in crypto/eth, is shared with the REST layer, and
+// returns a value for input it cannot read.
 func parseVmError(err string) error {
-	if strings.HasPrefix(err, "0x") {
-		return newSolidityError(err)
+	if eth.IsRevertPayload(err) {
+		return eth.ParseRevert(err)
 	}
 	return fmt.Errorf("system VM error during tx execution: %s", err)
-}
-
-type solidityError struct {
-	signature string
-	offset    uint64
-	dataLen   uint64
-	data      string
-	raw       string
-}
-
-func (err solidityError) Error() string {
-	return err.data
-}
-
-func newSolidityError(hexErr string) solidityError {
-	if !strings.HasPrefix(hexErr, "0x") {
-		panic(fmt.Errorf("solidity error must be in hex format starting with 0x, got %s", hexErr))
-	}
-	trimmedErr := strings.TrimPrefix(hexErr, "0x")
-	bytes, err := hex.DecodeString(trimmedErr)
-	if err != nil {
-		panic(fmt.Errorf("solidity error must be in hex format got %s", hexErr))
-	}
-	if len(bytes) < 4 {
-		panic(fmt.Errorf("hex error has size %d, but solidity error has minimum size 4 bytes", len(bytes)))
-	}
-	sErr := solidityError{}
-	if len(bytes) < 100 {
-		//no parameters
-		sErr.signature = trimmedErr[:8]
-		sErr.offset = 0
-		sErr.dataLen = 0
-		//panic(fmt.Errorf("hex error has size %d, but solidity error has minimum size %d (signature 4 bytes, offset 32 bytes, length min 32 bytes, data min 32 bytes)", len(bytes), 100))
-	} else {
-		offset, offsetParseErr := strconv.ParseUint(trimmedErr[8:72], 16, 64)
-		if offsetParseErr != nil {
-			panic(fmt.Errorf("unable to convert value %s to uint64 for solidity error offset, hexErr=%s", trimmedErr[8:72], hexErr))
-		}
-		length, lengthParseErr := strconv.ParseUint(trimmedErr[72:72+offset*2], 16, 64)
-		if lengthParseErr != nil {
-			panic(fmt.Errorf("unable to convert value %s to uint64 for solidity error offset, hexErr=%s", trimmedErr[72:72+offset*2], hexErr))
-		}
-
-		errData, dataParseErr := hex.DecodeString(trimmedErr[72+offset*2 : 72+offset*2+length*2])
-		if dataParseErr != nil {
-			// mustn't reach this line
-			panic(fmt.Errorf("program logic error! Unexpected error happened, %s is not a hex for solidity error", hexErr))
-		}
-		errDataString := string(errData)
-
-		sErr.signature = trimmedErr[:8]
-		sErr.offset = offset
-		sErr.dataLen = length
-		sErr.data = errDataString
-		sErr.raw = hexErr
-	}
-	return sErr
 }
 
 func emptyHex(hex string) bool {
@@ -811,7 +1503,9 @@ type ExecutionResult struct {
 	GasUsed    int64
 }
 
-func (p *NodeTxPin) executeSMCTx(transaction tx.Transaction, timestamp int64) (ExecutionResult, error) {
+// executeSMCTx - run one smart-contract tx on the VM in the context of the pin
+// identified by pinNumber (reported to the VM as the block number).
+func (p *NodeTxPin) executeSMCTx(transaction tx.Transaction, timestamp int64, pinNumber int64) (ExecutionResult, error) {
 	hash := transaction.GetHash()
 	execResult := ExecutionResult{}
 	client, err := vm.ConnectToVm()
@@ -821,10 +1515,11 @@ func (p *NodeTxPin) executeSMCTx(transaction tx.Transaction, timestamp int64) (E
 	}
 	coinbaseAddrBytes, err := eth.ParseEthAddress(config.GetConfig().Dag.Coinbaseaccount)
 	if err != nil {
-		panic(err)
+		return execResult, fmt.Errorf("invalid coinbase account %q in configuration: %w",
+			config.GetConfig().Dag.Coinbaseaccount, err)
 	}
 	txPin := &pb.PinTxHeader{CoinbaseAccountAddress: &pb.Address{AddBytes: coinbaseAddrBytes},
-		Timestamp: timestamp, TxNumber: int32(p.CurrentHeight() + 1)}
+		Timestamp: timestamp, TxNumber: int32(pinNumber)}
 	response, vmErr := client.RunCall(context.TODO(), &pb.WriteContractRequest{Tx: transaction.MarshalBinary(), Header: txPin})
 	if vmErr != nil {
 		logger.Errorf("VM error occurred during tx=%v execution: %s", transaction, vmErr.Error())
@@ -897,10 +1592,15 @@ func (pin *NodeTxPin) SyncPins(recentPin *pb.TxPin) {
 		balances[grape1crypto.BytesToAddress(payment.Tx.Sender)] = senderBalance.Bytes()
 		balances[grape1crypto.BytesToAddress(payment.Tx.Recepient)] = receiverBalance.Bytes()
 	}
-	if config.GetConfig().Peer.NodeType == 0 {
+	// peerConfig, not config.GetConfig(): the package caches the peer
+	// configuration at Init and everything else here reads that copy. Reaching
+	// for the global instead is a nil dereference on any path that runs before
+	// or without a loaded configuration - which is how this function panicked
+	// the first time a test drove a commit transaction through it.
+	if peerConfig.NodeType == 0 {
 		logger.Info("Dump new balances to vm state store")
 		pin.runSmartContractStageFullNode(balances, recentPin)
-	} else if config.GetConfig().Peer.NodeType == 1 {
+	} else if peerConfig.NodeType == 1 {
 		//here balances from diffs are dumping to vm.state store
 		//We take balances from latest pin because peernode doesn't proceed smc
 		vm.SyncBalances(balances)

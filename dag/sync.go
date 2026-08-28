@@ -95,6 +95,15 @@ func (h DepthHandler) Notify(txvl TxVL) {
 			}
 		})
 	}
+	// A site can be in the graph before its transaction is: an approval target
+	// named by a site that arrived first is inserted as a placeholder and filled
+	// in when the transaction turns up. Asking such a placeholder what kind of
+	// transaction it carries dereferences nothing and takes the node down - seen
+	// on a validator catching up eleven commit transactions at once, where
+	// placeholders are created faster than they are resolved.
+	if txvl.vertex.tx == nil {
+		return
+	}
 	if txvl.vertex.tx.GetTransactionType() == tx.SERVICE_PIN || txvl.vertex.tx.GetTransactionType() == tx.SERVICE_GENESIS {
 		graph.GetGraphPinStack().Push(txvl.vertex.id.id)
 		if graph.GetGraphPinStack().Len() > 1 {
@@ -306,15 +315,17 @@ func handleLatestBalances(rec *tx.Syncv1) error {
 	if err != nil {
 		return errors.New("unmarshaling latest pin from leader withing BalanceSnapshot response: " + err.Error())
 	}
-	p.pins = append(p.pins, &latestPinFromLeader)
+	p.unsafe_appendPin(&latestPinFromLeader)
 
 	chMsg, _ := rec.Details[0].UnmarshalNew()
 	chIntValue := chMsg.(*wrapperspb.Int64Value)
 	currentHeightAnnounced := chIntValue.GetValue()
 	logger.Infof("Leader's snapshot height is %d, id=%s", currentHeightAnnounced, rec.Tracking_Id.String())
-	if p.CurrentHeight() != int(currentHeightAnnounced) {
+	// p.LockPin() is held for the duration of this handler, so use the
+	// lock-free accessor here.
+	if p.unsafe_currentHeight() != int(currentHeightAnnounced) {
 		return fmt.Errorf("announced and current height mismatch"+
-			"on node when applying balances snapshot: current: %d, announced: %d", p.CurrentHeight(), currentHeightAnnounced)
+			"on node when applying balances snapshot: current: %d, announced: %d", p.unsafe_currentHeight(), currentHeightAnnounced)
 	}
 	lMsg, _ := rec.Details[1].UnmarshalNew()
 	lIntValue := lMsg.(*wrapperspb.Int32Value)
@@ -334,6 +345,11 @@ func handleLatestBalances(rec *tx.Syncv1) error {
 		latestPinFromLeader.Balance.Balance[walletAddress] = balanceBytes
 	}
 	p.ready = true
+	// This pin now carries the leader's full balance snapshot, which is this
+	// node's opening statement of the ledger. Record it, so a restart resumes
+	// from here instead of seeding from a later pin that only states the
+	// balances it happened to touch.
+	chainStartCommitted(&latestPinFromLeader)
 	logger.Infof("Sync of %d balances from leader's snapshot has been finished, id=%s", balanceLength, rec.Tracking_Id.String())
 	return nil
 }
@@ -359,10 +375,18 @@ func respondAllPinsFrom(rec *tx.Syncv1) error {
 	fromIntValue := fromMsg.(*wrapperspb.Int32Value)
 	from := fromIntValue.GetValue()
 	allPins := p.getAllFrom(int(from))
-	logger.Infof("Found %d pins from height %d, id=%s", len(allPins), from, rec.Tracking_Id.String())
-	pbLength, _ := anypb.New(wrapperspb.Int32(int32(len(allPins))))
+	// One message, so it has to fit in one message. A commit transaction under
+	// a validator quorum carries every transaction it settles, which at load is
+	// megabytes each; nine of them went over the pubsub limit and were dropped
+	// in silence, and the node that asked timed out and stayed behind for ever.
+	// Send what fits and let the requester ask again from where this batch left
+	// it - the catch-up already re-triggers on the next announcement.
+	batch, sent := pinsThatFit(allPins, catchUpBudget())
+	logger.Infof("Found %d pins from height %d, sending %d of them (%d bytes), id=%s",
+		len(allPins), from, len(batch), sent, rec.Tracking_Id.String())
+	pbLength, _ := anypb.New(wrapperspb.Int32(int32(len(batch))))
 	stx.Details = append(stx.Details, pbLength)
-	for _, pin := range allPins {
+	for _, pin := range batch {
 		pinBytes, _ := pin.MarshalBinary()
 		pinBytesWrapper, _ := anypb.New(wrapperspb.Bytes(pinBytes))
 		stx.Details = append(stx.Details, pinBytesWrapper)
@@ -398,14 +422,24 @@ func handleDownloadedPinsFromLeader(rec *tx.Syncv1) error {
 	amountOfPins := lIntValue.GetValue()
 	logger.Infof("Leader returned %d pins", amountOfPins)
 
-	offset := 1
-
+	// Details is [count, pin, pin, ...]: walk it, rather than re-reading the
+	// first entry for every pin, which delivered N copies of the same pin and
+	// left the receiver one pin further along per round trip at best.
 	for i := 0; i < int(amountOfPins); i++ {
-		pMsg, _ := rec.Details[offset].UnmarshalNew()
-		pBytesValue := pMsg.(*wrapperspb.BytesValue)
-		pin := pb.TxPin{}
-		err := proto.Unmarshal(pBytesValue.GetValue(), &pin)
+		offset := i + 1
+		if offset >= len(rec.Details) {
+			return fmt.Errorf("leader announced %d pins but sent %d", amountOfPins, len(rec.Details)-1)
+		}
+		pMsg, err := rec.Details[offset].UnmarshalNew()
 		if err != nil {
+			return fmt.Errorf("unwrapping pin %d of %d from leader: %s", i+1, amountOfPins, err.Error())
+		}
+		pBytesValue, ok := pMsg.(*wrapperspb.BytesValue)
+		if !ok {
+			return fmt.Errorf("pin %d of %d from leader has unexpected type %T", i+1, amountOfPins, pMsg)
+		}
+		pin := pb.TxPin{}
+		if err := proto.Unmarshal(pBytesValue.GetValue(), &pin); err != nil {
 			return fmt.Errorf("unmarshaling received pin from leader: %s", err.Error())
 		}
 		logger.Infof("Received pin=%d from Leader", pin.PinNumber)
@@ -606,10 +640,24 @@ func handleSiteRequest(trackingId uuid.UUID, sites []string) error {
 		return fmt.Errorf("error marshaling public key: %s", err.Error())
 	}
 
+	// Under the read lock. ToPbNode reads the site's approval targets, its
+	// settled-target ids, its height and its processor claim, and every one of
+	// those is written by linkApprovals as sites arrive and rewritten by
+	// sliceSites when a commit transaction settles them. This loop ran with no
+	// dag lock at all, so answering a peer's request for missing sites raced
+	// every insert on the node. Shared rather than exclusive because it only
+	// reads, so serving a peer no longer stops tip selection either.
+	//
+	// The lock is taken after getVertices rather than around it: the lookup goes
+	// through Vertex, which takes the lookup map's own mutex, and the order
+	// everywhere else is dag.mux before that map. Wrapping only the loop keeps
+	// this path out of that ordering question entirely.
+	GetDag().rlock()
 	for _, v := range vertices {
 		any, _ := anypb.New(v.ToPbNode())
 		stx.Details = append(stx.Details, any)
 	}
+	GetDag().runlock()
 	payload, _ := proto.Marshal(stx.MarshalBinary())
 	stx.SyncHash = sha256.New().Sum(payload)
 	stx.Signature = stx.GenerateSignature(pk)
@@ -735,15 +783,35 @@ func waitForConnection() bool {
 // @TODO: new tip tracking algorithm for calculating confirmed txs
 //
 //	a new pin tx is added to _pins_
+//
+// genPinTx - form a commit transaction from whatever is confirmed, then persist,
+// settle and announce it.
+//
+// The error from add is checked, and that is the whole of the fix here. It used
+// to be discarded, and the next two lines take "the last pin" and commit it - so
+// when a build failed, GetLastPin returned somebody else's pin, one that had
+// already been applied. pinCommitted then wrote it to the store a second time
+// and sliced its sites out of a graph they had already left, inflating the
+// store head's pin count and the commit metrics, and announcing a pin the
+// network had already seen. A failed build has to be a build that did nothing.
 func genPinTx() {
 	sites := _dag_.GetConfirmedSites()
 	smcTxs := smc.GetAllUncofirmed(int(config.GetConfig().Tx.Maxfuellimit))
 	logger.Debugf("* [PIN] sites: %d, smc: %d", len(sites), len(smcTxs))
-	if len(sites) > 0 || len(smcTxs) > 0 {
-		logger.Debugf("* [PIN] Num confirmed sites %d. ADD to PinTx", len(sites))
-		_pins_.add(sites, smcTxs)
-		announceNewPin()
+	if len(sites) == 0 && len(smcTxs) == 0 {
+		return
 	}
+	logger.Debugf("* [PIN] Num confirmed sites %d. ADD to PinTx", len(sites))
+	if err := _pins_.add(sites, smcTxs); err != nil {
+		logger.Errorf("[PIN] Could not form a commit transaction over %d site(s): %s", len(sites), err.Error())
+		return
+	}
+	// Persist and settle the pin just formed, exactly as a receiving node does
+	// when it applies the same pin.
+	if latest := _pins_.GetLastPin(); latest != nil {
+		pinCommitted(latest)
+	}
+	announceNewPin()
 }
 
 // depth_monitor monitors the depth of the dag and calls the notifier
@@ -762,6 +830,11 @@ func (dsm *DagSyncMngr) dag_watcher(leader bool, wait_connect bool, wg *sync.Wai
 	var _stop_ atomic.Bool = atomic.Bool{}
 	syncTicker := time.NewTicker(config.PIN_TX_TIMER_DEF)
 	defer syncTicker.Stop()
+	// The validator protocol has phases inside the commit interval, so it needs
+	// a finer tick than the interval itself. It runs on this goroutine, the same
+	// one that forms commit transactions in leader mode.
+	consensusTicker := time.NewTicker(consensusTickInterval())
+	defer consensusTicker.Stop()
 	//var prevMaxDepth uint64 = 0
 	wg.Done()
 
@@ -772,8 +845,29 @@ func (dsm *DagSyncMngr) dag_watcher(leader bool, wait_connect bool, wg *sync.Wai
 	go func() {
 		defer notifyWg.Done()
 		notifyCh <- true
+		// The channel is read out of the Dag once, here, and then only through
+		// this local. Terminate clears the field under dag.mux so that a late
+		// insert cannot send into a closed channel; reading the field on every
+		// iteration of the loop below would race that write, and would be a race
+		// this routine cannot win - it would either see the old channel after it
+		// was closed or the new nil and block forever.
+		notify := _dag_.txCh
+		// A nil channel means peer.visualize is off, so nothing will ever be sent
+		// and there is nothing for this routine to assemble. Receiving from a nil
+		// channel blocks forever, which would park a goroutine here for the life
+		// of the process and never observe the stop flags.
+		if notify == nil {
+			logger.Infof("%s  ~ notifier routine not needed (peer.visualize=0)", emoji.VerticalTrafficLight)
+			return
+		}
 		for !_stop_.Load() || !dsm.StopFlag.Load() {
-			tx := <-_dag_.txCh
+			// Receive with the ok flag rather than bare: Terminate closes this
+			// channel, and a bare receive on a closed channel spins on zero
+			// values forever, calling Notify with an empty site each time.
+			tx, ok := <-notify
+			if !ok {
+				break
+			}
 			goterators.ForEach(dag_modified_handlers, func(fn DagModifiedIf) {
 				fn.Notify(tx)
 			})
@@ -804,9 +898,17 @@ stop_requested:
 			break stop_requested
 		case <-_dag_.depthCh:
 			__noop__()
+		case <-consensusTicker.C:
+			// In quorum mode a commit transaction is what a quorum of validators
+			// agreed to, so every validator drives the protocol - not only the
+			// leader. Nodes that are not validators have no runner and do
+			// nothing here; they apply what the set agrees.
+			if consensusActive() {
+				consensusRunner.drive()
+			}
 		case <-syncTicker.C:
 			// as per convention, only leaders may generate pin tx
-			if leader && __leaderReady__.Load() {
+			if leader && __leaderReady__.Load() && !consensusActive() {
 				genPinTx()
 			}
 		}
@@ -844,6 +946,10 @@ func (dssub *DagSyncSub) destroy() {
 	}
 	logger.Infof("%s  ~ Sync pubsub stopped", emoji.VerticalTrafficLight)
 }
+
+// syncSubBufferSize - depth, in messages, of the sync subscription's output
+// channel. See the comment at its use below for why it is not 1<<20.
+const syncSubBufferSize = 1 << 12
 
 func NewDagSyncSub(rd *routing.RoutingDiscovery, ps *pubsub.PubSub, rendezvous string, bs bool) *DagSyncSub {
 	dssub := &DagSyncSub{
@@ -884,7 +990,18 @@ func NewDagSyncSub(rd *routing.RoutingDiscovery, ps *pubsub.PubSub, rendezvous s
 		return nil
 	}
 
-	subopt := []pubsub.SubOpt{pubsub.WithBufferSize(1 << 20)}
+	// The same 8MB mistake diffusion had, on the sync subscription. WithBufferSize
+	// is the depth of the subscription's output channel in messages, the library
+	// default is 32, and the channel is allocated up front - so 1<<20 was a
+	// million message pointers, eight megabytes, reserved at start-up for a
+	// subscription that carries sync traffic rather than a transaction firehose.
+	//
+	// Sized to what a sync burst actually looks like instead: a few thousand
+	// messages of slack is more than a catch-up ever produces in one heartbeat,
+	// and a subscriber that does fall this far behind wants to be dropping
+	// messages and re-requesting them, not accumulating a backlog it will process
+	// long after the sync state machine has moved on.
+	subopt := []pubsub.SubOpt{pubsub.WithBufferSize(syncSubBufferSize)}
 	dssub.sub, dssub.err = dssub.topic.Subscribe(subopt...)
 	if dssub.err != nil {
 		dssub.destroy()
@@ -997,4 +1114,38 @@ func txDifference(left, right *tx.Syncv1) ([]uuid.UUID, []uuid.UUID) {
 		rid = append(rid, i.(uuid.UUID))
 	})
 	return lid, rid
+}
+
+// pinsThatFit - as many commit transactions from the front of the slice as will
+// fit in one gossip message, and how many bytes that came to.
+//
+// Budgeted at half of peer.msize: the pins are the bulk of the message but not
+// all of it, and a message over the limit is not an error the sender sees - the
+// receiving side drops it while reading, so the only symptom is a peer that
+// asked for a range and never heard back. At least one pin is always sent, even
+// if it alone is over budget: a batch of none can never make progress, and a
+// single oversized commit transaction is a problem to see rather than to stall
+// on quietly.
+func pinsThatFit(pins []*pb.TxPin, budget int) ([]*pb.TxPin, int) {
+	out := make([]*pb.TxPin, 0, len(pins))
+	total := 0
+	for _, pin := range pins {
+		size := proto.Size(pin)
+		if len(out) > 0 && total+size > budget {
+			break
+		}
+		out = append(out, pin)
+		total += size
+	}
+	return out, total
+}
+
+// catchUpBudget - how many bytes of commit transactions one catch-up response
+// may carry. Half of peer.msize, because the pins are the bulk of the message
+// but not all of it.
+func catchUpBudget() int {
+	if cfg := config.GetConfig(); cfg != nil && cfg.Peer.Msize > 0 {
+		return cfg.Peer.Msize * config.MB / 2
+	}
+	return 8 * config.MB
 }

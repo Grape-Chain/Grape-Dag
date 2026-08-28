@@ -13,6 +13,7 @@ peer:
   apitlsenabled: true
   apikey: grape-tls.key
   apicert: grape-tls.crt
+  walletdir: /home/grape/wallet
   stateserverport: 39399
 
 dag:

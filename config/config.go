@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,11 +23,37 @@ func init() {
 	logger = golog.Logger("p2p-config")
 }
 
+// validateAddress - check that addr is a full-length hex account address.
+// Kept local to avoid a config -> crypto dependency.
+func validateAddress(addr string) error {
+	trimmed := strings.TrimPrefix(strings.TrimPrefix(addr, "0x"), "0X")
+	b, err := hex.DecodeString(trimmed)
+	if err != nil {
+		return fmt.Errorf("not a hex address: %s", err.Error())
+	}
+	if len(b) != ADDRESS_BYTE_LEN {
+		return fmt.Errorf("address must be %d bytes, got %d", ADDRESS_BYTE_LEN, len(b))
+	}
+	return nil
+}
+
 var grapepeer *Grapepeer
 
+// LoadGrapePeerFromConfig - load the peer configuration, or return nil when
+// there is no configuration file to load.
+//
+// The nil return is the contract, and it used to be unreachable: LoadGrapepeer
+// returns nil for a missing file, and this function then assigned through that
+// nil to set Host. So a node started without a configuration file died with a
+// segmentation fault inside the config package, and the nil check its own caller
+// already had could never run. That is a new developer's very first command, and
+// what it printed was a stack trace.
 func LoadGrapePeerFromConfig(hc *HostConfig) *Grapepeer {
 	if grapepeer == nil {
 		grapepeer = LoadGrapepeer(hc)
+	}
+	if grapepeer == nil {
+		return nil
 	}
 	grapepeer.Host = *hc
 	return grapepeer
@@ -53,7 +80,8 @@ func ParseCliArgs() *HostConfig {
 	flag.BoolVar(&conf.Leader, "leader", false, "This node is a leader")
 	flag.IntVar(&conf.NodeType, "node_type", 0, "Node type to use")
 	flag.BoolVar(&conf.WaitConnect, "wait", false, "Wait for a peer connection before proceeding")
-	flag.BoolVar(&conf.Profile, "profile", false, "Enable http profiler server")
+	flag.BoolVar(&conf.Profile, "profile", false, "Enable the diagnostics server: pprof profiles and Prometheus metrics")
+	flag.StringVar(&conf.Metricsaddr, "metrics_addr", "127.0.0.1:6060", "Address for the diagnostics server. Use 0.0.0.0:6060 to reach it from another host")
 	flag.IntVar(&conf.Port, "port", 0, "Port to use")
 	flag.IntVar(&conf.Grpcport, "grpc_port", 0, "GRPC port to use")
 	flag.IntVar(&conf.Apiport, "api_port", 0, "REST API port to use")
@@ -90,7 +118,13 @@ func ParseCliArgs() *HostConfig {
 		}
 	}
 	conf.Config = strings.Trim(conf.Config, "\"")
-	fmt.Printf("Config file supplied is %s\n", conf.Config)
+	// Printed only when a path was actually given. It used to print
+	// unconditionally, so the first line a new user saw was "Config file supplied
+	// is " with nothing after it, immediately above the error saying there was no
+	// configuration file.
+	if len(conf.Config) > 0 {
+		fmt.Printf("Config file: %s\n", conf.Config)
+	}
 
 	RENDEZVOUS = []string{
 		fmt.Sprintf("%s/%s", PRE_RENDEZVOUS_ID, conf.Rendezvous),
@@ -182,14 +216,26 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("peer.visualize", 0)
 	viper.SetDefault("peer.purge", 0)
 	viper.SetDefault("peer.stats", 0)
-	viper.SetDefault("peer.qsize", 16)
+	viper.SetDefault("peer.peeroutboundqueue", 1024)
 	viper.SetDefault("peer.msize", 16)
 	viper.SetDefault("peer.qsync", true)
 	viper.SetDefault("peer.network", 2)
 	viper.SetDefault("peer.snapshotsync", true)
-	viper.SetDefault("dag.algorithm", "default")
+	viper.SetDefault("peer.apiauthdisabled", false)
+	viper.SetDefault("peer.walletdir", "web/wallet")
+	viper.SetDefault("dag.algorithm", "mcmc+")
 	viper.SetDefault("dag.alpha", 0.5)
 	viper.SetDefault("dag.approvetx", 2)
+	viper.SetDefault("dag.confirmation", "share100")
+	viper.SetDefault("dag.tiptimeout", 30)
+	viper.SetDefault("dag.walkdepth", 10)
+	viper.SetDefault("dag.confirmshare", 667)
+	viper.SetDefault("dag.pinsigners", "")
+	viper.SetDefault("dag.consensus", "leader")
+	viper.SetDefault("dag.validators", "")
+	viper.SetDefault("dag.slicing", true)
+	viper.SetDefault("store.enabled", true)
+	viper.SetDefault("store.path", "data/ledger")
 	viper.SetDefault("dag.initialwidth", 5)
 	viper.SetDefault("dag.lambda", 1000)
 	viper.SetDefault("dag.totaltx", 0)
@@ -197,16 +243,30 @@ func LoadGrapepeer(hc *HostConfig) *Grapepeer {
 	viper.SetDefault("dag.wallet", "0x1a6c77929698e36981b9b0e0486a253ae33185e6")
 	viper.SetDefault("dag.publickey", "4608a6e0c0c512c7d3a00a7c7dc54202a7c3965cdad16f010eca4647aebe1c28")
 	viper.SetDefault("dag.privatekey", "f43e4ede273453d86183aed3442d69e0052bbe5776b4200f1354277da9f6be29")
-	viper.SetDefault("dag.coinbaseaccount", "0xac1214a3c58090a516ade112cf1198")
+	// Must be a full 20-byte address: the smart-contract stage parses it as one
+	// when building every pin. Defaults to the zero address, i.e. fees collected
+	// by the VM are burned until an operator configures a real account.
+	viper.SetDefault("dag.coinbaseaccount", ZERO_ADDRESS)
 	viper.SetDefault("dag.pinthreshold", TX_PIN_DEPTH_THRESHOLD)
 	viper.SetDefault("dag.versioncollision", false)
 	viper.SetDefault("tx.maxfuellimit", 10000000)
 	viper.SetDefault("tx.maxfuelprice", 10000000)
 	viper.SetDefault("tx.neutrino", 0.00000001)
+	// Fees off by default. Switching them on is a network-wide decision, and a
+	// node that switches alone rejects payments the rest of the network accepts.
+	viper.SetDefault("tx.feemode", "fixed")
+	viper.SetDefault("tx.minpaymentfee", 1000)   // 1e-5 Grape
+	viper.SetDefault("tx.feestartpin", -1)       // never
+	viper.SetDefault("tx.minstake", 10000000000) // 100 Grape
+	viper.SetDefault("tx.stakecapmilli", 5000)   // 5.0x
 
 	err = viper.Unmarshal(&peerConfig)
 	if err != nil {
 		logger.Errorf("Unable to decode into Grapepeer, %v", err)
+		return nil
+	}
+	if err := validateAddress(peerConfig.Dag.Coinbaseaccount); err != nil {
+		logger.Errorf("Invalid dag.coinbaseaccount %q: %s", peerConfig.Dag.Coinbaseaccount, err.Error())
 		return nil
 	}
 	peerConfig.Peer.Apikey = filepath.Join(configPath, peerConfig.Peer.Apikey)

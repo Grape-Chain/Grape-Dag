@@ -73,7 +73,39 @@ message ExecutedSmcTx {
     TxReceipt receipt = 3;
 }
 
+// ValidatorSignature - one validator's signature over a commit transaction's
+// prototype hash (TxPin.PrototypeHash), which excludes the signatures
+// themselves so that every validator signs the same bytes.
+message ValidatorSignature {
+    bytes pk   = 1; // the validator's public key
+    bytes sign = 2; // signature over the prototype hash
+}
+
+// QuorumCert - evidence that a quorum of the validator set agreed to this exact
+// commit transaction. Replaces "the leader said so" as the reason a node applies
+// one.
+message QuorumCert {
+    int64  pinNumber = 1; // which commit transaction this certifies
+    bytes  pinHash   = 2; // the prototype hash the validators signed
+    uint32 round     = 3; // the view-change round agreement was reached in
+    repeated ValidatorSignature signatures = 4;
+}
+
 // TxPin - pinning transaction definition
+// RewardRecord - one processor's cut of a commit transaction's fees.
+//
+// The weight is carried rather than re-derived: a node checking the split later
+// cannot recover the balance the weight was computed from, because the balance
+// has since moved. Amounts are big-endian bytes, not an integer field, because
+// a fee total does not fit in 64 bits at every possible parameter setting and
+// must not be silently truncated on the way to somebody's wallet.
+message RewardRecord {
+    bytes  processor   = 1; // the account paid
+    uint32 work        = 2; // sites in this commit transaction attributed to it
+    uint32 weightMilli = 3; // the stake weight applied, in permille
+    bytes  amount      = 4; // the reward, big-endian
+}
+
 message TxPin {
     bytes prev                    = 1; // prev pin tx id
     google.protobuf.Timestamp ts  = 2; // timestamp when the tx was created
@@ -85,4 +117,15 @@ message TxPin {
     repeated ExecutedSmcTx smcTxs = 8; // executed smart contract transactions within this pin tx
     repeated Diff          diffs  = 9; // diffs on smart contract state store appeared after executing smart contract transactions
     int64   pinNumber             = 10;
+    QuorumCert quorum             = 11; // a quorum of validators agreed this pin; absent in single-leader mode
+    bytes   proposer              = 12; // the validator that built it
+
+    // The fee split, recomputable by every node from the fields above it. See
+    // docs/economics.md. Absent while fees are off, which is the default, so a
+    // commit transaction from a node with fees disabled encodes exactly as it
+    // did before these fields existed.
+    bytes feePool                 = 13; // total fees this commit transaction collected, big-endian
+    repeated RewardRecord rewards = 14; // who is paid what, ordered by account
+    bytes feeRemainder            = 15; // what floor division left over, paid to coinbase
+    bytes coinbase                = 16; // the account the remainder went to
 }

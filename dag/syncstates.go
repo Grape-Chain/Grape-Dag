@@ -84,17 +84,40 @@ func (sm *SyncSM) existsSM(id uuid.UUID) bool {
 	return ok
 }
 
+// waitForSMPollInterval - how often waitForSM re-reads the registry while
+// waiting. Short enough that a transition is picked up promptly, long enough not
+// to spin.
+const waitForSMPollInterval = 20 * time.Millisecond
+
 func (s *SyncSM) waitForSM(id uuid.UUID, state sm.State, t int64) (sm.State, error) {
-	s.mx.Lock()
-	defer s.mx.Unlock()
-	var err error = nil
-	var st sm.State = sm.SYNC_ZERO_STATE
-	if v, ok := s.machines[id]; ok {
-		st, err = v.WaitForState(state, time.Millisecond*time.Duration(t))
-	} else {
-		err = fmt.Errorf("Failed to find a statemachine with id %s", id.String())
+	// Poll, re-resolving the machine from the registry each time, and never hold
+	// s.mx while sleeping. Both matter:
+	//   - holding s.mx across the wait would block changeToSM (same lock) from
+	//     recording the very transition being waited for;
+	//   - caching the *StateMachine would miss the transition entirely, because
+	//     syncPublish calls resetSM after a successful publish, which replaces
+	//     the map entry with a fresh machine.
+	deadline := time.Now().Add(time.Millisecond * time.Duration(t))
+	for {
+		s.mx.Lock()
+		v, ok := s.machines[id]
+		s.mx.Unlock()
+		if !ok {
+			return sm.SYNC_ZERO_STATE, fmt.Errorf("Failed to find a statemachine with id %s", id.String())
+		}
+		current := v.Current()
+		if current == state {
+			return current, nil
+		}
+		if !time.Now().Before(deadline) {
+			return current, fmt.Errorf("no change to the desired state past the wait time")
+		}
+		remaining := time.Until(deadline)
+		if remaining > waitForSMPollInterval {
+			remaining = waitForSMPollInterval
+		}
+		time.Sleep(remaining)
 	}
-	return st, err
 }
 
 func (s *SyncSM) waitForSMInLoop(id uuid.UUID, state sm.State, t time.Duration) (sm.State, error) {
@@ -111,5 +134,5 @@ func (s *SyncSM) waitForSMInLoop(id uuid.UUID, state sm.State, t time.Duration) 
 			return sm.SYNC_ZERO_STATE, errors.New("state of the state machine isn't equal to required")
 		}
 	}
-	
+
 }

@@ -23,6 +23,34 @@ dag:
   totaltx: 150
   cummstep: 0.1
   pinthreshold: 30
+  # How many sites a new site approves.
+  # approvetx: 2 (above)
+  #
+  # Share of the live tips that must confirm a site before it is irrevocable,
+  # in permille. 667 is two thirds; 1000 is the technical paper's literal 100%,
+  # which does not converge once more than a handful of nodes publish
+  # concurrently. See docs/confirmation.md.
+  confirmshare: 667
+  # The paper's W: how many approvals below a tip a selection walk starts.
+  walkdepth: 10
+  # Seconds before a tip that nothing has approved stops counting towards the
+  # confirmation denominator. A liveness safeguard, not a throughput knob;
+  # 0 disables it.
+  tiptimeout: 30
+  # Move sites settled by a commit transaction out of the live graph.
+  slicing: true
+  # Public keys, hex, comma separated, whose commit transactions this node will
+  # apply. Empty means the signer is adopted from the chain-opening statement,
+  # which trusts whichever peer supplied the chain. See docs/pin-authority.md.
+  pinsigners: ""
+  # What makes a commit transaction applicable: "leader" (one authorised signer
+  # asserts it) or "quorum" (two thirds of validators agreed to it). Quorum mode
+  # can verify certificates but nothing produces them yet, so leave this at
+  # leader until the validator protocol lands.
+  consensus: "leader"
+  # The validator set in quorum mode. The quorum is two thirds of its size plus
+  # one, derived rather than configured.
+  validators: ""
   faucetpublickey: 940d33cca77608545439c121b679c23b6915f7990ff279cb902c2ccaff2057e3
   faucetprivatekey: 6f1c1e3f54a6699be61d927f804a191b90912820d89d8d5a8b143e1990fcc0af
   faucetwallet: 0xd09ec4a81cde61b57de012d3fe80beae3f28fb68

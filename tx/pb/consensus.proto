@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+import "txpin.proto";
+
+package pb;
+
+option go_package = "/pb";
+
+// ConfirmedSet - what one validator believes is confirmed and ready to be
+// settled, sent at the start of an epoch. The set a commit transaction may
+// settle is the sites a quorum of validators independently reported, so that a
+// proposer cannot settle a site nobody else has confirmed.
+message ConfirmedSet {
+    int64 epoch            = 1; // the commit-transaction number being agreed
+    repeated bytes siteIds = 2; // uuid bytes
+}
+
+// PinProposal - the proposer's candidate commit transaction for an epoch, with
+// the evidence that justifies it.
+//
+// A validator checks a proposal by counting, in the reports it holds, how many
+// validators reported each site the proposal settles. Doing that against only
+// the reports that happened to arrive makes the check depend on delivery order:
+// a report still in flight is a report not counted, so a receiver under-counts
+// and refuses a proposal that is perfectly justified. With no slack in the
+// quorum - three live validators and a quorum of three - that is not a rare
+// race, it is the normal case, and the chain stops.
+//
+// So the proposer carries the signed reports it counted. They are the same
+// messages the receiver would have received anyway, each still signed by the
+// validator that wrote it, so folding them in adds no trust: the receiver
+// verifies every one before counting it, and reaches the same conclusion the
+// proposer did from the same evidence.
+message PinProposal {
+    int64  epoch = 1;
+    uint32 round = 2; // view-change round; the proposer rotates with it
+    TxPin  pin   = 3;
+    repeated ConsensusEnvelope reports = 4; // signed ConfirmedSet messages
+}
+
+// PinVote - one validator's agreement with a proposal, as a signature over the
+// proposal's prototype hash. Collected into the QuorumCert the proposer
+// attaches before publishing.
+message PinVote {
+    int64  epoch   = 1;
+    uint32 round   = 2;
+    bytes  pinHash = 3; // the prototype hash being agreed to
+    bytes  sign    = 4; // signature over pinHash
+}
+
+// ViewChange - this validator has given up on the round's proposer.
+message ViewChange {
+    int64  epoch = 1;
+    uint32 round = 2; // the round being abandoned
+}
+
+// ConsensusEnvelope - any consensus message, signed by the validator that sent
+// it. Signed over the envelope with pk and sign cleared, so the signature covers
+// the payload and nothing else.
+message ConsensusEnvelope {
+    bytes pk   = 1;
+    bytes sign = 2;
+    oneof payload {
+        ConfirmedSet confirmed  = 3;
+        PinProposal  proposal   = 4;
+        PinVote      vote       = 5;
+        ViewChange   viewChange = 6;
+    }
+}

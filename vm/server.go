@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/config"
+	"github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/Grape-Chain/Grape-Dag/types"
-	"github.com/Grape-Chain/Grape-Dag/crypto"
 	golog "github.com/ipfs/go-log/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -185,8 +185,8 @@ func (s *Storage) putValue(address []byte, key []byte, value []byte) {
 		preValue = emptyArray
 	}
 
-	s.modifications = append([]Modification{{mapping: &ModifiedMapping{address: hexAddress, key: hex.EncodeToString(key), value: preValue}}}, s.modifications...)
-	slogger.Infof("Put contract=%s storage, key=%s, value=%s, preValue=%s", hexAddress, hex.EncodeToString(key), hex.EncodeToString(value), hex.EncodeToString(preValue))
+	s.record(Modification{mapping: &ModifiedMapping{address: hexAddress, key: keyHex, value: preValue}})
+	slogger.Debugf("Put contract=%s storage, key=%s", hexAddress, keyHex)
 	accountStore[keyHex] = value
 	if s.collectDiffs {
 		slogger.Infof("Capture new mapping change, contract=%s, key=%s, value=%s", hexAddress, hex.EncodeToString(key), hex.EncodeToString(value))
@@ -196,22 +196,23 @@ func (s *Storage) putValue(address []byte, key []byte, value []byte) {
 
 func (s *Storage) putAccount(account StoredAccount) {
 	account.Address = strings.TrimPrefix(account.Address, "0x")
-	existingAccc, exists := s.accounts[account.Address]
-	modification := Modification{}
-	if exists {
-		modification.accountState = &existingAccc
-	} else {
-		modification.accountState = &StoredAccount{Address: account.Address}
+	if s.undoable() {
+		existingAccc, exists := s.accounts[account.Address]
+		modification := Modification{}
+		if exists {
+			modification.accountState = &existingAccc
+		} else {
+			modification.accountState = &StoredAccount{Address: account.Address}
+		}
+		s.record(modification)
 	}
 	s.accounts[account.Address] = account
 	if s.collectDiffs {
 		s.diffs.putAccount(account)
 	}
-	s.modifications = append([]Modification{modification}, s.modifications...)
-	slogger.Infof("Put account, address=%s, balance%s, nonce=%s, codeHash=%s into state store", account.Address, account.Balance, account.Nonce, account.CodeHash)
-	_, exists = s.mappings[account.Address]
-	if !exists {
-		slogger.Infof("Initialize account state store (mappings) for address %s", account.Address)
+	slogger.Debugf("Put account, address=%s, balance=%s, nonce=%s into state store", account.Address, account.Balance, account.Nonce)
+	if _, hasMappings := s.mappings[account.Address]; !hasMappings {
+		slogger.Debugf("Initialize account state store (mappings) for address %s", account.Address)
 		s.mappings[account.Address] = make(map[string][]byte)
 		s.logs[account.Address] = make([]Log, 0)
 	}
@@ -271,18 +272,47 @@ func (*Storage) logEvents(logs []*pb.Log) {
 	}
 }
 
+// undoable - is anything able to revert a change made now? Only a change made
+// inside an open checkpoint can ever be undone.
+//
+// Without this the store recorded an undo entry for every account and every
+// contract slot it ever wrote, whether or not anything could use it, and
+// commit() never trimmed them: a hundred megabytes of unreachable undo records
+// on a node under load, a third of its live heap, and the garbage collector
+// walking all of it on every cycle.
+func (s *Storage) undoable() bool { return len(s.checkPoints) > 0 }
+
+// record - append an undo entry, newest last.
+//
+// Appended rather than prepended. The prepend copied the whole undo log on
+// every single write - quadratic in the number of writes, and the largest
+// single source of memmove in a CPU profile of a loaded node.
+func (s *Storage) record(m Modification) {
+	if !s.undoable() {
+		return
+	}
+	s.modifications = append(s.modifications, m)
+}
+
+// mark - where the innermost open checkpoint started in the undo log.
+func (s *Storage) mark() int { return s.checkPoints[len(s.checkPoints)-1] }
+
 func (s *Storage) checkpoint() {
-	slogger.Infof("Checkpoint on %d changes", len(s.modifications))
-	s.checkPoints = append([]int{len(s.modifications)}, s.checkPoints...)
+	slogger.Debugf("Checkpoint on %d changes", len(s.modifications))
+	s.checkPoints = append(s.checkPoints, len(s.modifications))
 }
 
 func (s *Storage) revert() {
 	if len(s.checkPoints) == 0 {
 		panic("Nothing to revert")
 	}
-	modificationsToRevert := s.modifications[:len(s.modifications)-s.checkPoints[0]]
+	from := s.mark()
+	modificationsToRevert := s.modifications[from:]
 
-	for _, modification := range modificationsToRevert {
+	// Newest first, so a slot written twice inside the checkpoint ends up
+	// holding the value it had when the checkpoint was taken.
+	for i := len(modificationsToRevert) - 1; i >= 0; i-- {
+		modification := modificationsToRevert[i]
 		if modification.mapping != nil {
 			s.mappings[modification.mapping.address][modification.mapping.key] = modification.mapping.value
 			if s.collectDiffs {
@@ -310,19 +340,25 @@ func (s *Storage) revert() {
 		}
 	}
 
-	slogger.Infof("Revert %d changes", len(modificationsToRevert))
-	s.modifications = s.modifications[len(modificationsToRevert):]
-	s.checkPoints = s.checkPoints[1:]
+	slogger.Debugf("Revert %d changes", len(modificationsToRevert))
+	s.modifications = s.modifications[:from]
+	s.checkPoints = s.checkPoints[:len(s.checkPoints)-1]
 }
 
 func (s *Storage) commit() {
 	if len(s.checkPoints) == 0 {
 		panic("Nothing to commit")
 	}
-	popCount := s.checkPoints[0]
-	commited := len(s.modifications) - popCount
-	slogger.Infof("Commit %d changes, left %d", commited, len(s.modifications))
-	s.checkPoints = s.checkPoints[1:]
+	from := s.mark()
+	slogger.Debugf("Commit %d changes, left %d", len(s.modifications)-from, from)
+	s.checkPoints = s.checkPoints[:len(s.checkPoints)-1]
+	// Committing the outermost checkpoint puts the changes beyond recall, so
+	// their undo entries are unreachable and the log can go back to empty. An
+	// inner commit keeps them: the checkpoint still open outside this one can
+	// revert them yet.
+	if len(s.checkPoints) == 0 {
+		s.modifications = s.modifications[:0]
+	}
 }
 
 type StoredAccount struct {
@@ -339,10 +375,20 @@ func (sa StoredAccount) IsEmpty() bool {
 	return sa.Nonce == ""
 }
 
+// AddressBytes - the account address as raw bytes.
+//
+// Addresses reach this type both with and without the 0x prefix: putAccount
+// strips it when storing, so a caller holding the value it passed in still has
+// the prefix. Decoding used to panic on that - and on any other malformed
+// address - which is a poor trade in a type reached from gRPC handlers that run
+// without a recovery interceptor. Unreadable addresses now come back nil, which
+// callers see as a lookup miss.
 func (sa StoredAccount) AddressBytes() []byte {
-	bytes, err := hex.DecodeString(sa.Address)
+	address := strings.TrimPrefix(strings.TrimPrefix(sa.Address, "0x"), "0X")
+	bytes, err := hex.DecodeString(address)
 	if err != nil {
-		panic(err)
+		slogger.Warnf("Account address %q is not hex, treating it as empty", sa.Address)
+		return nil
 	}
 	return bytes
 }
@@ -530,6 +576,22 @@ const stateServerHost string = "localhost"
 
 var server *InMemoryNodeStorageServer
 
+// AttachInMemoryStateStore - give the package a state store without starting a
+// gRPC listener.
+//
+// StartStateServer is the production path and it binds a port, which is more
+// than a caller needs when it only wants the store: the checkpoint and balance
+// functions here all operate on the store, not on the service. Tests use this,
+// and so would any embedding that runs the VM in-process.
+func AttachInMemoryStateStore() {
+	server = &InMemoryNodeStorageServer{storage: NewStorage()}
+}
+
+// StateStoreAttached - whether there is a store to operate on. Every exported
+// function here dereferences it, so a caller that may run before the server is
+// up has to ask.
+func StateStoreAttached() bool { return server != nil }
+
 func StartStateServer() error {
 	serverURI := fmt.Sprintf("%s:%d", stateServerHost, config.GetConfig().Peer.StateServerPort)
 	lis, err := net.Listen("tcp", serverURI)
@@ -608,6 +670,33 @@ func NonceIncr(account types.Hex) {
 		server.storage.putAccount(acc)
 	}
 	slogger.Infof("Increase prevNonce=%s for account=%s manually", prevNonce, account.String())
+}
+
+// Checkpoint - mark the state store, so the changes made after this point can
+// be undone. A validator that proposes a commit transaction has to execute its
+// smart-contract transactions to know what the commit transaction says, and it
+// does that before knowing whether the round will be agreed. Without a way back
+// a proposer that lost its round would carry state no other node has.
+func Checkpoint() {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+	server.storage.checkpoint()
+}
+
+// RevertCheckpoint - undo everything since the matching Checkpoint.
+func RevertCheckpoint() {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+	server.storage.revert()
+}
+
+// DropCheckpoint - keep everything since the matching Checkpoint, and stop
+// tracking it. Named for what it does to the checkpoint rather than to the
+// state: the changes were already applied as they were made.
+func DropCheckpoint() {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+	server.storage.commit()
 }
 
 func GetStateStoreDiffs() []Diff {
@@ -792,6 +881,23 @@ func SyncBalances(balances map[string][]byte) {
 			server.storage.putAccount(account)
 		}
 	}
+}
+
+// AccountBalance - what the state store holds for an account, and whether it
+// holds one at all. The write side (SyncBalances) was exported without a
+// matching read, which left no way to check that a rollback put a balance back.
+func AccountBalance(address string) (*big.Int, bool) {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+	account, exists := server.storage.getAccount(grape1crypto.AddressToBytes(address))
+	if !exists {
+		return nil, false
+	}
+	balance, ok := new(big.Int).SetString(account.Balance, 10)
+	if !ok {
+		return nil, false
+	}
+	return balance, true
 }
 
 func DumpMappingDiffs(d *pb.Diff) {

@@ -122,7 +122,8 @@ func whenToPublish(mt tx.SyncMsgType) bool {
 		mt == tx.STX_SNAPSHOT_BALANCE_REQUEST ||
 		mt == tx.STX_SNAPSHOT_BALANCE_RESPONSE ||
 		mt == tx.STX_PIN_DOWNLOAD_REQUEST ||
-		mt == tx.STX_PIN_DOWNLOAD_RESPONSE
+		mt == tx.STX_PIN_DOWNLOAD_RESPONSE ||
+		mt == tx.STX_CONSENSUS
 }
 
 // syncPublish - a go routine that retrieves sync packets from a sync queue
@@ -358,6 +359,12 @@ func (syncmgr *DagSyncMngr) syncSubscribe(ctx context.Context, pid peer.ID, wg *
 		}
 
 		switch {
+		// Validator protocol messages. First, because they are the highest rate
+		// of anything on this topic and carry their own authentication - the
+		// engine checks the sender is a validator and the signature verifies
+		// before it looks at what the message says.
+		case isConsensusMessage(syncTx):
+			handleConsensusMessage(syncTx)
 		// through pubsub the leader receives a request to provide pin tx missing from the node
 		// that issued the request.
 		case isSyncUpSiteRequest(syncTx, syncmgr.Leader):
@@ -502,55 +509,160 @@ func (syncmgr *DagSyncMngr) syncSubscribe(ctx context.Context, pid peer.ID, wg *
 	logger.Infof("%s  ~ Sync Subscriber stopped", emoji.VerticalTrafficLight)
 }
 
-func processPin(pin *pb.TxPin) {
+// pinGapSyncing guards the gap-download catch-up loop so that concurrent pin
+// announcements do not run overlapping downloads against the same chain.
+var pinGapSyncing atomic.Bool
+
+// pinApplyMu - serialises whole applications of a commit transaction.
+//
+// Not the same job as the pin lock. The pin lock protects the chain slice, and
+// it must not be held while the settled sites are sliced out of the graph,
+// because the insert path takes the graph lock and then the pin lock to resolve
+// an approval target - holding them in the opposite order here is a deadlock.
+// But the two halves of an application still have to stay in order, since the
+// settled ledger and the store are both keyed on pin number and will refuse
+// anything that is not the next one. So the halves are serialised here and the
+// pin lock is taken only for the half that needs it.
+var pinApplyMu sync.Mutex
+
+// applyPin - apply a commit transaction that continues our chain.
+//
+// returns:
+//
+//	bool - true if the pin was applied
+func applyPin(pin *pb.TxPin) bool {
+	pinApplyMu.Lock()
+	defer pinApplyMu.Unlock()
+
+	// Before anything else: is this from a signer whose commit transactions this
+	// node applies? A commit transaction rewrites balances and discards the
+	// sites it names, so an unauthorised one is not a bad input, it is an
+	// attacker settling the ledger. See dag/pinauth.go.
+	if err := authorisePin(pin); err != nil {
+		logger.Errorf("[pin apply] Refusing a commit transaction: %s", err.Error())
+		return false
+	}
+	if !appendPinUnderLock(pin) {
+		return false
+	}
+	// Outside the pin lock, on purpose - see pinApplyMu.
+	pinCommitted(pin)
+	return true
+}
+
+// appendPinUnderLock - the half of an application that mutates the chain. Takes
+// the pin lock only for that window, never across a wait, so REST and eth-RPC
+// reads and the pin ticker are not blocked while we catch up.
+func appendPinUnderLock(pin *pb.TxPin) bool {
 	_pins_.LockPin()
 	defer _pins_.UnlockPin()
+	expected := _pins_.unsafe_currentHeight() + 1
+	if int(pin.PinNumber) != expected {
+		logger.Warnf("[pin apply] Skipping pin=%d, expected pin=%d", pin.PinNumber, expected)
+		return false
+	}
+	_pins_.SyncPins(pin)
+	walletCache.copyFrom(walletCacheConfirmed)
+	_pins_.unsafe_appendPin(pin)
+	return true
+}
+
+func processPin(pin *pb.TxPin) {
 	pinJson, _ := pin.MarshalJSONShort()
 	logger.Infof("=> [dag sync sub] Received a new pin tx : \n%s\n", string(pinJson))
+
 	currentHeight := _pins_.CurrentHeight()
 	if int(currentHeight+1) == int(pin.PinNumber) {
 		logger.Infof("[No gaps detected] Process latest pin from leader as our latest pin=%d", pin.PinNumber)
-		_pins_.SyncPins(pin)
-		walletCache.copyFrom(walletCacheConfirmed)
-		_pins_.pins = append(_pins_.pins, pin)
-	} else {
-		logger.Warnf("[Gap detected] Our current latest pin=%d, but got pin=%d from leader, pin downloading required", currentHeight, pin.PinNumber)
-		_pins_.openPinDownloading()
-		err := sendPindDownloadRequest(int(currentHeight) + 1)
-		if err != nil {
-			logger.Errorf("[Gap detected] downloading missing pins to catch up with leader: %s, will try again on next leader's new pin announce", err.Error())
-		} else {
-			timer := time.After(time.Second * 120)
-			loggedWhenFirstDownloadedPinReceived := false
-		pinProcessing:
-			for {
-				select {
-				case downloadedPin, closed := <-_pins_.downloadedPins:
-					if closed {
-						logger.Infof("[Gap detected] No downloaded pins left to process")
-						break pinProcessing
-					}
-					if !loggedWhenFirstDownloadedPinReceived {
-						logger.Infof("[Gap detected] Start downloaded pin processing")
-						loggedWhenFirstDownloadedPinReceived = true
-					}
-					if int(downloadedPin.PinNumber) == int(currentHeight+1) {
-						logger.Infof("[Gap detected] Process downloaded pin at height=%d", currentHeight+1)
-						_pins_.SyncPins(downloadedPin)
-						_pins_.pins = append(_pins_.pins, downloadedPin)
-						currentHeight = currentHeight + 1
-					} else {
-						logger.Errorf("[Gap detected] Downloaded pin=%d is out of order, required %d, exit downloading loop", downloadedPin.PinNumber, currentHeight+1)
-						break pinProcessing
-					}
-				case <-timer:
-					logger.Errorf("Gap detected] Timeout waiting for missing pin response from leader")
-					break pinProcessing
-				}
-			}
-			logger.Infof("[Gap detected] Processed pins up to %d height", currentHeight)
-			walletCache.copyFrom(walletCacheConfirmed)
-		}
+		applyPin(pin)
+		return
 	}
 
+	logger.Warnf("[Gap detected] Our current latest pin=%d, but got pin=%d from leader, pin downloading required", currentHeight, pin.PinNumber)
+	// Only one catch-up at a time; later announcements re-trigger it if needed.
+	if !pinGapSyncing.CompareAndSwap(false, true) {
+		logger.Infof("[Gap detected] Pin catch-up already in progress, ignoring this announce")
+		return
+	}
+
+	// Open the channel and request the missing range before handing off, so the
+	// response cannot arrive before there is somewhere to put it.
+	requestPinCatchUp(int64(currentHeight), pin.PinNumber)
+}
+
+// drainDownloadedPins - apply the pins the leader sent for a gap, in order.
+// The producer (handleDownloadedPinsFromLeader) closes the channel when it has
+// queued the whole batch, which is what ends this loop.
+// drainDownloadedPins - apply one batch. startedAt is the height we asked from,
+// target the height we are trying to reach, so a batch that made progress but
+// did not finish can ask for the next one.
+func drainDownloadedPins(downloads chan *pb.TxPin, startedAt, target int64) {
+	caughtUp := false
+	defer func() {
+		if !caughtUp {
+			pinGapSyncing.Store(false)
+		}
+	}()
+	timer := time.After(time.Second * 120)
+	logged := false
+pinProcessing:
+	for {
+		select {
+		case downloadedPin, ok := <-downloads:
+			if !ok {
+				logger.Infof("[Gap detected] No downloaded pins left to process")
+				break pinProcessing
+			}
+			if !logged {
+				logger.Infof("[Gap detected] Start downloaded pin processing")
+				logged = true
+			}
+			// A batch can overlap what we already applied - the leader answers
+			// from the height we asked for, and we may have moved on since.
+			// Skipping those is normal; only a forward gap ends the catch-up.
+			if int(downloadedPin.PinNumber) <= _pins_.CurrentHeight() {
+				logger.Debugf("[Gap detected] Already have pin=%d, skipping", downloadedPin.PinNumber)
+				continue
+			}
+			if !applyPin(downloadedPin) {
+				logger.Errorf("[Gap detected] Downloaded pin=%d does not continue our chain (height=%d), exit downloading loop",
+					downloadedPin.PinNumber, _pins_.CurrentHeight())
+				break pinProcessing
+			}
+			logger.Infof("[Gap detected] Processed downloaded pin at height=%d", downloadedPin.PinNumber)
+		case <-timer:
+			logger.Errorf("[Gap detected] Timeout waiting for missing pin response from leader")
+			break pinProcessing
+		}
+	}
+	logger.Infof("[Gap detected] Processed pins up to %d height", _pins_.CurrentHeight())
+
+	// A batch is capped to what fits in one message, so one round of it rarely
+	// closes a wide gap. Ask again from where this batch left us rather than
+	// waiting for the next announcement, which on a quiet chain may not come.
+	// Only if the batch actually moved us forward: asking again from the same
+	// height would loop for ever against a peer that cannot answer.
+	if height := int64(_pins_.CurrentHeight()); height < target && height > startedAt {
+		logger.Infof("[Gap detected] Still %d pin(s) behind, asking for the next batch from %d",
+			target-height, height+1)
+		caughtUp = true // the next round owns the flag
+		requestPinCatchUp(height, target)
+	}
+}
+
+// requestPinCatchUp - open the download channel and ask for everything from the
+// height after ours, then drain it off this goroutine. The caller must already
+// hold the pinGapSyncing flag.
+func requestPinCatchUp(currentHeight, target int64) {
+	_pins_.openPinDownloading()
+	downloads := _pins_.downloadedPins
+	if err := sendPindDownloadRequest(int(currentHeight) + 1); err != nil {
+		pinGapSyncing.Store(false)
+		logger.Errorf("[Gap detected] downloading missing pins to catch up: %s, will try again on the next announcement", err.Error())
+		return
+	}
+	// Not on the caller's goroutine when that goroutine is the sync subscriber:
+	// the same loop dispatches the response into this channel, so waiting here
+	// would block the producer and guarantee the timeout.
+	go drainDownloadedPins(downloads, currentHeight, target)
 }
