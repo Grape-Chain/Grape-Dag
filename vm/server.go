@@ -540,6 +540,22 @@ const stateServerHost string = "localhost"
 
 var server *InMemoryNodeStorageServer
 
+// AttachInMemoryStateStore - give the package a state store without starting a
+// gRPC listener.
+//
+// StartStateServer is the production path and it binds a port, which is more
+// than a caller needs when it only wants the store: the checkpoint and balance
+// functions here all operate on the store, not on the service. Tests use this,
+// and so would any embedding that runs the VM in-process.
+func AttachInMemoryStateStore() {
+	server = &InMemoryNodeStorageServer{storage: NewStorage()}
+}
+
+// StateStoreAttached - whether there is a store to operate on. Every exported
+// function here dereferences it, so a caller that may run before the server is
+// up has to ask.
+func StateStoreAttached() bool { return server != nil }
+
 func StartStateServer() error {
 	serverURI := fmt.Sprintf("%s:%d", stateServerHost, config.GetConfig().Peer.StateServerPort)
 	lis, err := net.Listen("tcp", serverURI)
@@ -618,6 +634,33 @@ func NonceIncr(account types.Hex) {
 		server.storage.putAccount(acc)
 	}
 	slogger.Infof("Increase prevNonce=%s for account=%s manually", prevNonce, account.String())
+}
+
+// Checkpoint - mark the state store, so the changes made after this point can
+// be undone. A validator that proposes a commit transaction has to execute its
+// smart-contract transactions to know what the commit transaction says, and it
+// does that before knowing whether the round will be agreed. Without a way back
+// a proposer that lost its round would carry state no other node has.
+func Checkpoint() {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+	server.storage.checkpoint()
+}
+
+// RevertCheckpoint - undo everything since the matching Checkpoint.
+func RevertCheckpoint() {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+	server.storage.revert()
+}
+
+// DropCheckpoint - keep everything since the matching Checkpoint, and stop
+// tracking it. Named for what it does to the checkpoint rather than to the
+// state: the changes were already applied as they were made.
+func DropCheckpoint() {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+	server.storage.commit()
 }
 
 func GetStateStoreDiffs() []Diff {
@@ -802,6 +845,23 @@ func SyncBalances(balances map[string][]byte) {
 			server.storage.putAccount(account)
 		}
 	}
+}
+
+// AccountBalance - what the state store holds for an account, and whether it
+// holds one at all. The write side (SyncBalances) was exported without a
+// matching read, which left no way to check that a rollback put a balance back.
+func AccountBalance(address string) (*big.Int, bool) {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+	account, exists := server.storage.getAccount(grape1crypto.AddressToBytes(address))
+	if !exists {
+		return nil, false
+	}
+	balance, ok := new(big.Int).SetString(account.Balance, 10)
+	if !ok {
+		return nil, false
+	}
+	return balance, true
 }
 
 func DumpMappingDiffs(d *pb.Diff) {

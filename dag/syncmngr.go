@@ -122,7 +122,8 @@ func whenToPublish(mt tx.SyncMsgType) bool {
 		mt == tx.STX_SNAPSHOT_BALANCE_REQUEST ||
 		mt == tx.STX_SNAPSHOT_BALANCE_RESPONSE ||
 		mt == tx.STX_PIN_DOWNLOAD_REQUEST ||
-		mt == tx.STX_PIN_DOWNLOAD_RESPONSE
+		mt == tx.STX_PIN_DOWNLOAD_RESPONSE ||
+		mt == tx.STX_CONSENSUS
 }
 
 // syncPublish - a go routine that retrieves sync packets from a sync queue
@@ -358,6 +359,12 @@ func (syncmgr *DagSyncMngr) syncSubscribe(ctx context.Context, pid peer.ID, wg *
 		}
 
 		switch {
+		// Validator protocol messages. First, because they are the highest rate
+		// of anything on this topic and carry their own authentication - the
+		// engine checks the sender is a validator and the signature verifies
+		// before it looks at what the message says.
+		case isConsensusMessage(syncTx):
+			handleConsensusMessage(syncTx)
 		// through pubsub the leader receives a request to provide pin tx missing from the node
 		// that issued the request.
 		case isSyncUpSiteRequest(syncTx, syncmgr.Leader):

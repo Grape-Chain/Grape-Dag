@@ -509,6 +509,64 @@ func (c *ConfirmTracker) pop() []*Node {
 	return out
 }
 
+// peek - the confirmed sites, without consuming them.
+//
+// A validator reports what it holds confirmed before anything is agreed, and
+// several times over if the round has to be repeated. Reporting through pop()
+// would consume the set on the first report, so a round that failed would leave
+// the node with nothing to settle and the sites it had already harvested would
+// never reach a commit transaction.
+func (c *ConfirmTracker) peek() []*Node {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.expireStaleTips(time.Now())
+	c.sweep()
+	out := make([]*Node, 0, len(c.confirmed))
+	for _, n := range c.confirmed {
+		if n == nil {
+			continue
+		}
+		if _, done := c.harvested[n.id.id]; done {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// take - consume exactly these sites and no others, which is what a commit
+// transaction settles. Sites confirmed while the round was being agreed are not
+// in the agreed set, so they stay for the next commit transaction rather than
+// being harvested by a pin that does not name them.
+func (c *ConfirmTracker) take(ids []uuid.UUID) []*Node {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	want := make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	out := make([]*Node, 0, len(ids))
+	kept := c.confirmed[:0]
+	for _, n := range c.confirmed {
+		if n == nil {
+			continue
+		}
+		id := n.id.id
+		if _, ok := want[id]; !ok {
+			kept = append(kept, n)
+			continue
+		}
+		if _, done := c.harvested[id]; done {
+			continue
+		}
+		c.harvested[id] = struct{}{}
+		delete(c.confirmedSet, id)
+		out = append(out, n)
+	}
+	c.confirmed = kept
+	return out
+}
+
 // isTip - whether a site may still be picked as an approval target: nothing
 // approves it yet. A tip dropped from the denominator for going unapproved stays
 // selectable, which is how it eventually gets approved and confirmed rather than

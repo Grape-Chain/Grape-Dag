@@ -434,10 +434,31 @@ func (p *NodeTxPin) getById(id uuid.UUID) *Node {
 //
 //	error if a balancing error occurs
 
+// add - build a commit transaction over these sites and append it to the chain.
+// The single-signer path: what a leader does, where building it and committing
+// it are the same act because nobody else has to agree first.
 func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
-	defer stats.Time(stats.PinBuild)()
 	p.lock("add")
 	defer p.unlock()
+	pin, err := p.unsafe_buildPin(sites, smcTxs)
+	if err != nil {
+		return err
+	}
+	p.unsafe_appendPin(pin)
+	return nil
+}
+
+// unsafe_buildPin - form a commit transaction over these sites, signed and
+// numbered, but not appended to the chain.
+//
+// Split out of add() for the quorum path, where a validator proposes a commit
+// transaction and only appends it once the rest of the set has agreed. Building
+// it is not free of consequence - the smart-contract stage executes, and the
+// wallet cache is invalidated for every account it touches - so a proposer that
+// loses its round has to undo that; see pinCandidate in dag/consensusnet.go.
+// Caller holds the pin lock.
+func (p *NodeTxPin) unsafe_buildPin(sites []*Node, smcTxs []tx.Transaction) (*pb.TxPin, error) {
+	defer stats.Time(stats.PinBuild)()
 	var prev []byte = []byte{}
 
 	if len(p.pins) > 0 {
@@ -526,14 +547,9 @@ func (p *NodeTxPin) add(sites []*Node, smcTxs []tx.Transaction) error {
 	pin.PinNumber = p.unsafe_nextPinNumber()
 	p.runSmartContractStage(pin, smcTxs)
 
-	// now that all the information has been collected, sign it and store
+	// now that all the information has been collected, sign it
 	pin.SignTx(dagWallet)
-
-	// append the latest pinning transaction to the slice of all pinning tx
-	p.unsafe_appendPin(pin)
-	// b, _ := pin.MarshalJSON()
-	// logger.Infof("%s", string(b))
-	return nil
+	return pin, nil
 }
 
 func (p *NodeTxPin) runSmartContractStage(pin *pb.TxPin, smcTxs []tx.Transaction) {

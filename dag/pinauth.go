@@ -301,11 +301,6 @@ func logPinAuthority() {
 	case pinAuth.quorum > 0 && len(pinAuth.validators) > 0:
 		utils.ColorizeInfo(logger, "[pin auth] Applying commit transactions agreed by %d of %d validator(s)",
 			pinAuth.quorum, len(pinAuth.validators))
-		// Verification is in place; the protocol that collects the agreement is
-		// not. Nothing yet builds a quorum certificate, so a node in this mode
-		// will verify correctly and apply nothing at all. Better said here than
-		// discovered as a chain that silently stopped.
-		logger.Warnf("[pin auth] dag.consensus=quorum verifies quorum certificates but nothing produces them yet: the validator protocol is not implemented, so this node will apply no commit transaction. Use dag.consensus=leader until it lands.")
 	case pinAuth.quorum > 0:
 		logger.Warnf("[pin auth] dag.consensus is quorum but dag.validators is empty, so no commit transaction can ever be applied")
 	case pinAuth.configured:

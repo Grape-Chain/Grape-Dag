@@ -101,20 +101,13 @@ Verification requires all of:
 In quorum mode the proposer's own `SignTx` signature is not consulted at all. If
 it counted, the quorum would be decoration.
 
-### Not usable yet
-
-**Nothing produces certificates.** The t0–t4 protocol that collects validator
-agreement is not implemented, so a node in quorum mode verifies correctly and
-applies nothing — the chain stops. The node warns about exactly this at start-up.
-`dag.consensus` stays `leader` by default for that reason.
-
-What exists is the wire format, the verification, the validator set and the
-quorum arithmetic — the half where the security lives, and the half that has to
-be right before anything is built on it.
+The protocol that produces those certificates is the t0–t4 exchange in
+`dag/consensus.go`, described in [consensus.md](consensus.md).
 
 ## What this is not, yet
 
 In leader mode this is a set of authorised signers with an implicit quorum of
-one, so a single compromised signing key is a compromised ledger. That is the
-main reason the validator protocol is the next piece of work rather than a later
-one.
+one, so a single compromised signing key is a compromised ledger. Quorum mode is
+what removes that, and it is implemented — but `dag.consensus` still defaults to
+`leader`, because the validator set has to be agreed and distributed before a
+network can switch, and a node that switches alone stops applying anything.

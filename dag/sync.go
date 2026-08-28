@@ -784,6 +784,11 @@ func (dsm *DagSyncMngr) dag_watcher(leader bool, wait_connect bool, wg *sync.Wai
 	var _stop_ atomic.Bool = atomic.Bool{}
 	syncTicker := time.NewTicker(config.PIN_TX_TIMER_DEF)
 	defer syncTicker.Stop()
+	// The validator protocol has phases inside the commit interval, so it needs
+	// a finer tick than the interval itself. It runs on this goroutine, the same
+	// one that forms commit transactions in leader mode.
+	consensusTicker := time.NewTicker(consensusTickInterval())
+	defer consensusTicker.Stop()
 	//var prevMaxDepth uint64 = 0
 	wg.Done()
 
@@ -826,9 +831,17 @@ stop_requested:
 			break stop_requested
 		case <-_dag_.depthCh:
 			__noop__()
+		case <-consensusTicker.C:
+			// In quorum mode a commit transaction is what a quorum of validators
+			// agreed to, so every validator drives the protocol - not only the
+			// leader. Nodes that are not validators have no runner and do
+			// nothing here; they apply what the set agrees.
+			if consensusActive() {
+				consensusRunner.drive()
+			}
 		case <-syncTicker.C:
 			// as per convention, only leaders may generate pin tx
-			if leader && __leaderReady__.Load() {
+			if leader && __leaderReady__.Load() && !consensusActive() {
 				genPinTx()
 			}
 		}

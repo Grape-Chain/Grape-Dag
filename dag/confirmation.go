@@ -132,6 +132,60 @@ func (c *ConfirmationCounter) pop() []*Node {
 	return confirmed
 }
 
+func (c *ConfirmationCounter) peek() []*Node {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := []*Node{}
+	c.confirmed.Do(func(i interface{}) {
+		id := i.(uuid.UUID)
+		if _, done := c.harvested[id]; done {
+			return
+		}
+		node := c.resolveUnderLock(id)
+		if node == nil {
+			return
+		}
+		out = append(out, node)
+	})
+	return out
+}
+
+func (c *ConfirmationCounter) take(ids []uuid.UUID) []*Node {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*Node, 0, len(ids))
+	for _, id := range ids {
+		if _, done := c.harvested[id]; done {
+			continue
+		}
+		if !c.confirmed.Has(id) {
+			continue
+		}
+		node := c.resolveUnderLock(id)
+		if node == nil {
+			continue
+		}
+		c.harvested[id] = struct{}{}
+		delete(c.cache, id)
+		c.confirmed.Remove(id)
+		out = append(out, node)
+	}
+	return out
+}
+
+// resolveUnderLock - the site behind an id, from the cache or, failing that,
+// from the dag. See pop() for why the fallback is needed. Caller holds the lock.
+func (c *ConfirmationCounter) resolveUnderLock(id uuid.UUID) *Node {
+	if node, ok := c.cache[id]; ok && node != nil {
+		return node
+	}
+	if resolved := resolveSite(id); resolved != nil {
+		return resolved
+	}
+	logger.Warnf("[confirmation] Confirmed site %s is in neither the counter cache nor the dag, skipping", id.String())
+	return nil
+}
+
 func (c *ConfirmationCounter) tip() []*Node {
 	c.mu.Lock()
 	defer c.mu.Unlock()

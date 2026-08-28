@@ -76,6 +76,13 @@ type confirmations interface {
 	add(vertex *Node)
 	relink(vertex *Node)
 	pop() []*Node
+	// peek - the confirmed sites without consuming them, and take - consume
+	// exactly the named ones. Splitting pop() in two is what lets a validator
+	// report what it holds confirmed without settling it: the report happens
+	// before agreement, and possibly several times if a round has to be
+	// repeated.
+	peek() []*Node
+	take(ids []uuid.UUID) []*Node
 	tip() []*Node
 	getTips() []*Node
 	isTip(id uuid.UUID) bool
@@ -470,6 +477,20 @@ func Init() {
 		}
 	}
 	logPinAuthority()
+	if consensusMode(dagConfig.Consensus) == CONSENSUS_QUORUM {
+		runner, err := newConsensusDriver(config.PIN_TX_TIMER_DEF)
+		if err != nil {
+			// A validator that cannot run the protocol is a validator missing
+			// from every quorum, which is worse than not starting.
+			logger.Fatalf("[consensus] %s", err.Error())
+		}
+		consensusRunner = runner
+		if runner != nil {
+			utils.ColorizeInfo(logger, "[consensus] This node is a validator and will take part in agreeing commit transactions")
+		} else {
+			logger.Infof("[consensus] This node is not in the validator set; it applies what the set agrees")
+		}
+	}
 	logTipSelection()
 	sliceArchive = newRamArchive()
 	_pins_ = newNodeTxPin()
