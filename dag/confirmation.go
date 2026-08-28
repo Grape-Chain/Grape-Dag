@@ -251,3 +251,58 @@ func (c *ConfirmationCounter) walkFrom(from *Node) (bool, int, []*Node, []int) {
 // walkBack - the legacy rule keeps no region, so there is no depth to throw a
 // particle into. Selection falls back to a uniform pick.
 func (c *ConfirmationCounter) walkBack(from *Node) []*Node { return nil }
+
+// The rest of this file is the same tip-set reads selection makes of the
+// share-of-tips rule, so that selection can ask for one tip at a time instead
+// of asking for the whole set and throwing most of it away. Implemented here
+// plainly rather than efficiently: this rule keeps no index to read, and it
+// exists to be compared against, not to carry load.
+
+// walkFromInto - see ConfirmTracker.walkFromInto. There is nothing to append,
+// so the buffers come back as they went in.
+func (c *ConfirmationCounter) walkFromInto(from *Node, next []*Node, pot []int) (bool, int, []*Node, []int) {
+	selectable, _, _, _ := c.walkFrom(from)
+	return selectable, 0, next, pot
+}
+
+func (c *ConfirmationCounter) stepBack(from *Node) *Node { return nil }
+
+func (c *ConfirmationCounter) randomTip() *Node {
+	tips := c.getTips()
+	if len(tips) == 0 {
+		return nil
+	}
+	return tips[dagRand.Intn(len(tips))]
+}
+
+func (c *ConfirmationCounter) tipExcept(taken map[uuid.UUID]struct{}) *Node {
+	tips := c.getTips()
+	if len(tips) == 0 {
+		return nil
+	}
+	start := dagRand.Intn(len(tips))
+	for i := 0; i < len(tips); i++ {
+		t := tips[(start+i)%len(tips)]
+		if t == nil {
+			continue
+		}
+		if _, dup := taken[t.id.id]; dup {
+			continue
+		}
+		return t
+	}
+	return nil
+}
+
+func (c *ConfirmationCounter) sampleTips(want int, out []*Node) []*Node {
+	pool := c.getTips()
+	if want > len(pool) {
+		want = len(pool)
+	}
+	for i := 0; i < want; i++ {
+		j := i + dagRand.Intn(len(pool)-i)
+		pool[i], pool[j] = pool[j], pool[i]
+		out = append(out, pool[i])
+	}
+	return out
+}

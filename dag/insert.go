@@ -10,15 +10,40 @@ import (
 	"github.com/pkg/errors"
 )
 
+// InsertIfNotExist - add the sites in this batch that the live graph does not
+// already hold.
+//
+// Caller holds dag.mux: both callers - handleSyncSiteResponse in dag/sync.go and
+// the site-request handler in dag/synchandle.go - take it before calling, and
+// insertMissing appends to dag._dag_.
 func (d *Dag) InsertIfNotExist(vertices []*Node) error {
-	goterators.ForEach(vertices, func(v *Node) {
-		if x := d.getById(v.id.id, false); x == nil {
-			err := d.insertMissing(v)
-			if err != nil {
-				logger.Errorf("Failed to insert a missing site: %s", err.Error())
-			}
+	for _, v := range vertices {
+		if v == nil {
+			continue
 		}
-	})
+		// Asks the lookup map only. The full search behind getById(_, false) was
+		// a linear scan of the entire live graph per site in the batch, and it
+		// cannot answer differently: every path that appends to dag._dag_
+		// registers the site in the same map inside the same locked section
+		// (addToDag, insertMissing), and slicing deletes from both. It was also
+		// unsound - _getById_ asks for dag.mux with TryLock and carries on
+		// without it when the attempt fails, which here it always does, because
+		// the caller is already holding it - so the scan read a slice that
+		// another goroutine may have been appending to.
+		if d.getById(v.id.id, true) != nil {
+			continue
+		}
+		// A site that has already been settled must not come back into the live
+		// graph. Nothing would ever settle it again - the confirmation tracker
+		// records it as harvested - so it would sit in the live graph for the
+		// life of the process, and every pass over the graph would carry it.
+		if _, settled := settledSite(v.id.id); settled {
+			continue
+		}
+		if err := d.insertMissing(v); err != nil {
+			logger.Errorf("Failed to insert a missing site: %s", err.Error())
+		}
+	}
 	return nil
 }
 
@@ -43,15 +68,29 @@ func (dag *Dag) InsertTxDag(
 	idMinor uint32,
 	ids ...tx.UuidSlice, // this is a slice of ids for the sites that this site(vertex) has approved elsewhere
 ) error {
-	dag.mux.Lock()
-	defer dag.mux.Unlock()
-
 	// When creating a site/vertex from a transaction, the versioning information does not get preserved
-	// restore it here
+	// restore it here.
+	//
+	// Before the lock: inVertex was built by the subscriber and no other
+	// goroutine can reach it yet, so these four writes are private.
 	inVertex.id.id = txId
 	inVertex.id.idMajor = idMajor
 	inVertex.id.idMinor = idMinor
 	inVertex.time = time.Now()
+
+	// A site this node already holds is the ordinary case under diffusion - each
+	// transaction arrives from every peer that relays it - and asking the lookup
+	// map costs one read of an RWMutex that dag.mux does not gate. Doing it here
+	// keeps a duplicate off the dag.mux queue entirely. The answer can go stale
+	// between here and the lock, which is why the same check is repeated below;
+	// this one can only ever skip work, never authorise it.
+	if dag.getById(inVertex.id.id, true) != nil {
+		return nil
+	}
+
+	dag.mux.Lock()
+	defer dag.mux.Unlock()
+
 	// Check if this node is already in our dag
 	// if v := dag.getById(inVertex.id.id, true); v == nil {
 	// 	// if cache lookup failed, do a more thorough search
@@ -163,6 +202,16 @@ func (dag *Dag) InsertTxDag(
 			if idx < len(dag._dag_)-1 {
 				dag._dag_ = append(dag._dag_[:idx+1], dag._dag_[idx:]...)
 				dag._dag_[idx+1] = inVertex
+				// Registered in the lookup map here because this branch splices
+				// straight into dag._dag_ instead of going through addToDag, so
+				// nothing else would. InsertIfNotExist now trusts the map to
+				// answer "is this site in the live graph", and this was the one
+				// path that could put a site in the graph without it. Note that
+				// the branch still skips the balance update, the confirmation
+				// tracker and the site counter, which is a wider problem in a
+				// path that dag.versioncollision leaves off by default; see the
+				// report.
+				dag.lookupCacheUpdate(inVertex, targetIDs(candidates))
 			} else {
 				_, err := dag.addToDag(inVertex, candidates)
 				if err != nil {
@@ -182,14 +231,20 @@ func (dag *Dag) InsertTxDag(
 		}
 	}
 	// after the new node has been added to dag, update links
-	goterators.ForEach(candidates, func(targetNode *Node) {
+	for _, targetNode := range candidates {
 		// link to these candidates - there should be at least one or ideally, two candidates
 		dag._links_ = append(dag._links_, Link{source: inVertex, target: targetNode})
-		logger.Debugf("[SUB LINK] %s|%d|%d ==> %s|%d|%d",
-			inVertex.id.id.String(), inVertex.id.idMajor, inVertex.id.idMinor,
-			targetNode.id.id.String(), targetNode.id.idMajor, targetNode.id.idMinor,
-		)
-	})
+		// Guarded at the call site rather than left to the log level: the
+		// arguments are evaluated either way, and each id.String() allocates a
+		// 36-byte string. Two of them per approval per received site, inside
+		// dag.mux, for a line nobody reads unless -verbose is on.
+		if traceSites {
+			logger.Debugf("[SUB LINK] %s|%d|%d ==> %s|%d|%d",
+				inVertex.id.id.String(), inVertex.id.idMajor, inVertex.id.idMinor,
+				targetNode.id.id.String(), targetNode.id.idMajor, targetNode.id.idMinor,
+			)
+		}
+	}
 	// Whoever built this site claimed it, and the claim is checkable: the
 	// signature covers the site's id, its transaction and its approvals. Checked
 	// here, after the links are established, because the approvals are part of

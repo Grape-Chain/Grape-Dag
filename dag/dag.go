@@ -252,7 +252,61 @@ func (dag *Dag) lookupCacheUpdate(vertex *Node, targetIds []uuid.UUID) {
 	dag.mu_map.Lock()
 	defer dag.mu_map.Unlock()
 	dag.mapped_vertices[vertex.id.id] = vertex
+	if len(targetIds) == 0 {
+		// Nothing to record. The append below would otherwise store a key with a
+		// nil value for every site that approves nothing - which is every site
+		// inserted by insertMissing or by the bypass path, i.e. every site on a
+		// node that is catching up - and mapped_edges is walked whole by
+		// updateMappedEdges and by the slice.
+		return
+	}
 	dag.mapped_edges[vertex.id.id] = append(dag.mapped_edges[vertex.id.id], targetIds...)
+}
+
+// rlock, runlock - the read half of dag.mux.
+//
+// dag.mux is a sync.Mutex, so these are exclusive today: the names state what
+// the section does, not what the lock allows. They exist because the read
+// sections are the ones a sync.RWMutex would let overlap, and converting is a
+// three-line change - these two bodies and the redundant `mux: sync.Mutex{}` in
+// newDag (dag/generate.go, which this change does not own). Marking the sections
+// is the part that has to be got right: a read section that quietly mutates
+// something becomes corruption the moment the lock is shared, so every caller of
+// these two says what it touches and what it does not.
+//
+// The read sections, as of this change: Dag.approvalTargets (tip selection),
+// which reads Node.sources and Node.targets through the confirmation tracker.
+// The other candidates are outside this file - Size, Tps, AvgDelay,
+// SnapshotNodes and getFromLastPinTx here, GetConfirmedSites and its siblings in
+// dag/site.go, refreshSizeGauges in dag/metrics.go, and the verifyProcessor
+// section of InsertTxDag - and the report lists which of them are genuine
+// readers.
+func (d *Dag) rlock()   { d.mux.Lock() }
+func (d *Dag) runlock() { d.mux.Unlock() }
+
+// liveOnly - the subset of these sites that the live graph still holds.
+//
+// Membership of the lookup map is the same question: every path that appends to
+// dag._dag_ registers the site in the map inside the same locked section
+// (addToDag, insertMissing), and sliceSites deletes from both. Caller holds
+// dag.mux, which is what keeps the answer true for long enough to act on it.
+func (d *Dag) liveOnly(nodes []*Node) []*Node {
+	for i, n := range nodes {
+		if n != nil && d.getById(n.id.id, true) != nil {
+			continue
+		}
+		// A site went between selection and here. Rare, so it is the only
+		// branch that allocates.
+		kept := make([]*Node, 0, len(nodes)-1)
+		kept = append(kept, nodes[:i]...)
+		for _, rest := range nodes[i+1:] {
+			if rest != nil && d.getById(rest.id.id, true) != nil {
+				kept = append(kept, rest)
+			}
+		}
+		return kept
+	}
+	return nodes
 }
 
 // getById - get a node by its UUID
@@ -276,6 +330,14 @@ func (d *Dag) getById(id uuid.UUID, cacheOnly bool) *Node {
 
 // getById - get a *Node by its id (uuid)
 // returns *Node if found, nil otherwise
+//
+// No callers left: InsertIfNotExist was the only one and now asks the lookup map
+// alone, which cannot answer differently - see the note there. Kept rather than
+// deleted because getById's cacheOnly parameter is called from files this change
+// does not own, but it should go with them. It cannot be made safe as written:
+// TryLock carries on unlocked when the lock is held, which is precisely when the
+// scan below is racing an append to _dag_, and taking the lock unconditionally
+// instead would deadlock the callers that already hold it.
 func (d *Dag) _getById_(id uuid.UUID) *Node {
 	if d.mux.TryLock() {
 		defer d.mux.Unlock()
@@ -359,33 +421,93 @@ func (d *Dag) insertMissing(vertex *Node) error {
 	d.sitesAdded.Add(1)
 	// update lookup cache
 	// Node: this step is important for efficient lookups
-	d.lookupCacheUpdate(vertex, goterators.Map(vertex.targets, func(v *Node) uuid.UUID {
-		return v.id.id
-	}))
-	if d.txCh != nil {
-		d.txCh <- TxVL{vertex: *vertex, edges: goterators.Map(vertex.targets, func(v *Node) Node {
-			return *v
-		})}
-	}
+	d.lookupCacheUpdate(vertex, targetIDs(vertex.targets))
+	d.notifyDagModified(vertex, nodeValues(vertex.targets))
 
 	return nil
 }
 
+// targetIDs, nodeValues - the two shapes the insert path needs its neighbour
+// list in. Plain loops rather than goterators.Map: both run inside the dag lock
+// on every site, and a closure per site per shape is a closure per site the node
+// holds the whole ledger still for.
+func targetIDs(nodes []*Node) []uuid.UUID {
+	if len(nodes) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(nodes))
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		ids = append(ids, n.id.id)
+	}
+	return ids
+}
+
+func nodeValues(nodes []*Node) []Node {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]Node, 0, len(nodes))
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		out = append(out, *n)
+	}
+	return out
+}
+
+// addToDag - put a site into the graph: apply its payment, link it to the sites
+// it approves, and publish it. Caller holds dag.mux.
+//
+// The two halves are separate functions because AddTxDag has to let go of
+// dag.mux between them: the site's processor signature is an ed25519 signature,
+// measured at 72.7us against 4-10us for tip selection and confirmation together,
+// and it has to be made after the approvals are linked and before the site is
+// reachable. Everything else goes through here and gets both halves under one
+// acquisition, exactly as before.
 func (dag *Dag) addToDag(node *Node, linksTo []*Node) (*Dag, error) {
-	var e []Node = []Node{}
+	edges, ids, err := dag.linkApprovals(node, linksTo)
+	if err != nil {
+		return dag, err
+	}
+	dag.publishSite(node, edges, ids)
+	return dag, nil
+}
+
+// linkApprovals - the half of an insert that decides what the site approves: the
+// payment, and the edges in both directions. Caller holds dag.mux.
+//
+// Returns the neighbours by value and their ids because the publish half needs
+// both, and both have to be taken while the lock is held: they copy out of the
+// same edge slices that this function and sliceSites rewrite.
+func (dag *Dag) linkApprovals(node *Node, linksTo []*Node) ([]Node, []uuid.UUID, error) {
 	// at this point we either accept the transaction, update its balance or bail out
 	// unless dealing with synchronization
 	// in case of synchronization: we still need to reconcile the balances,
 	// but updating balances when there are missing transactions makes it difficult
 	// @TODO: find a solution to balance update during synchronization; for now skip
 	// balance update when we are in sync mode: aka linksTo is nil
+	//
+	// Under dag.mux, and it has to be: the payment is a read-modify-write across
+	// two accounts, and the wallet cache's own mutex only makes each half of it
+	// atomic. Two inserts overlapping here would interleave a debit and a credit
+	// and leave a balance neither of them computed.
 	if linksTo != nil && !node.UpdateBalanceIfValid() {
 		logger.Errorf("[!] Invalid balance for %s. Ignore", node.tx.String())
-		return dag, errors.Errorf("[!] Invalid balance for %s. Ignore", node.tx.String())
+		return nil, nil, errors.Errorf("[!] Invalid balance for %s. Ignore", node.tx.String())
 	}
 
-	goterators.ForEach(linksTo, func(v *Node) {
+	e := make([]Node, 0, len(linksTo))
+	ids := make([]uuid.UUID, 0, len(linksTo))
+	for _, v := range linksTo {
+		if v == nil {
+			continue
+		}
 		e = append(e, *v)
+		ids = append(ids, v.id.id)
 		// add this node to the tips as
 		if v.sources == nil {
 			v.sources = []*Node{}
@@ -395,16 +517,25 @@ func (dag *Dag) addToDag(node *Node, linksTo []*Node) (*Dag, error) {
 			node.targets = []*Node{}
 		}
 		node.targets = append(node.targets, v)
-	})
+	}
+	return e, ids, nil
+}
+
+// publishSite - the half of an insert that makes the site reachable: the node
+// slice, the lookup maps, the confirmation tracker and the dag watcher. Caller
+// holds dag.mux.
+//
+// Nothing here can fail, which is what makes it safe for AddTxDag to run it in a
+// second acquisition: there is no state to unwind if the site turns out not to
+// be publishable, because by this point it always is.
+func (dag *Dag) publishSite(node *Node, edges []Node, ids []uuid.UUID) {
 	node.time = time.Now()
 	dag._dag_ = append(dag._dag_, node)
 	dag.sitesAdded.Add(1)
 	stats.SitesAdded.Inc()
 	// update lookup cache
 	// Node: this step is important for efficient lookups
-	dag.lookupCacheUpdate(node, goterators.Map(linksTo, func(n *Node) uuid.UUID {
-		return n.id.id
-	}))
+	dag.lookupCacheUpdate(node, ids)
 	// after adding a new vertex to DAG, update the tip counter
 	// as we need them when finding confirmed vertices
 	dag.countConfirmed(node)
@@ -413,10 +544,95 @@ func (dag *Dag) addToDag(node *Node, linksTo []*Node) (*Dag, error) {
 	// and builds a reverse graph representation of our dag
 	// dag_watcher(sync.go) reads from the channel and calls Notify
 	// which keeps the graph up to date
-	if dag.txCh != nil {
-		dag.txCh <- TxVL{vertex: *node, edges: e}
+	dag.notifyDagModified(node, edges)
+}
+
+// dropSettledTargets - drop approval targets that have been settled since they
+// were linked, keeping their ids.
+//
+// Exactly what sliceSites does to a site that is in the graph when a commit
+// transaction lands. AddTxDag needs it because it links a site's approvals in
+// one locked section and publishes the site in another, so a commit can settle
+// one of its targets in between - at which point the site is not yet in
+// dag._dag_ and sliceSites does not reach it. Without this the site would hold a
+// pointer that nothing will ever prune, keeping an archived site alive, and its
+// entry in mapped_edges would name a site that Vertex() cannot resolve.
+//
+// The approval itself is not lost: ToPbNode reports both the pointers and the
+// recorded ids, so a peer rebuilds the same approval set either way.
+//
+// Caller holds dag.mux. Returns true when something was dropped.
+func (d *Dag) dropSettledTargets(node *Node) bool {
+	if !dagConfig.Slicing || len(node.targets) == 0 {
+		return false
 	}
-	return dag, nil
+	dropped := false
+	kept := node.targets[:0]
+	for _, t := range node.targets {
+		if t == nil {
+			continue
+		}
+		if d.getById(t.id.id, true) == nil {
+			node.slicedTargets = append(node.slicedTargets, t.id.id)
+			dropped = true
+			continue
+		}
+		kept = append(kept, t)
+	}
+	for i := len(kept); i < len(node.targets); i++ {
+		node.targets[i] = nil
+	}
+	node.targets = kept
+	return dropped
+}
+
+// txNotifyBuffer - how many site notifications may be in flight to the dag
+// watcher.
+//
+// Was one. A capacity of one makes every send a rendezvous with the watcher, and
+// the send happens with dag.mux held, so the whole node ran at the pace of the
+// watcher's slowest Notify: chansend was 25% of a node's blocking profile over
+// 2.6 hours of accumulated blocking. Four thousand is a few hundred kilobytes of
+// TxVL and absorbs any burst the watcher can catch up on within a commit
+// interval.
+const txNotifyBuffer = 4096
+
+// txNotifyDrops - notifications the watcher was too far behind to take.
+var txNotifyDrops atomic.Uint64
+
+// notifyDagModified - hand a new site to the dag watcher without ever waiting
+// for it.
+//
+// The watcher feeds DepthHandler.Notify (dag/sync.go), which builds a second,
+// reverse copy of the graph in package graph/. That copy is written once per
+// site and read by exactly one function, getLatestDagSlice in dag/traverse.go,
+// which has no caller anywhere in the repository - so this send is, today, work
+// done for nobody. It should be deleted along with the handler and the graph;
+// that is outside this change and is in the report.
+//
+// Until then it must not be able to stop the ledger. The send is
+// non-blocking: a dropped notification costs a vertex in a structure nothing
+// reads, whereas a blocking send costs every insert, every slice, every gauge
+// sample and every commit behind dag.mux. Drops are counted and reported rather
+// than left silent, and a drop makes Notify log a missing-source-site error for
+// the sites that follow it, which is one more reason to remove the feed rather
+// than to tune it.
+//
+// The TxVL is built by the caller under the lock, because it copies the site and
+// its neighbours by value out of slices that other goroutines mutate.
+func (dag *Dag) notifyDagModified(vertex *Node, edges []Node) {
+	if dag.txCh == nil {
+		return
+	}
+	select {
+	case dag.txCh <- TxVL{vertex: *vertex, edges: edges}:
+	default:
+		// Logged on the first drop and then sparsely: the condition is a
+		// watcher that has fallen behind, and it either resolves or it does not.
+		if n := txNotifyDrops.Add(1); n == 1 || n%100000 == 0 {
+			logger.Warnf("[dag] The dag watcher is behind; dropped %d site notification(s). Nothing reads what it builds - see notifyDagModified", n)
+		}
+	}
 }
 
 func (d *Dag) getGenesis() *Node {
@@ -575,7 +791,9 @@ func (sm *DagSyncMngr) RunSynchronization(leader bool, wait_connect bool) {
 		}
 		// we set the sync channel for transactions here so that we can run
 		// it only when synchronization is enabled
-		_dag_.txCh = make(chan TxVL, 1)
+		// See txNotifyBuffer and notifyDagModified: this used to be a capacity
+		// of one, sent into with dag.mux held.
+		_dag_.txCh = make(chan TxVL, txNotifyBuffer)
 		_dag_.depthCh = make(chan Node, 1)
 		_dag_.pinCh = make(chan bool, 1)
 		wg := &sync.WaitGroup{}

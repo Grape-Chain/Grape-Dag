@@ -35,6 +35,23 @@ func (d *Dag) sliceSites(pin *pb.TxPin) int {
 	if pin == nil || !dagConfig.Slicing {
 		return 0
 	}
+	settled := settledIds(pin)
+	if len(settled) == 0 {
+		return 0
+	}
+	archiveSettled(pin)
+	removed := d.spliceSettled(pin, settled)
+	harvestSettled(settled)
+	return removed
+}
+
+// settledIds - the ids of the sites a commit transaction settled.
+//
+// Split out because it is the one part of slicing that is pure: decoding a uuid
+// per site and building a map of them is work proportional to the pin, and it
+// used to be done while holding dag.mux, where every insert and every tip
+// selection waited on it.
+func settledIds(pin *pb.TxPin) map[uuid.UUID]struct{} {
 	settled := make(map[uuid.UUID]struct{}, len(pin.Sites))
 	for _, s := range pin.Sites {
 		if s == nil {
@@ -44,13 +61,33 @@ func (d *Dag) sliceSites(pin *pb.TxPin) int {
 			settled[id] = struct{}{}
 		}
 	}
-	if len(settled) == 0 {
-		return 0
-	}
+	return settled
+}
+
+// archiveSettled - hand the settled sites to the archive, which has a lock of
+// its own and needs nothing from the graph.
+func archiveSettled(pin *pb.TxPin) {
 	if sliceArchive != nil {
 		sliceArchive.Archive(pin.PinNumber, pin.Nodes)
 	}
+}
 
+// harvestSettled - tell the confirmation tracker these sites are settled, so
+// none of them can be confirmed a second time. Its own lock, and nothing from
+// the graph.
+func harvestSettled(settled map[uuid.UUID]struct{}) {
+	if confirmationCounter == nil {
+		return
+	}
+	for id := range settled {
+		confirmationCounter.markHarvested(id)
+	}
+}
+
+// spliceSettled - take the settled sites out of the live graph. This is the part
+// that needs dag.mux, and now the only part of slicing that holds it.
+// Caller must hold dag.mux.
+func (d *Dag) spliceSettled(pin *pb.TxPin, settled map[uuid.UUID]struct{}) int {
 	// Drop the settled sites from the node slice.
 	kept := d._dag_[:0]
 	removed := 0
@@ -111,14 +148,6 @@ func (d *Dag) sliceSites(pin *pb.TxPin) int {
 	}
 	d.mu_map.Unlock()
 
-	// The tracker keeps its own record of what has been pinned so a settled site
-	// cannot be confirmed again.
-	if confirmationCounter != nil {
-		for id := range settled {
-			confirmationCounter.markHarvested(id)
-		}
-	}
-
 	if removed > 0 {
 		logger.Debugf("[slice] Settled %d site(s) into pin=%d; live graph now holds %d site(s), %d edge(s), archive %d",
 			removed, pin.PinNumber, len(d._dag_), len(d._links_), archiveLen())
@@ -159,23 +188,51 @@ func archiveLen() int {
 }
 
 // settledSite - look a settled site up in the archive.
+//
+// The boolean is the authoritative answer to "has this site been settled?" and
+// is true for every site the archive has ever been given. The node is nil when
+// the site is settled but its body has been released past the retain window: the
+// caller on the insert path only asks whether the approval target is settled -
+// it deliberately does not link to it - so a nil node there costs nothing. Any
+// future caller that wants the site itself has to handle nil, and should be
+// reading it from the store rather than from a cache.
 func settledSite(id uuid.UUID) (*Node, bool) {
 	if sliceArchive == nil {
 		return nil, false
 	}
-	return sliceArchive.Lookup(id)
+	if node, ok := sliceArchive.Lookup(id); ok {
+		return node, true
+	}
+	return nil, sliceArchive.Has(id)
 }
 
 // sliceAppliedPin - take the dag lock and settle the sites a commit transaction
 // just made irrevocable. Called from both sides of the chain: the leader after
 // it forms a pin, and every other node after it applies one, so the live graph
 // is bounded the same way everywhere.
+// Only the graph surgery runs under dag.mux. Decoding the settled ids, handing
+// them to the archive and recording them as harvested all need locks of their
+// own but nothing from the graph, and they are proportional to the size of the
+// commit transaction - thousands of sites at load - so doing them inside the
+// graph lock made every insert wait on work that had no reason to be there.
+//
+// Harvesting now happens before the splice rather than after it. Both orders are
+// correct: the sites are irrevocable by the time this runs, so a confirmation
+// that arrives in between must not promote them either way, and marking them
+// first is the side that refuses.
 func sliceAppliedPin(pin *pb.TxPin) {
 	if pin == nil || _dag_ == nil || !dagConfig.Slicing {
 		return
 	}
 	defer stats.Time(stats.PinSlice)()
+	settled := settledIds(pin)
+	if len(settled) == 0 {
+		return
+	}
+	archiveSettled(pin)
+	harvestSettled(settled)
+
 	_dag_.mux.Lock()
 	defer _dag_.mux.Unlock()
-	_dag_.sliceSites(pin)
+	_dag_.spliceSettled(pin, settled)
 }

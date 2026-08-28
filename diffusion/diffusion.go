@@ -19,9 +19,9 @@ const (
 )
 
 var (
-	logger     golog.EventLogger
+	logger      golog.EventLogger
 	grapeConfig *config.Grapepeer
-	txCount    uint64 = 0
+	txCount     uint64 = 0
 )
 
 func init() {
@@ -49,7 +49,9 @@ func Diffusion(ctx context.Context,
 		return nil, nil, nil
 	}
 
-	subopt := []pubsub.SubOpt{pubsub.WithBufferSize(1 << 20)}
+	// See subBufferSize in subscribe.go: this was 1<<20, which is 8MB of
+	// channel allocated at start-up to hold a million message pointers.
+	subopt := []pubsub.SubOpt{pubsub.WithBufferSize(subBufferSize)}
 	sub, err := topic.Subscribe(subopt...)
 	if err != nil {
 		utils.ColorizeError(logger, "Failed to subscribe to topic %s", subscription)

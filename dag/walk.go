@@ -170,16 +170,24 @@ func weightedChoice(nodes []*Node, weights []float64) *Node {
 // form had, and it would have come back at exactly the throughput this is
 // being built for.
 func transitionWeights(potential int, nextPotential []int, alpha float64) []float64 {
-	w := make([]float64, len(nextPotential))
+	return transitionWeightsInto(potential, nextPotential, alpha, nil)
+}
+
+// transitionWeightsInto - transitionWeights, into a buffer the caller owns and
+// reuses across the steps of one walk. The differences are staged in that same
+// buffer rather than in a second slice of their own: it held one float per
+// candidate for the length of one loop, and this runs on every step of every
+// walk.
+func transitionWeightsInto(potential int, nextPotential []int, alpha float64, into []float64) []float64 {
+	w := into[:0]
 	if alpha <= 0 || len(nextPotential) == 0 {
-		for i := range w {
-			w[i] = 1
+		for range nextPotential {
+			w = append(w, 1)
 		}
 		return w
 	}
-	diffs := make([]float64, len(nextPotential))
 	least := math.Inf(1)
-	for i, p := range nextPotential {
+	for _, p := range nextPotential {
 		d := float64(potential - p)
 		if d < 0 {
 			// A candidate confirmed by more tips than the site it approves would
@@ -187,15 +195,60 @@ func transitionWeights(potential int, nextPotential []int, alpha float64) []floa
 			// difference rather than as a reward.
 			d = 0
 		}
-		diffs[i] = d
+		w = append(w, d)
 		if d < least {
 			least = d
 		}
 	}
-	for i, d := range diffs {
+	for i, d := range w {
 		w[i] = math.Exp(-alpha * (d - least))
 	}
 	return w
+}
+
+// tipReader - the reads selection makes of the confirmation rule's tip set.
+//
+// Narrower than the whole-set reads the confirmations interface offers, and
+// that is the point: selection wants one uniformly chosen tip at a time, and
+// asking for the whole set to take one element of it cost a scan of the active
+// region and a slice per approval, several times per inserted site. Every rule
+// has to answer these, so both implementations do; a rule that does not cannot
+// select, and selection then refuses rather than approving something outside
+// the region.
+type tipReader interface {
+	// randomTip - one tip, uniformly, or nil when there are none.
+	randomTip() *Node
+	// tipExcept - a tip that is not in taken, or nil.
+	tipExcept(taken map[uuid.UUID]struct{}) *Node
+	// sampleTips - up to want distinct tips, uniformly, appended to out.
+	sampleTips(want int, out []*Node) []*Node
+	// walkFromInto - walkFrom, into buffers the caller reuses across steps.
+	walkFromInto(from *Node, next []*Node, pot []int) (bool, int, []*Node, []int)
+	// stepBack - one uniformly chosen in-region site that this one approves.
+	stepBack(from *Node) *Node
+}
+
+var (
+	_ tipReader = (*ConfirmTracker)(nil)
+	_ tipReader = (*ConfirmationCounter)(nil)
+)
+
+// tipSelector - the configured rule's tip set, or nil if it does not offer one.
+func tipSelector() tipReader {
+	if ts, ok := tipCache().(tipReader); ok {
+		return ts
+	}
+	return nil
+}
+
+// walker - the buffers one selection's walks step through, reused across the
+// steps of a walk and across the walks of one selection. Each step read the
+// candidate sites, their potentials and the weights derived from them into
+// three fresh slices, on a path that runs several times per inserted site.
+type walker struct {
+	next []*Node
+	pot  []int
+	w    []float64
 }
 
 // walkToTip - step a particle from a root of the active region to the first site
@@ -218,12 +271,21 @@ func transitionWeights(potential int, nextPotential []int, alpha float64) []floa
 // point, and should be - it is waiting for exactly the approval this walk is
 // about to make.
 func (dag *Dag) walkToTip(start *Node, alpha float64) *Node {
+	ts := tipSelector()
+	if ts == nil {
+		return nil
+	}
+	return dag.walkToTipWith(ts, &walker{}, start, alpha)
+}
+
+func (dag *Dag) walkToTipWith(ts tipReader, w *walker, start *Node, alpha float64) *Node {
 	particle := start
 	for steps := 0; steps < walkStepBudget; steps++ {
 		if particle == nil {
 			return nil
 		}
-		selectable, potential, next, nextPotential := tipCache().walkFrom(particle)
+		selectable, potential, next, nextPotential := ts.walkFromInto(particle, w.next[:0], w.pot[:0])
+		w.next, w.pot = next, nextPotential
 		if selectable {
 			stats.WalkSteps.Observe(float64(steps))
 			return particle
@@ -238,7 +300,8 @@ func (dag *Dag) walkToTip(start *Node, alpha float64) *Node {
 			// approve it.
 			return nil
 		}
-		step := weightedChoice(next, transitionWeights(potential, nextPotential, alpha))
+		w.w = transitionWeightsInto(potential, nextPotential, alpha, w.w[:0])
+		step := weightedChoice(next, w.w)
 		if step == nil {
 			stats.WalksAbandoned.WithLabelValues("no_step").Inc()
 			return nil
@@ -294,18 +357,25 @@ func walkDepth() int {
 // shallower than W, and the particle stops at its floor - which is the right
 // place when there is nothing older still open.
 func (dag *Dag) walkStart(depth int) *Node {
-	tips := tipCache().getTips()
-	if len(tips) == 0 {
+	ts := tipSelector()
+	if ts == nil {
 		return nil
 	}
-	particle := tips[dagRand.Intn(len(tips))]
+	return dag.walkStartFrom(ts, depth)
+}
+
+func (dag *Dag) walkStartFrom(ts tipReader, depth int) *Node {
+	particle := ts.randomTip()
+	if particle == nil {
+		return nil
+	}
 	thrown := 0
 	for ; thrown < depth; thrown++ {
-		back := tipCache().walkBack(particle)
-		if len(back) == 0 {
+		back := ts.stepBack(particle)
+		if back == nil {
 			break
 		}
-		particle = back[dagRand.Intn(len(back))]
+		particle = back
 	}
 	stats.WalkThrowDepth.Observe(float64(thrown))
 	return particle
@@ -319,19 +389,27 @@ func (dag *Dag) walkStart(depth int) *Node {
 // is then lost while every peer that already saw it keeps the site - so the
 // fallbacks below matter.
 func (dag *Dag) selectTips(alpha float64) []*Node {
+	ts := tipSelector()
+	if ts == nil {
+		logger.Errorf("[tipselect] The configured confirmation rule offers no tip set, so nothing can be approved")
+		return nil
+	}
 	want := approvalsWanted()
 	depth := walkDepth()
 	chosen := make([]*Node, 0, want)
 	taken := make(map[uuid.UUID]struct{}, want)
+	// One set of buffers for every walk this selection makes, which is where
+	// the per-step allocations went.
+	w := &walker{}
 
 	for len(chosen) < want {
 		var pick *Node
 		for attempt := 0; attempt < walkCollisionBudget; attempt++ {
-			start := dag.walkStart(depth)
+			start := dag.walkStartFrom(ts, depth)
 			if start == nil {
 				break
 			}
-			cand := dag.walkToTip(start, alpha)
+			cand := dag.walkToTipWith(ts, w, start, alpha)
 			if cand == nil {
 				continue
 			}
@@ -345,7 +423,7 @@ func (dag *Dag) selectTips(alpha float64) []*Node {
 			// Approving one site twice is one approval, not two, so take some
 			// other tip instead. Fewer approvals than asked for is valid, so
 			// this is a last resort rather than an error.
-			pick = dag.anyTipExcept(taken)
+			pick = ts.tipExcept(taken)
 			if pick != nil {
 				stats.SelectionFallbacks.Inc()
 			}
@@ -376,45 +454,27 @@ func (dag *Dag) selectTips(alpha float64) []*Node {
 // site naming an approval no peer can resolve, which stays detached forever and
 // is re-requested every second. Returning nothing makes AddTxDag refuse the
 // transaction, which is recoverable; the other is not.
+// The partial Fisher-Yates that used to be here has moved into the rule, which
+// is the only place that can shuffle its own tip set without copying it first.
 func (dag *Dag) uniformTips() []*Node {
-	tips := tipCache().getTips()
-	if len(tips) == 0 {
+	ts := tipSelector()
+	if ts == nil {
 		return nil
 	}
-	want := approvalsWanted()
-	if want > len(tips) {
-		want = len(tips)
-	}
-	// Partial Fisher-Yates over a copy: distinct picks without rejection
-	// sampling, which matters when the tip set is barely larger than want.
-	pool := append([]*Node(nil), tips...)
-	out := make([]*Node, 0, want)
-	for i := 0; i < want; i++ {
-		j := i + dagRand.Intn(len(pool)-i)
-		pool[i], pool[j] = pool[j], pool[i]
-		out = append(out, pool[i])
+	out := ts.sampleTips(approvalsWanted(), nil)
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
 
 // anyTipExcept - a tip that has not already been taken, if the graph has one.
 func (dag *Dag) anyTipExcept(taken map[uuid.UUID]struct{}) *Node {
-	tips := tipCache().getTips()
-	if len(tips) == 0 {
+	ts := tipSelector()
+	if ts == nil {
 		return nil
 	}
-	start := dagRand.Intn(len(tips))
-	for i := 0; i < len(tips); i++ {
-		t := tips[(start+i)%len(tips)]
-		if t == nil {
-			continue
-		}
-		if _, dup := taken[t.id.id]; dup {
-			continue
-		}
-		return t
-	}
-	return nil
+	return ts.tipExcept(taken)
 }
 
 // logTipSelection - say at startup what selection is actually doing, including

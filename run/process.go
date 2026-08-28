@@ -56,6 +56,10 @@ func ConfUp() {
 	cPross.
 		AddProcessor(&ProcessActivation{}).
 		AddProcessor(&ProcessPeerstorePurge{}).
-		AddProcessor(&ProcessLogInit{})
+		AddProcessor(&ProcessLogInit{}).
+		// After logging, so that the settings it chose end up in the log file
+		// rather than only on a terminal. Before anything allocates the graph,
+		// which is the heap the settings exist for.
+		AddProcessor(&ProcessRuntimeTuning{})
 	cPross.Process(GearUpConfig())
 }

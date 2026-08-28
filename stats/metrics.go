@@ -3,6 +3,7 @@ package stats
 import (
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -125,6 +126,119 @@ var (
 	ConfirmTips    = newGauge("confirm_tips", "Sites counting towards the confirmation denominator.")
 	ConfirmPending = newGauge("confirm_pending", "Confirmed sites waiting for a commit transaction.")
 	PinHeight      = newGauge("pin_height", "Number of the newest commit transaction.")
+)
+
+/*
+Queue depth.
+
+Ingress accepted 3,087 transactions a second while the graph inserted about
+2,620 sites a second over the same period, and nothing measured the queue
+between them. Those two numbers only reconcile one of two ways: either the
+queue absorbed the difference and is on its way to its ceiling, or the producer
+was already being held and the ingress figure is the honest one. Without depth
+and a wait counter there is no way to tell, and "the node sustains 3,087/s" is
+a claim about a buffer rather than about the node.
+
+Read at scrape time from the queue's own atomics rather than sampled by a
+background goroutine: the values are atomic loads, so a collector function is
+both cheaper and fresher than a ticker, and nothing is added to the enqueue
+path to support it.
+*/
+
+// QueueStats - what the metrics layer needs from a queue.
+//
+// An interface rather than the queue type itself because stats already imports
+// the queue package, and having the queue package import this one to report its
+// own numbers would be a cycle.
+type QueueStats interface {
+	Len() int64
+	Capacity() int64
+	EnqueueBlocked() uint64
+	EnqueueWaitSeconds() float64
+}
+
+// registeredQueues - name to queue. Indirection through a map rather than
+// closing over the queue directly, because a queue is rebuilt when the
+// subscriber restarts and a collector registered against the old one would
+// quietly report a queue nothing is using any more.
+var registeredQueues struct {
+	mu sync.Mutex
+	m  map[string]QueueStats
+}
+
+// RegisterQueue - publish one queue's depth, ceiling and backpressure under the
+// given name. Registering the same name again replaces the queue being read,
+// which is what a restarted subscriber needs.
+func RegisterQueue(name string, q QueueStats) {
+	if q == nil {
+		return
+	}
+	registeredQueues.mu.Lock()
+	defer registeredQueues.mu.Unlock()
+	if registeredQueues.m == nil {
+		registeredQueues.m = make(map[string]QueueStats)
+	}
+	_, seen := registeredQueues.m[name]
+	registeredQueues.m[name] = q
+	if seen {
+		return
+	}
+	labels := prometheus.Labels{"queue": name}
+	read := func(f func(QueueStats) float64) func() float64 {
+		return func() float64 {
+			registeredQueues.mu.Lock()
+			cur, ok := registeredQueues.m[name]
+			registeredQueues.mu.Unlock()
+			if !ok {
+				return 0
+			}
+			return f(cur)
+		}
+	}
+	registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace: "grape", Name: "queue_depth", ConstLabels: labels,
+		Help: "Items waiting in the queue.",
+	}, read(func(q QueueStats) float64 { return float64(q.Len()) })))
+
+	registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace: "grape", Name: "queue_capacity", ConstLabels: labels,
+		Help: "Items the queue holds before an enqueue has to wait. Zero means no ceiling.",
+	}, read(func(q QueueStats) float64 { return float64(q.Capacity()) })))
+
+	// Blocked, not dropped: this queue links the item before it waits, so a
+	// full queue holds the producer rather than losing the transaction. A
+	// non-zero rate here is backpressure reaching ingress, and it is the point
+	// at which an accepted-transaction rate stops describing the node and
+	// starts describing the queue's drain rate.
+	registry.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Namespace: "grape", Name: "queue_enqueue_blocked_total", ConstLabels: labels,
+		Help: "Enqueues that found the queue at its ceiling and waited. Nothing is dropped; the producer is held.",
+	}, read(func(q QueueStats) float64 { return float64(q.EnqueueBlocked()) })))
+
+	registry.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Namespace: "grape", Name: "queue_enqueue_wait_seconds_total", ConstLabels: labels,
+		Help: "Total time producers have spent waiting for room in the queue.",
+	}, read(func(q QueueStats) float64 { return q.EnqueueWaitSeconds() })))
+}
+
+// ---------------------------------------------------------- verifier pipeline
+
+var (
+	// SubVerify - checking one gossip record's transaction signature. The
+	// ed25519 verify is the whole of it, and it was a quarter of the node's CPU
+	// on one goroutine before it was fanned out.
+	SubVerify = newHistogram("sub_verify_seconds", "Time to unmarshal and verify one received transaction.")
+	// SubVerifyRejected - records refused before they could become a site, by
+	// reason. The signature reason is the one that matters: it is the count of
+	// transactions an untrusted network offered that did not check out.
+	SubVerifyRejected = newCounterVec("sub_verify_rejected_total", "Received records refused before reaching the insert queue.", "reason")
+	// SubVerifyInFlight - records between the reader and the insert queue. The
+	// concurrency bound made visible; it should sit at the ceiling under load
+	// and near zero otherwise.
+	SubVerifyInFlight = newGauge("sub_verify_in_flight", "Received records being verified or waiting to be built into sites.")
+	// SubVerifyWorkers - the bound itself, so a reading of in-flight can be
+	// interpreted without knowing how the node was started.
+	SubVerifyWorkers = newGauge("sub_verify_workers", "Goroutines checking signatures in parallel.")
 )
 
 func newHistogram(name, help string) prometheus.Histogram {

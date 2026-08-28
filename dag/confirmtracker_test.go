@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 	"github.com/google/uuid"
 )
 
@@ -63,6 +64,51 @@ func oracleConfirmed(nodes []*Node, share uint16) map[uuid.UUID]bool {
 		}
 	}
 	return out
+}
+
+// assertTipIndexIsConsistent - the tip ring has to hold exactly the sites the
+// scan it replaced would have returned, and its index has to point at where
+// they actually sit.
+//
+// This is the whole safety argument for indexing the tip set instead of scanning
+// for it. The predicate below is the scan, verbatim: tracked, a site behind it,
+// not detached, nothing approves it. If the two ever disagree, selection is
+// either offering a site that may not be approved or hiding one that may - and
+// which sites get approved is which sites confirm.
+func assertTipIndexIsConsistent(t *testing.T, tr *ConfirmTracker, when string) {
+	t.Helper()
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	want := map[uuid.UUID]bool{}
+	for id, track := range tr.sites {
+		if track.node == nil || track.detached || track.approvers != 0 {
+			continue
+		}
+		want[id] = true
+	}
+	if len(tr.tipRing) != len(want) {
+		t.Fatalf("%s: the tip ring holds %d sites, the active region says %d are selectable",
+			when, len(tr.tipRing), len(want))
+	}
+	if len(tr.tipAt) != len(tr.tipRing) {
+		t.Fatalf("%s: the tip index holds %d entries for a ring of %d",
+			when, len(tr.tipAt), len(tr.tipRing))
+	}
+	for i, track := range tr.tipRing {
+		if track == nil || track.node == nil {
+			t.Fatalf("%s: the tip ring holds nothing at %d", when, i)
+		}
+		id := track.node.id.id
+		if !want[id] {
+			t.Fatalf("%s: the tip ring offers %s, which is not selectable", when, id.String())
+		}
+		if at, ok := tr.tipAt[id]; !ok || at != i {
+			t.Fatalf("%s: the tip index puts %s at %d, the ring has it at %d", when, id.String(), at, i)
+		}
+		if held, ok := tr.sites[id]; !ok || held != track {
+			t.Fatalf("%s: the tip ring holds a site the active region does not: %s", when, id.String())
+		}
+	}
 }
 
 func tipsOf(nodes []*Node) []*Node {
@@ -138,6 +184,29 @@ func TestTrackerAgreesWithTheDefinition(t *testing.T) {
 					}
 				}
 				tr.mu.Unlock()
+
+				assertTipIndexIsConsistent(t, tr, fmt.Sprintf("step %d", step))
+
+				// The tip set is the denominator, so it is as much a part of the
+				// definition as the coverage count is: a tip is a site nothing
+				// approves. Checked against the graph rather than against the
+				// tracker's own bookkeeping, because a tracker that agrees with
+				// itself proves nothing.
+				gotTips := map[uuid.UUID]bool{}
+				for _, n := range tr.getTips() {
+					gotTips[n.id.id] = true
+				}
+				wantTips := tipsOf(nodes)
+				if len(gotTips) != len(wantTips) {
+					t.Fatalf("step %d: the tracker offers %d tips, the graph has %d",
+						step, len(gotTips), len(wantTips))
+				}
+				for _, n := range wantTips {
+					if !gotTips[n.id.id] {
+						t.Fatalf("step %d: %s is a tip nothing approves and the tracker does not offer it",
+							step, n.id.id.String())
+					}
+				}
 
 				// soundness: everything handed over is genuinely confirmed
 				for _, got := range tr.pop() {
@@ -494,6 +563,428 @@ func TestShareIsTheFractionOfTipsThatConfirm(t *testing.T) {
 	if want := 0.5; share < want-1e-9 || share > want+1e-9 {
 		t.Fatalf("share of a = %v, want %v (one of two tips confirms it)", share, want)
 	}
+}
+
+// Every change to what may be approved has to move the tip index with it. The
+// index is read by selection instead of the active region being scanned, so an
+// index that drifts is selection offering the wrong sites - which is the tip
+// definition being wrong again, one layer down.
+func TestTheTipSetTracksEveryChangeToWhatIsSelectable(t *testing.T) {
+	tr := newConfirmTracker(0, 1000)
+
+	genesis := tnode(0)
+	tr.add(genesis)
+	assertTipIndexIsConsistent(t, tr, "one site")
+	if got := len(tr.getTips()); got != 1 {
+		t.Fatalf("a lone site is the only tip, got %d", got)
+	}
+
+	// A first approval takes a site out of the tip set, and a second must not
+	// take anything else out with it.
+	a, b := tnode(1), tnode(2)
+	tlink(a, genesis)
+	tlink(b, genesis)
+	tr.add(a)
+	assertTipIndexIsConsistent(t, tr, "genesis approved once")
+	tr.add(b)
+	assertTipIndexIsConsistent(t, tr, "genesis approved twice")
+	for _, n := range tr.getTips() {
+		if n.id.id == genesis.id.id {
+			t.Fatalf("an approved site is still offered as a tip")
+		}
+	}
+
+	// A detached site is not selectable, and becomes so the moment it relinks.
+	orphan := tnode(3)
+	orphan.missingTargets = map[string]bool{uuid.New().String(): true}
+	tr.add(orphan)
+	assertTipIndexIsConsistent(t, tr, "detached site tracked")
+	for _, n := range tr.getTips() {
+		if n.id.id == orphan.id.id {
+			t.Fatalf("a detached site was offered as a tip")
+		}
+	}
+	orphan.missingTargets = nil
+	tlink(orphan, a)
+	tr.relink(orphan)
+	assertTipIndexIsConsistent(t, tr, "detached site relinked")
+	found := false
+	for _, n := range tr.getTips() {
+		if n.id.id == orphan.id.id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a relinked site is a site nothing approves, so it has to be selectable")
+	}
+
+	// A site harvested out of band leaves the region, and the tip set with it.
+	tr.markHarvested(b.id.id)
+	assertTipIndexIsConsistent(t, tr, "site harvested")
+	for _, n := range tr.getTips() {
+		if n.id.id == b.id.id {
+			t.Fatalf("a harvested site is still offered as a tip")
+		}
+	}
+}
+
+// An expired tip is the one case where a site can be confirmed while it is still
+// selectable: it is out of the denominator, so nothing stops its own coverage
+// reaching the threshold. It has to leave the tip set when it does, or selection
+// keeps offering a site that has been settled.
+func TestAConfirmedExpiredTipLeavesTheTipSet(t *testing.T) {
+	tr := newConfirmTracker(30*time.Millisecond, 1000)
+	genesis := tnode(0)
+	tr.add(genesis)
+
+	abandoned := tnode(1)
+	tlink(abandoned, genesis)
+	tr.add(abandoned)
+
+	prev := genesis
+	for i := 2; i <= 5; i++ {
+		n := tnode(i)
+		tlink(n, prev)
+		tr.add(n)
+		prev = n
+	}
+	time.Sleep(80 * time.Millisecond)
+	nudge := tnode(6)
+	tlink(nudge, prev)
+	tr.add(nudge)
+	if tr.holdsSlot(abandoned.id.id) {
+		t.Fatalf("the abandoned tip should have left the denominator")
+	}
+	assertTipIndexIsConsistent(t, tr, "tip expired")
+
+	// Now approve it, and merge every branch so the whole live tip set confirms
+	// it. It goes from expired-and-selectable to confirmed.
+	x := tnode(7)
+	tlink(x, abandoned)
+	tr.add(x)
+	m := tnode(8)
+	tlink(m, x)
+	tlink(m, nudge)
+	tr.add(m)
+	m2 := tnode(9)
+	tlink(m2, m)
+	tr.add(m2)
+	assertTipIndexIsConsistent(t, tr, "expired tip confirmed")
+
+	settled := map[uuid.UUID]bool{}
+	for _, n := range tr.pop() {
+		settled[n.id.id] = true
+	}
+	if !settled[abandoned.id.id] {
+		t.Fatalf("the abandoned site was never confirmed after being approved")
+	}
+	for _, n := range tr.getTips() {
+		if n.id.id == abandoned.id.id {
+			t.Fatalf("a confirmed site is still offered as an approval target")
+		}
+	}
+}
+
+// The harvest record is bounded by handing the guarantee to the slice archive,
+// not by forgetting: an id is only dropped once the archive holds it, and the
+// tracker then consults both. Getting this wrong pays a processor twice.
+func TestASettledSiteStaysRefusedAfterTheHarvestRecordIsPruned(t *testing.T) {
+	prevArchive := sliceArchive
+	sliceArchive = newRamArchive()
+	t.Cleanup(func() { sliceArchive = prevArchive })
+
+	tr := newConfirmTracker(0, 1000)
+
+	genesis := tnode(0)
+	tr.add(genesis)
+	a, b := tnode(1), tnode(2)
+	tlink(a, genesis)
+	tlink(b, genesis)
+	tr.add(a)
+	tr.add(b)
+	harvested := tr.pop()
+	if len(harvested) == 0 {
+		t.Fatalf("nothing was confirmed, so there is no harvest record to prune")
+	}
+	settled := harvested[0]
+
+	// The commit transaction is applied: the site is archived, and only then is
+	// the tracker's own record redundant.
+	sliceArchive.Archive(1, []*pb.Node{{Id: &pb.Node_NodeId{Id: settled.id.id[:]}}})
+	// The prune is amortised against the record's own growth, so on a real node
+	// it fires after a few thousand settled sites. Pull the threshold down to
+	// the next settle rather than driving thousands of them through.
+	tr.mu.Lock()
+	tr.harvestPruneAt = 1
+	tr.mu.Unlock()
+	tr.markHarvested(settled.id.id) // any settle path triggers the prune
+
+	tr.mu.Lock()
+	_, stillHeld := tr.harvested[settled.id.id]
+	pruned := tr.harvestPruned
+	tr.mu.Unlock()
+	if !pruned || stillHeld {
+		t.Fatalf("the archived id was not pruned out of the harvest record (held=%v pruned=%v)",
+			stillHeld, pruned)
+	}
+
+	// And the guarantee still holds: a late arrival naming it must not get it
+	// tracked, confirmed, or paid a second time.
+	tr.add(settled)
+	if tr.isTip(settled.id.id) {
+		t.Fatalf("a settled site came back as a tip once its harvest record had been pruned")
+	}
+	c := tnode(3)
+	tlink(c, a)
+	tlink(c, b)
+	tr.add(c)
+	for _, n := range tr.pop() {
+		if n.id.id == settled.id.id {
+			t.Fatalf("a settled site was confirmed a second time after its harvest record was pruned")
+		}
+	}
+}
+
+// Nothing is pruned while there is no archive to prune into, because then the
+// map is the only record there is.
+func TestTheHarvestRecordIsKeptWhenThereIsNoArchive(t *testing.T) {
+	prevArchive := sliceArchive
+	sliceArchive = nil
+	t.Cleanup(func() { sliceArchive = prevArchive })
+
+	tr := newConfirmTracker(0, 1000)
+	tr.harvestPruneAt = 1
+	id := uuid.New()
+	tr.markHarvested(id)
+
+	tr.mu.Lock()
+	_, held := tr.harvested[id]
+	pruned := tr.harvestPruned
+	tr.mu.Unlock()
+	if !held || pruned {
+		t.Fatalf("the harvest record was dropped with no archive holding it (held=%v pruned=%v)", held, pruned)
+	}
+}
+
+// ---------------------------------------------------------------- benchmarks
+
+/*
+The frontier these benchmarks run against is built by concurrent arrival, and it
+has to be.
+
+A graph grown one site at a time cannot have more than one tip. Each new site is
+the only tip there is, so the next site has nothing else to approve, approving it
+retires it, and the tip set never leaves one - a chain, not a DAG. Every number
+measured on such a graph is flat in the size of the graph and says nothing about
+work that scales with the frontier: the tip set has one member, so scanning the
+active region for it costs nothing and choosing between candidates is not a
+choice. That is exactly the shape the first version of this measurement had, and
+it reported the same 2.8us at a hundred sites and at five thousand.
+
+A real network publishes several sites against the same view of the graph,
+because a site published by one node is not visible to the others until it has
+propagated. That is what widens the tip set, and it is the arrival pattern
+TestConfirmationConvergesUnderConcurrentArrival uses for the same reason.
+*/
+
+// growConcurrentFrontier - a graph grown by real tip selection, fanout sites at
+// a time against one view, drained as it goes. Returns the dag and its tracker.
+func growConcurrentFrontier(tb testing.TB, sites, fanout int) (*Dag, *ConfirmTracker) {
+	tb.Helper()
+	prevApprove, prevDepth := dagConfig.Approvetx, dagConfig.Walkdepth
+	dagConfig.Approvetx, dagConfig.Walkdepth = 2, 10
+	tr := newConfirmTracker(0, DAG_CONFIRM_SHARE)
+	prev := confirmationCounter
+	confirmationCounter = tr
+	tb.Cleanup(func() {
+		confirmationCounter = prev
+		dagConfig.Approvetx, dagConfig.Walkdepth = prevApprove, prevDepth
+	})
+
+	genesis := tnode(0)
+	d := &Dag{genesis: genesis}
+	tr.add(genesis)
+	for id := 1; id <= sites; {
+		batch := make([][]*Node, 0, fanout)
+		for k := 0; k < fanout && id+k <= sites; k++ {
+			targets := d.selectTips(0.5)
+			if len(targets) == 0 {
+				tb.Fatalf("selection offered nothing to approve after %d sites", id)
+			}
+			batch = append(batch, targets)
+		}
+		for _, targets := range batch {
+			n := tnode(id)
+			id++
+			for _, target := range targets {
+				tlink(n, target)
+			}
+			tr.add(n)
+		}
+		// Drained, so the timed loop is not paying to empty a backlog the
+		// fixture left behind. An undrained queue made an earlier version of
+		// this look as if the insert path grew with the size of the graph.
+		tr.pop()
+	}
+	return d, tr
+}
+
+func (c frontierCase) name() string {
+	return fmt.Sprintf("sites=%d/fanout=%d", c.sites, c.fanout)
+}
+
+// reportFrontier - the frontier and tip counts the timings were taken against,
+// and a floor under them. A fixture that quietly collapses to a chain has to
+// fail rather than report a fast, meaningless number.
+func reportFrontier(b *testing.B, tr *ConfirmTracker, fanout int) {
+	active, tips, _ := tr.stats()
+	selectable := len(tr.getTips())
+	b.ReportMetric(float64(active), "frontier")
+	b.ReportMetric(float64(selectable), "tips")
+	floor := fanout / 2
+	if floor < 2 {
+		floor = 2
+	}
+	if selectable < floor {
+		b.Fatalf("the fixture built %d tips at fanout %d (frontier %d, denominator %d): that is a chain, not a frontier, and nothing measured on it means anything",
+			selectable, fanout, active, tips)
+	}
+}
+
+// BenchmarkTipSelectionOnAFrontier - what runs once per inserted site, on a tip
+// set wide enough for the cost of reading it to show.
+func BenchmarkTipSelectionOnAFrontier(b *testing.B) {
+	for _, c := range frontierCases {
+		b.Run(c.name(), func(b *testing.B) {
+			d, tr := growConcurrentFrontier(b, c.sites, c.fanout)
+			reportFrontier(b, tr, c.fanout)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if got := d.selectTips(0.5); len(got) == 0 {
+					b.Fatal("selection offered nothing to approve")
+				}
+			}
+			b.StopTimer()
+			reportFrontier(b, tr, c.fanout)
+		})
+	}
+}
+
+type frontierCase struct {
+	sites  int
+	fanout int
+}
+
+// frontierCases - the graph sizes and arrival concurrencies the frontier
+// benchmarks run against. Concurrency is the dimension that widens the tip set;
+// the size is there to show that neither the frontier nor the timings track it.
+var frontierCases = []frontierCase{
+	{100, 8}, {1000, 8}, {5000, 8},
+	{1000, 64}, {5000, 64},
+}
+
+// BenchmarkGraphGrowthOnAFrontier - selection and confirmation together, which
+// is the pair that runs inside the insert path's critical section.
+//
+// One operation is one round of fanout arrivals, not one site, and that is not a
+// convenience: inserting one site per operation is sequential arrival, and
+// sequential arrival collapses the tip set to one member within a few hundred
+// sites however wide the fixture built it. The benchmark would then be
+// measuring a chain again, a few thousand operations in, and reporting a number
+// that got faster as the graph it was measuring stopped existing. ns/site is
+// reported alongside so the per-insert cost is still readable.
+func BenchmarkGraphGrowthOnAFrontier(b *testing.B) {
+	for _, c := range frontierCases {
+		b.Run(c.name(), func(b *testing.B) {
+			d, tr := growConcurrentFrontier(b, c.sites, c.fanout)
+			reportFrontier(b, tr, c.fanout)
+			id := c.sites
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				batch := make([][]*Node, 0, c.fanout)
+				for k := 0; k < c.fanout; k++ {
+					batch = append(batch, d.selectTips(0.5))
+				}
+				for _, targets := range batch {
+					id++
+					n := tnode(id)
+					for _, target := range targets {
+						tlink(n, target)
+					}
+					tr.add(n)
+				}
+				tr.pop()
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*c.fanout), "ns/site")
+			reportFrontier(b, tr, c.fanout)
+		})
+	}
+}
+
+// BenchmarkConfirmTrackerGetTips - the whole-set read. Off the per-insert path
+// now, but it is what Dag.GetTips and the legacy fallback still use, and it is
+// the measurement that says whether the read scales with the tip set or with
+// the active region.
+func BenchmarkConfirmTrackerGetTips(b *testing.B) {
+	for _, c := range frontierCases {
+		b.Run(c.name(), func(b *testing.B) {
+			_, tr := growConcurrentFrontier(b, c.sites, c.fanout)
+			reportFrontier(b, tr, c.fanout)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if len(tr.getTips()) == 0 {
+					b.Fatal("no tips")
+				}
+			}
+			b.StopTimer()
+			reportFrontier(b, tr, c.fanout)
+		})
+	}
+}
+
+// BenchmarkConfirmTrackerSettlesACommit - settling one commit transaction's
+// worth of sites, which is what slicing drives once per commit. Every site
+// settled used to rescan and memmove the confirmed queue.
+func BenchmarkConfirmTrackerSettlesACommit(b *testing.B) {
+	for _, sites := range []int{1000, 5000} {
+		b.Run(fmt.Sprintf("sites=%d", sites), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				tr, ids := trackerHoldingConfirmed(b, sites)
+				b.StartTimer()
+				for _, id := range ids {
+					tr.markHarvested(id)
+				}
+			}
+		})
+	}
+}
+
+// trackerHoldingConfirmed - a tracker with n sites confirmed and not yet
+// claimed. Grown as a chain on purpose: the queue is what is being measured, and
+// a chain fills it with one insert per confirmed site.
+func trackerHoldingConfirmed(tb testing.TB, n int) (*ConfirmTracker, []uuid.UUID) {
+	tb.Helper()
+	tr := newConfirmTracker(0, 1000)
+	genesis := tnode(0)
+	tr.add(genesis)
+	prev := genesis
+	for i := 1; ; i++ {
+		x := tnode(i)
+		tlink(x, prev)
+		tr.add(x)
+		prev = x
+		if _, _, pending := tr.stats(); pending >= n {
+			break
+		}
+	}
+	held := tr.peek()
+	ids := make([]uuid.UUID, 0, len(held))
+	for _, s := range held {
+		ids = append(ids, s.id.id)
+	}
+	return tr, ids
 }
 
 func TestBitsetSetClearCount(t *testing.T) {
