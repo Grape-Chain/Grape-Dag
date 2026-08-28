@@ -84,6 +84,20 @@ type lockedRand struct {
 	r  *rand.Rand
 }
 
+// newSeededRand - a selection source with a stated seed.
+//
+// Selection's own source is seeded from crypto/rand and has to stay that way:
+// a constant seed means every node on the network makes the same choices from
+// the same graph and a restart repeats them, which is what this code did once
+// already. But a test that measures a distribution is sampling, and a sampling
+// test on an unseeded source fails at whatever rate its margin allows, forever -
+// after which somebody widens the margin until it never fails and never tests
+// anything. The seam is here, so a test can state its seed and get the same run
+// every time, rather than the assertion being loosened until it holds.
+func newSeededRand(seed int64) *lockedRand {
+	return &lockedRand{r: rand.New(rand.NewSource(seed))}
+}
+
 func newLockedRand() *lockedRand {
 	var seed [8]byte
 	if _, err := crand.Read(seed[:]); err != nil {

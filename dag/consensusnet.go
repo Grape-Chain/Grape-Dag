@@ -232,9 +232,28 @@ func (d *consensusDriver) buildPin(epoch int64, ids []uuid.UUID) (*pb.TxPin, err
 	vm.Checkpoint()
 	cand.vmMarked = true
 
+	// The sites are serialised before any pin lock is taken, under the graph's
+	// own read lock. ToPbNode reads each site's approval targets, its
+	// settled-target ids, its height and its processor claim, and inserts append
+	// to those while slicing rewrites them - so doing it inside the pin lock, as
+	// this did, raced every insert on the node and could put a torn view of the
+	// graph into a commit transaction that then gets signed and shipped.
+	//
+	// It cannot simply take the graph lock inside the pin lock instead: the
+	// documented order is dag.mux first, and reversing it here is the deadlock
+	// that was already fixed once. So the graph read happens first and finishes,
+	// and the builder is handed finished messages.
+	//
+	// LockBuild is taken around the whole thing rather than just the pin lock,
+	// because the smart-contract stage calls vm.CaptureStateStoreDiffs, which
+	// panics if capture is already on - and two builders is reachable, since
+	// commit transactions are formed both here and from genPinTx.
+	_pins_.LockBuild()
+	prepared := prepareSites(nodes)
 	_pins_.LockPin()
-	pin, err := _pins_.unsafe_buildPin(nodes, cand.smcTxs)
+	pin, err := _pins_.unsafe_buildPinPrepared(prepared, cand.smcTxs)
 	_pins_.UnlockPin()
+	_pins_.UnlockBuild()
 	if err != nil {
 		cand.undo()
 		return nil, err

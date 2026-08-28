@@ -783,20 +783,35 @@ func waitForConnection() bool {
 // @TODO: new tip tracking algorithm for calculating confirmed txs
 //
 //	a new pin tx is added to _pins_
+//
+// genPinTx - form a commit transaction from whatever is confirmed, then persist,
+// settle and announce it.
+//
+// The error from add is checked, and that is the whole of the fix here. It used
+// to be discarded, and the next two lines take "the last pin" and commit it - so
+// when a build failed, GetLastPin returned somebody else's pin, one that had
+// already been applied. pinCommitted then wrote it to the store a second time
+// and sliced its sites out of a graph they had already left, inflating the
+// store head's pin count and the commit metrics, and announcing a pin the
+// network had already seen. A failed build has to be a build that did nothing.
 func genPinTx() {
 	sites := _dag_.GetConfirmedSites()
 	smcTxs := smc.GetAllUncofirmed(int(config.GetConfig().Tx.Maxfuellimit))
 	logger.Debugf("* [PIN] sites: %d, smc: %d", len(sites), len(smcTxs))
-	if len(sites) > 0 || len(smcTxs) > 0 {
-		logger.Debugf("* [PIN] Num confirmed sites %d. ADD to PinTx", len(sites))
-		_pins_.add(sites, smcTxs)
-		// Persist and settle the pin just formed, exactly as a receiving node
-		// does when it applies the same pin.
-		if latest := _pins_.GetLastPin(); latest != nil {
-			pinCommitted(latest)
-		}
-		announceNewPin()
+	if len(sites) == 0 && len(smcTxs) == 0 {
+		return
 	}
+	logger.Debugf("* [PIN] Num confirmed sites %d. ADD to PinTx", len(sites))
+	if err := _pins_.add(sites, smcTxs); err != nil {
+		logger.Errorf("[PIN] Could not form a commit transaction over %d site(s): %s", len(sites), err.Error())
+		return
+	}
+	// Persist and settle the pin just formed, exactly as a receiving node does
+	// when it applies the same pin.
+	if latest := _pins_.GetLastPin(); latest != nil {
+		pinCommitted(latest)
+	}
+	announceNewPin()
 }
 
 // depth_monitor monitors the depth of the dag and calls the notifier

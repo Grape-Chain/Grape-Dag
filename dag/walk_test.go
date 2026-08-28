@@ -19,6 +19,29 @@ func withTracker(t *testing.T, tr confirmations) {
 	t.Cleanup(func() { confirmationCounter = prev })
 }
 
+// withSeededSelection - make every selection decision in one test reproducible.
+//
+// The tests that measure a distribution - how often the walk takes the lightly
+// confirmed branch, how evenly the tip set is sampled - are sampling, and their
+// assertions are about a rate. Left on the production source, seeded from
+// crypto/rand, each of them fails at whatever rate its margin allows and passes
+// the rest of the time, which is indistinguishable from a real regression that
+// happens to be intermittent. Seeded, the run is the same every time: the
+// assertion either holds for these seeds or it does not, and a change that
+// weakens the bias fails immediately rather than eventually.
+//
+// Several seeds per test, because one seed proves the property for one sample.
+func withSeededSelection(t *testing.T, seed int64) {
+	t.Helper()
+	prev := dagRand
+	dagRand = newSeededRand(seed)
+	t.Cleanup(func() { dagRand = prev })
+}
+
+// selectionSeeds - the seeds every sampling test runs over. Arbitrary, fixed,
+// and more than one.
+var selectionSeeds = []int64{1, 20260828, 777}
+
 // deepWalk - a walk from as far below the tips as the region reaches. Throwing
 // the particle with an effectively unlimited depth stops it at the region floor,
 // which is the deepest a walk can start, so this exercises the longest forward
@@ -190,6 +213,15 @@ func branchedGraph(tr *ConfirmTracker) (root, a1, a2, a3, b1, other *Node) {
 // confirms has to be more likely to be approved. alpha turns it off, which is
 // what makes the effect measurable rather than assumed.
 func TestWalkPrefersTheBranchMoreOfTheGraphConfirms(t *testing.T) {
+	for _, seed := range selectionSeeds {
+		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
+			withSeededSelection(t, seed)
+			walkPrefersTheBranchMoreOfTheGraphConfirms(t)
+		})
+	}
+}
+
+func walkPrefersTheBranchMoreOfTheGraphConfirms(t *testing.T) {
 	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 	d := &Dag{}
@@ -249,6 +281,15 @@ func TestWalkPrefersTheBranchMoreOfTheGraphConfirms(t *testing.T) {
 // uniform pick on almost every call, so a weighted selection was never actually
 // weighted.
 func TestWeightedChoiceFollowsItsWeights(t *testing.T) {
+	for _, seed := range selectionSeeds {
+		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
+			withSeededSelection(t, seed)
+			testWeightedChoiceFollowsItsWeights(t)
+		})
+	}
+}
+
+func testWeightedChoiceFollowsItsWeights(t *testing.T) {
 	a, b, c := tnode(1), tnode(2), tnode(3)
 	nodes := []*Node{a, b, c}
 	weights := []float64{1, 3, 6}
@@ -507,6 +548,11 @@ func TestDagAlgorithmNormalisesTheConfiguredValue(t *testing.T) {
 // would catch.
 func TestEverySiteCanReachTheApprovalThreshold(t *testing.T) {
 	const approveTx = 2
+	// Seeded: walkMisses and the confirmed count below are both rates over six
+	// hundred selections, and a rate measured on an unseeded source is a test
+	// that fails at whatever its margin allows and is then widened until it
+	// tests nothing.
+	withSeededSelection(t, 4242)
 	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 
@@ -651,6 +697,15 @@ func TestATipAlreadyTakenIsNotOfferedAgain(t *testing.T) {
 // fixed branch, so the sites on every other branch are never reachable from a
 // throw and only ever get approved by the uniform fallback.
 func TestThrowingAParticleBackChoosesUniformlyAmongApprovals(t *testing.T) {
+	for _, seed := range selectionSeeds {
+		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
+			withSeededSelection(t, seed)
+			testThrowingAParticleBackChoosesUniformlyAmongApprovals(t)
+		})
+	}
+}
+
+func testThrowingAParticleBackChoosesUniformlyAmongApprovals(t *testing.T) {
 	tr := newConfirmTracker(0, 1000)
 	targets := make([]*Node, 0, 3)
 	for i := 0; i < 3; i++ {
@@ -693,6 +748,15 @@ func TestThrowingAParticleBackChoosesUniformlyAmongApprovals(t *testing.T) {
 // sites every time - the uniform fallback would then hand out the same approval
 // targets for the life of the process, and every other tip would go unapproved.
 func TestSamplingTheTipSetReachesEveryTip(t *testing.T) {
+	for _, seed := range selectionSeeds {
+		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
+			withSeededSelection(t, seed)
+			testSamplingTheTipSetReachesEveryTip(t)
+		})
+	}
+}
+
+func testSamplingTheTipSetReachesEveryTip(t *testing.T) {
 	tr := newConfirmTracker(0, 1000)
 	root := tnode(0)
 	tr.add(root)
@@ -826,6 +890,15 @@ func TestWalkStopsAtPartlyApprovedSites(t *testing.T) {
 // would get an approval it should not have. The bias would be half as strong
 // with nothing failing.
 func TestBothApprovalsAreBiased(t *testing.T) {
+	for _, seed := range selectionSeeds {
+		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
+			withSeededSelection(t, seed)
+			testBothApprovalsAreBiased(t)
+		})
+	}
+}
+
+func testBothApprovalsAreBiased(t *testing.T) {
 	tr := newConfirmTracker(0, 1000)
 	withTracker(t, tr)
 	root, _, _, _, b1, _ := branchedGraph(tr)
@@ -1004,6 +1077,12 @@ func TestConfirmationConvergesUnderConcurrentArrival(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(fmt.Sprintf("fanout%d_share%d", tc.fanout, tc.share), func(t *testing.T) {
+			// Seeded, because the assertions below are about a rate over four
+			// thousand selections and an unseeded source makes them a rate that
+			// is right most of the time. The seven cases are seven different
+			// arrival patterns, so this is not one trajectory standing in for
+			// the rule; it is each pattern being the same run every time.
+			withSeededSelection(t, 1+int64(tc.fanout)*1000+int64(tc.share))
 			// tiptimeout 0: the expiry valve is a liveness safeguard for
 			// abandoned tips, and if convergence depended on it then the
 			// confirmation rule would not work - it would just be hidden.

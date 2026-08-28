@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
@@ -351,6 +352,7 @@ func (dag *Dag) stripClaim(site *Node, reason error) {
 	// once per such site would be a self-inflicted load. See
 	// TestASiteThatClaimsNothingIsNotTreatedAsALiar.
 	attributionStrips.Add(1)
+	stats.AttributionStripped.Inc()
 	dag.mux.Lock()
 	stillLive := dag.getById(site.id.id, true) != nil
 	if stillLive {

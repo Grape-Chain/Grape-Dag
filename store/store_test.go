@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -173,4 +174,89 @@ func TestNoopStoreLooksEmpty(t *testing.T) {
 	if err := s.LoadPins(func(*pb.TxPin) error { t.Fatal("NoopStore produced a pin"); return nil }); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A point read is what makes a commit transaction older than the node's memory
+// window still answerable - to a peer catching up from a height the node no
+// longer holds, and to a wallet asking about a payment settled long ago. Without
+// it, bounding the in-memory chain silently turned both into "not found".
+func TestAStoredPinCanBeReadBackByNumber(t *testing.T) {
+	s := mustOpenTemp(t)
+	for n := int64(0); n < 5; n++ {
+		if err := s.AppendPin(testPin(n, fmt.Sprintf("sign-%d", n)), 2); err != nil {
+			t.Fatalf("appending pin %d: %s", n, err)
+		}
+	}
+	for n := int64(0); n < 5; n++ {
+		got, err := s.Pin(n)
+		if err != nil {
+			t.Fatalf("reading pin %d back: %s", n, err)
+		}
+		if got.GetPinNumber() != n {
+			t.Errorf("asked for pin %d and got pin %d", n, got.GetPinNumber())
+		}
+		if want := fmt.Sprintf("sign-%d", n); string(got.GetSign()) != want {
+			t.Errorf("pin %d came back signed %q, want %q", n, got.GetSign(), want)
+		}
+	}
+}
+
+// Asking for a height the store does not hold is an ordinary question with an
+// ordinary answer, not a failure: a peer may ask for a height before this node's
+// history begins.
+func TestAskingForAPinTheStoreDoesNotHoldReportsEmpty(t *testing.T) {
+	s := mustOpenTemp(t)
+	if err := s.AppendPin(testPin(0, "genesis"), 2); err != nil {
+		t.Fatalf("appending: %s", err)
+	}
+	for _, n := range []int64{-1, 1, 99} {
+		got, err := s.Pin(n)
+		if err != ErrEmpty {
+			t.Errorf("Pin(%d) returned err=%v, want ErrEmpty", n, err)
+		}
+		if got != nil {
+			t.Errorf("Pin(%d) returned a pin as well as an error", n)
+		}
+	}
+}
+
+// The value Pebble hands back is only valid until its closer runs, and proto
+// unmarshalling can retain sub-slices of its input for bytes fields, so
+// decoding straight from it can hand back a message whose bytes are freed
+// underneath the caller.
+//
+// Be clear about what this test does and does not establish. It holds a pin
+// across seven further reads and checks it is intact, which is the shape of the
+// fault; it does not prove the copy is what keeps it intact. A mutation that
+// removes the copy and decodes from Pebble's own buffer survives this test,
+// because Pebble commonly returns memtable-backed bytes that happen to stay
+// valid. The copy is kept because Pebble's contract says the slice is only
+// valid until the closer runs, not because this test can force the failure -
+// and saying so is better than implying a guard that is only defensive is
+// checked.
+func TestAPinReadBackSurvivesLaterReads(t *testing.T) {
+	s := mustOpenTemp(t)
+	for n := int64(0); n < 8; n++ {
+		if err := s.AppendPin(testPin(n, fmt.Sprintf("sign-%d", n)), 2); err != nil {
+			t.Fatalf("appending pin %d: %s", n, err)
+		}
+	}
+	first, err := s.Pin(0)
+	if err != nil {
+		t.Fatalf("reading pin 0: %s", err)
+	}
+	for n := int64(1); n < 8; n++ {
+		if _, err := s.Pin(n); err != nil {
+			t.Fatalf("reading pin %d: %s", n, err)
+		}
+	}
+	if string(first.GetSign()) != "sign-0" {
+		t.Errorf("pin 0's signature became %q after seven further reads", first.GetSign())
+	}
+}
+
+func mustOpenTemp(t *testing.T) Store {
+	t.Helper()
+	s, _ := openTemp(t)
+	return s
 }

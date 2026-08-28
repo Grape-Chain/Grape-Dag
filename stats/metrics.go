@@ -93,6 +93,13 @@ var (
 	// GaugeSkips - size samples skipped because dag.mux was busy.
 	GaugeSkips = newCounter("gauge_samples_skipped_total", "Size gauge samples skipped to avoid waiting on the dag lock.")
 	SitesAdded = newCounter("sites_added_total", "Sites added to the live graph.")
+	// AttributionStripped - received sites whose processor claim did not check
+	// out and was removed. The site is kept, because refusing it would let a bad
+	// claim deny the network a transaction; the claim is not, because keeping it
+	// would pay the liar. A non-zero rate is either wire corruption or a peer
+	// trying to be paid for work it did not do, and the two want different
+	// responses, so it is worth a graph rather than a log line.
+	AttributionStripped = newCounter("attribution_stripped_total", "Received sites whose processor claim did not verify and was removed.")
 
 	// ---------------------------------------------------------- commit path
 

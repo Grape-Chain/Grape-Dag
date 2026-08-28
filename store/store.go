@@ -63,6 +63,17 @@ type Store interface {
 	AppendPin(pin *pb.TxPin, network int) error
 	// LoadPins - hand every stored commit transaction to fn, oldest first.
 	LoadPins(fn func(*pb.TxPin) error) error
+	// Pin - one commit transaction by number, or ErrEmpty if the store does not
+	// hold it.
+	//
+	// A point read rather than a scan, because the callers are answering a
+	// question about one pin: a peer catching up from a height the node no
+	// longer keeps in memory, and a wallet asking what happened to a
+	// transaction settled long ago. The node holds only a recent window of
+	// commit-transaction bodies in RAM - the whole chain would grow without
+	// bound - so this is what makes the older ones still answerable rather than
+	// simply missing.
+	Pin(number int64) (*pb.TxPin, error)
 	// PutBalances - record the settled balances as of a commit transaction.
 	// Only the most recent snapshot is kept: it is a starting point, not
 	// history, and the chain after it is replayed.
@@ -81,6 +92,7 @@ type NoopStore struct{}
 func (NoopStore) Head() (*Head, error)                   { return nil, ErrEmpty }
 func (NoopStore) AppendPin(_ *pb.TxPin, _ int) error     { return nil }
 func (NoopStore) LoadPins(_ func(*pb.TxPin) error) error { return nil }
+func (NoopStore) Pin(_ int64) (*pb.TxPin, error)         { return nil, ErrEmpty }
 func (NoopStore) Close() error                           { return nil }
 
 func (NoopStore) PutBalances(_ int64, _ map[string][]byte) error { return nil }

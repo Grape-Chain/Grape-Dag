@@ -138,7 +138,21 @@ type DagConfiguration struct {
 	FaucetPrivatekey string
 	FaucetPublickey  string
 	Coinbaseaccount  string
-	Versioncollision bool // Enable or disable version collision in DAG, enabling is a very expensive operation!
+	// Versioncollision - inert, and deliberately still read.
+	//
+	// It used to select a branch on the receive path for a site colliding on
+	// version. That branch could not do anything but refuse the site: it
+	// returned an error whenever the resolved node's id differed from the
+	// arriving site's, and the only way it ever assigned that node was inside a
+	// test that the two ids differ - so the condition was always true. With the
+	// setting on, a colliding site was rejected outright, its payment never
+	// moved this node's balances, and every peer kept it: a silent fork rather
+	// than a slow path. The branch is gone.
+	//
+	// The field stays so that dag.Init can see the setting in an operator's
+	// configuration and say it does nothing. Deleting it would make viper ignore
+	// the key silently, which is the one outcome worse than the warning.
+	Versioncollision bool
 	// Confirmation - which rule decides a site is confirmed: the technical
 	// paper's share-of-tips measure (anything but "legacy"), or the original
 	// fixed two-direct-approver count ("legacy"). How large the share has to be

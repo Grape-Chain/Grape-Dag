@@ -161,6 +161,36 @@ func (s *pebbleStore) LoadPins(fn func(*pb.TxPin) error) error {
 	return iter.Error()
 }
 
+// Pin - one commit transaction by number.
+//
+// ErrEmpty rather than an error for a number the store does not hold: "not
+// here" is an ordinary answer to this question. A peer can legitimately ask for
+// a height before this node's history begins, and a wallet can ask about a
+// transaction that was never settled.
+func (s *pebbleStore) Pin(number int64) (*pb.TxPin, error) {
+	raw, closer, err := s.db.Get(pinKey(number))
+	if err == pebble.ErrNotFound {
+		return nil, ErrEmpty
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading pin %d: %w", number, err)
+	}
+	defer closer.Close()
+
+	// Unmarshalled from a copy. Pebble's value is only valid until closer is
+	// called, and proto unmarshalling can retain sub-slices of its input for
+	// bytes fields - so decoding straight from it would hand the caller a
+	// message whose bytes are freed underneath it.
+	buf := make([]byte, len(raw))
+	copy(buf, raw)
+
+	pin := &pb.TxPin{}
+	if err := pin.UnmarshalBinary(buf); err != nil {
+		return nil, fmt.Errorf("decoding pin %d: %w", number, err)
+	}
+	return pin, nil
+}
+
 func (s *pebbleStore) PutBalances(pinNumber int64, balances map[string][]byte) error {
 	raw, err := proto.Marshal(&pb.Balance{Balance: balances})
 	if err != nil {
