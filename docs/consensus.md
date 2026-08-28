@@ -90,6 +90,23 @@ not consume them: `peek` reports, `take` consumes, and only a published commit
 transaction calls `take`. A round that fails leaves every site exactly where it
 was, to be reported again in the next epoch.
 
+## Bounds
+
+Three things the protocol has to bound, each of which stopped a live network
+before it did.
+
+| Bound | Value | Why |
+| ----- | ----- | --- |
+| Sites one commit transaction settles | 5,000 | A proposal travels as one gossip message carrying the whole candidate, and every validator rebuilds and checks it inside the voting window. This is the design target said as a bound: a thousand transactions a second at the five-second cadence. |
+| Sites one report names | 10,000 | A report is a message, and it is counted on every round. |
+| Commit transactions one catch-up response carries | half of `peer.msize` | The response is one message too. Over the limit it is dropped while the receiving side reads it, and the node that asked simply never hears back. |
+
+The first two are prefixes of a set ordered by site id, so every validator takes
+the same one without exchanging anything, and sites past the cut are not
+dropped — they are the next commit transaction's. The report cap is twice the
+settlement bound so that validators holding slightly different sets still
+overlap by more than the bound.
+
 ## What this does not do
 
 - **The validator set is a configuration list.** There is no stake-based
@@ -128,3 +145,30 @@ of the mistake recurs:
 Eleven further mutations cover the wiring: reporting that consumes what it
 reports, settling sites the set did not agree on, settling one twice, building
 that appends, and each of the three halves of the rollback.
+
+## What running it showed
+
+Four validators as separate processes on one four-core machine, driven by
+`txgen -mode trader`. Every defect below was found this way and by nothing else;
+the unit tests passed throughout.
+
+| What happened | Why |
+| ------------- | --- |
+| Nothing was ever settled | A validator reported what it held confirmed once, when it opened an epoch — and validators open epochs at different moments, so the first report each sent was the only one the others held. |
+| The genesis node stopped at its own first commit transaction while the others reached eleven | A node only became ready to apply a commit transaction by syncing one from a peer, because in leader mode the node that starts a chain is the only one that settles it. |
+| Killing one of four livelocked the chain through 116 view changes | A validator counted only the reports it happened to have received, so a report still in flight made it refuse a proposal that was justified. With three live validators and a quorum of three there is no slack for that. |
+| A restarted validator never rejoined | Its catch-up response was one message of megabytes, dropped while being read; nothing reports that. |
+| Catching up crashed the node | A placeholder site — an approval target seen before its transaction — was asked what kind of transaction it carried. |
+| The chain stopped settling with 87,000 sites waiting | Unbounded proposals and reports made every round cost tens of seconds. |
+
+After the fixes, at a rate the machine sustains: all four settle together to
+pin 38 with no view changes and no queue pressure; killing one leaves the other
+three settling through single-round view changes; restarting it sixteen commit
+transactions behind recovers from disk, catches up in batches, and rejoins as a
+proposer. Zero refusals, zero crashes.
+
+At a rate the machine does not sustain — four validators and the generator on
+four cores, insert queue at its ceiling, transactions arriving six minutes
+late — the backlog outgrows what a node can build per epoch and the chain falls
+behind. The bounds keep that a slowdown rather than a livelock. Closing it is
+throughput work, not consensus work.
