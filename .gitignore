@@ -54,3 +54,10 @@ logs/
 *.local.yml
 *.local.yaml
 config.local.*
+
+# Backups written by a mutation-testing run. A mutation harness copies the file
+# it is about to break so it can put it back; a run interrupted at the wrong
+# moment leaves the copy behind, and committing one would put a deliberately
+# broken source file in the tree next to the real one.
+*.mutbak
+*.go.bak
