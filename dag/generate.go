@@ -51,11 +51,9 @@ func newDag(dagConfig config.DagConfiguration) *Dag {
 
 	__dag__ := &Dag{_dag_: dag,
 		_links_:         nil,
-		prevMajor:       0,
 		prevMinor:       0,
 		txCh:            nil, // we set this when we call RunSynchronization (to be able to turn sync off)
 		stopCh:          make(chan bool, 1),
-		mux:             sync.Mutex{},
 		mapped_vertices: mapped_vertices,
 		mapped_edges:    make(map[uuid.UUID][]uuid.UUID),
 		mu_map:          sync.RWMutex{},
@@ -168,9 +166,11 @@ func GenerateWideDag(dagWidth uint8) *Dag {
 	if err != nil {
 		panic(err)
 	}
-	return &Dag{_dag_: dag,
+	// prevMajor is set after construction rather than in the literal: an
+	// atomic.Uint64 carries a noCopy marker, so copying one into a composite
+	// literal is what go vet complains about.
+	d := &Dag{_dag_: dag,
 		_links_:         links,
-		prevMajor:       prevMajor,
 		prevMinor:       prevMinor,
 		txCh:            nil, // we set this when we call RunSynchronization (to be able to turn sync off)
 		stopCh:          make(chan bool, 1),
@@ -180,6 +180,8 @@ func GenerateWideDag(dagWidth uint8) *Dag {
 		exodusWallets:   exodusWallets,
 		width:           dagWidth,
 	}
+	d.prevMajor.Store(prevMajor)
+	return d
 }
 
 func GenerateRandomDag(width uint8, height uint32) *Dag {

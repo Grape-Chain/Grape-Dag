@@ -191,13 +191,23 @@ func (n *Node) NodeToVertex() *tx.Vertex {
 	}
 }
 
+// NewDagNode - wrap a transaction in a new site.
+//
+// The major id is taken with one atomic add rather than an increment followed by
+// a read. Two goroutines call this concurrently - the publisher for a
+// transaction this node accepted, and the subscriber for one a peer announced -
+// so the two-statement version was both a data race and a way for two sites to
+// end up with the same major id.
 func NewDagNode(tx tx.Transaction, verifyRequired bool) *Node {
-	_dag_.prevMajor++
+	if _dag_ == nil {
+		logger.Errorf("[NewDagNode] No graph to add a site to yet")
+		return nil
+	}
 	n := &Node{
 		id: NodeID{
 			id:      uuid.New(),
 			address: "",
-			idMajor: _dag_.prevMajor,
+			idMajor: _dag_.prevMajor.Add(1),
 			idMinor: _dag_.prevMinor,
 		},
 		cumWeight: *atomic.NewFloat64(0),

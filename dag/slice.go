@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
-
-	"github.com/Grape-Chain/Grape-Dag/config"
 )
 
 /*
@@ -81,12 +79,11 @@ func (wc *WalletCache) add(wallet string, txId string, amount *big.Int) error {
 	// since the operation may fail and we do nothing to revert the balance
 	// to previous state
 	tmpBalance := big.NewInt(0)
-	verbose := config.GetConfig().Host.Verbose
-	if verbose > 0 {
+	if traceBalances {
 		logger.Infof("[wallet cache] Add %s to %s, current balance %s", amount.String(), wallet, loadedBalance.String())
 	}
 	tmpBalance.Add(loadedBalance, amount)
-	if verbose > 0 {
+	if traceBalances {
 		logger.Infof("[wallet cache] Result %s balance %s", wallet, tmpBalance.String())
 	}
 	if tmpBalance.Sign() == -1 {
@@ -94,7 +91,7 @@ func (wc *WalletCache) add(wallet string, txId string, amount *big.Int) error {
 	}
 	// append to cache
 	wc.cache[wallet] = append(wc.cache[wallet], newPair(txId, tmpBalance))
-	if verbose > 0 {
+	if traceBalances {
 		logger.Infof("[wallet cache] Final balance for %s is %s", wallet, wc.cache[wallet][len(wc.cache[wallet])-1].second.String())
 	}
 	return nil

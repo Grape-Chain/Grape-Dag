@@ -640,10 +640,24 @@ func handleSiteRequest(trackingId uuid.UUID, sites []string) error {
 		return fmt.Errorf("error marshaling public key: %s", err.Error())
 	}
 
+	// Under the read lock. ToPbNode reads the site's approval targets, its
+	// settled-target ids, its height and its processor claim, and every one of
+	// those is written by linkApprovals as sites arrive and rewritten by
+	// sliceSites when a commit transaction settles them. This loop ran with no
+	// dag lock at all, so answering a peer's request for missing sites raced
+	// every insert on the node. Shared rather than exclusive because it only
+	// reads, so serving a peer no longer stops tip selection either.
+	//
+	// The lock is taken after getVertices rather than around it: the lookup goes
+	// through Vertex, which takes the lookup map's own mutex, and the order
+	// everywhere else is dag.mux before that map. Wrapping only the loop keeps
+	// this path out of that ordering question entirely.
+	GetDag().rlock()
 	for _, v := range vertices {
 		any, _ := anypb.New(v.ToPbNode())
 		stx.Details = append(stx.Details, any)
 	}
+	GetDag().runlock()
 	payload, _ := proto.Marshal(stx.MarshalBinary())
 	stx.SyncHash = sha256.New().Sum(payload)
 	stx.Signature = stx.GenerateSignature(pk)
@@ -816,8 +830,29 @@ func (dsm *DagSyncMngr) dag_watcher(leader bool, wait_connect bool, wg *sync.Wai
 	go func() {
 		defer notifyWg.Done()
 		notifyCh <- true
+		// The channel is read out of the Dag once, here, and then only through
+		// this local. Terminate clears the field under dag.mux so that a late
+		// insert cannot send into a closed channel; reading the field on every
+		// iteration of the loop below would race that write, and would be a race
+		// this routine cannot win - it would either see the old channel after it
+		// was closed or the new nil and block forever.
+		notify := _dag_.txCh
+		// A nil channel means peer.visualize is off, so nothing will ever be sent
+		// and there is nothing for this routine to assemble. Receiving from a nil
+		// channel blocks forever, which would park a goroutine here for the life
+		// of the process and never observe the stop flags.
+		if notify == nil {
+			logger.Infof("%s  ~ notifier routine not needed (peer.visualize=0)", emoji.VerticalTrafficLight)
+			return
+		}
 		for !_stop_.Load() || !dsm.StopFlag.Load() {
-			tx := <-_dag_.txCh
+			// Receive with the ok flag rather than bare: Terminate closes this
+			// channel, and a bare receive on a closed channel spins on zero
+			// values forever, calling Notify with an empty site each time.
+			tx, ok := <-notify
+			if !ok {
+				break
+			}
 			goterators.ForEach(dag_modified_handlers, func(fn DagModifiedIf) {
 				fn.Notify(tx)
 			})

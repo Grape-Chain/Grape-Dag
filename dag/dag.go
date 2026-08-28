@@ -34,16 +34,24 @@ type Dag struct {
 	_links_         []Link
 	mapped_edges    map[uuid.UUID][]uuid.UUID
 	mu_map          sync.RWMutex
-	prevMajor       uint64
-	prevMinor       uint32
-	mux             sync.Mutex
-	txCh            chan TxVL
-	depthCh         chan Node
-	pinCh           chan bool
-	stopCh          chan bool
-	pins            []*Node
-	width           uint8
-	exodusWallets   []*grape1crypto.Wallet
+	// prevMajor - the major half of the next site id, handed out by NewDagNode.
+	//
+	// Atomic because two goroutines hand out site ids: the publisher inserting a
+	// transaction this node accepted, and the subscriber inserting one a peer
+	// announced. It was a plain uint64 incremented and then read back as two
+	// separate statements, which is both a data race and a correctness bug - two
+	// overlapping inserts could read the same value back and give two different
+	// sites the same major id.
+	prevMajor     atomic.Uint64
+	prevMinor     uint32
+	mux           sync.RWMutex
+	txCh          chan TxVL
+	depthCh       chan Node
+	pinCh         chan bool
+	stopCh        chan bool
+	pins          []*Node
+	width         uint8
+	exodusWallets []*grape1crypto.Wallet
 	// genesis - held explicitly. The live node slice no longer holds the whole
 	// ledger once settled sites are sliced out of it, so its first element is
 	// not necessarily the genesis site.
@@ -76,6 +84,17 @@ var (
 // megabytes of log in seven minutes, and writing it was the single largest
 // consumer of CPU in a profile of that node - ahead of signature verification.
 var traceSites bool
+
+// traceBalances - log every wallet-cache credit and debit.
+//
+// Same switch as traceSites, kept as its own flag because these lines are about
+// money rather than about graph shape and are wanted separately often enough to
+// be worth the extra name. Read from a package variable rather than by calling
+// config.GetConfig() at each credit, for two reasons: the balance path runs twice
+// per insert, and GetConfig returns a file-backed global that is nil in a test
+// binary - so asking it on the hot path meant the balance code could not be
+// tested without standing up a configuration file.
+var traceBalances bool
 
 // confirmations - how the DAG decides a site is confirmed and ready for a
 // commit transaction. Two implementations exist: ConfirmTracker, which measures
@@ -263,26 +282,36 @@ func (dag *Dag) lookupCacheUpdate(vertex *Node, targetIds []uuid.UUID) {
 	dag.mapped_edges[vertex.id.id] = append(dag.mapped_edges[vertex.id.id], targetIds...)
 }
 
-// rlock, runlock - the read half of dag.mux.
+// rlock, runlock - the read half of dag.mux, which is now a real shared lock.
 //
-// dag.mux is a sync.Mutex, so these are exclusive today: the names state what
-// the section does, not what the lock allows. They exist because the read
-// sections are the ones a sync.RWMutex would let overlap, and converting is a
-// three-line change - these two bodies and the redundant `mux: sync.Mutex{}` in
-// newDag (dag/generate.go, which this change does not own). Marking the sections
-// is the part that has to be got right: a read section that quietly mutates
-// something becomes corruption the moment the lock is shared, so every caller of
-// these two says what it touches and what it does not.
+// These began as names for the sections a shared lock would be able to overlap,
+// while the lock was still exclusive. They are the shared acquisition now, so
+// what was a naming convention has become a correctness claim: a section that
+// quietly mutates anything dag.mux protects is corruption from here on, not just
+// a missed opportunity. Every caller of these two therefore says what it touches
+// and what it does not, and the concurrency tests in dag/lock_test.go run the
+// read sections against inserts, slicing and commit-transaction harvesting under
+// -race, which is what turns the claim into something checked.
 //
-// The read sections, as of this change: Dag.approvalTargets (tip selection),
-// which reads Node.sources and Node.targets through the confirmation tracker.
-// The other candidates are outside this file - Size, Tps, AvgDelay,
-// SnapshotNodes and getFromLastPinTx here, GetConfirmedSites and its siblings in
-// dag/site.go, refreshSizeGauges in dag/metrics.go, and the verifyProcessor
-// section of InsertTxDag - and the report lists which of them are genuine
-// readers.
-func (d *Dag) rlock()   { d.mux.Lock() }
-func (d *Dag) runlock() { d.mux.Unlock() }
+// The read sections: Dag.approvalTargets (tip selection), which reads
+// Node.sources and Node.targets through the confirmation tracker - the tracker
+// mutation inside expireStaleTips is behind the tracker's own mutex and writes no
+// Node field. Outside this file: Size, Tps, AvgDelay, SnapshotNodes and
+// getFromLastPinTx here, GetConfirmedSites and its siblings in dag/site.go
+// (pop/take mutate the tracker, not the graph), and refreshSizeGauges in
+// dag/metrics.go.
+//
+// Also read sections, both added since: Dag.checkProcessorClaim in dag/insert.go,
+// which verifies the claim a received site arrived with and takes the exclusive
+// lock only for the rare failing claim it has to strip, and the two logLast calls
+// on the insert paths, which walk dag._links_ to format a trace line.
+//
+// Not a read section, despite looking like one: anything that reaches
+// clearProcessor or signProcessor. Those write Node fields, and clearProcessor is
+// why checkProcessorClaim releases the shared lock and re-checks rather than
+// pretending Go has a lock upgrade.
+func (d *Dag) rlock()   { d.mux.RLock() }
+func (d *Dag) runlock() { d.mux.RUnlock() }
 
 // liveOnly - the subset of these sites that the live graph still holds.
 //
@@ -392,10 +421,19 @@ func (dag *Dag) Terminate() {
 	closeStore()
 	logger.Info("[dag] Stopping the DAG watcher")
 	dag.stopCh <- true
-	if dag.txCh != nil {
-		logger.Info("[dag] Closing the TX channel")
-		close(dag.txCh)
-	}
+	// Detached under the lock, then closed outside it.
+	//
+	// A send on a closed channel panics, and notifyDagModified sends into this
+	// one from insertMissing and publishSite - both of which hold dag.mux, which
+	// is why taking it here is enough to know no send is in flight. Closing it
+	// while an insert was mid-send took the node down on shutdown, which is a
+	// crash on the way out rather than a crash in service, but it is also the
+	// last thing an operator sees and it looks exactly like data loss.
+	//
+	// The field is cleared rather than only closed so that an insert arriving
+	// after this point finds nil and returns, instead of finding a closed channel
+	// and panicking.
+	dag.detachNotify()
 	if dag.depthCh != nil {
 		logger.Info("[dag] Closing the tx depth channel")
 		close(dag.depthCh)
@@ -410,6 +448,20 @@ func (dag *Dag) Terminate() {
 	logger.Info("[dag] Closing the Stop channel")
 	close(dag.stopCh)
 	utils.ColorizeInfo(logger, "[dag] DAG successfully persisted and terminated")
+}
+
+// detachNotify - take the watcher channel away from the insert path, then close
+// it. Split out of Terminate so the ordering can be tested without standing up a
+// store and a host.
+func (d *Dag) detachNotify() {
+	d.mux.Lock()
+	notify := d.txCh
+	d.txCh = nil
+	d.mux.Unlock()
+	if notify != nil {
+		logger.Info("[dag] Closing the TX channel")
+		close(notify)
+	}
 }
 
 func (d *Dag) countConfirmed(vertex *Node) {
@@ -604,19 +656,27 @@ var txNotifyDrops atomic.Uint64
 // for it.
 //
 // The watcher feeds DepthHandler.Notify (dag/sync.go), which builds a second,
-// reverse copy of the graph in package graph/. That copy is written once per
-// site and read by exactly one function, getLatestDagSlice in dag/traverse.go,
-// which has no caller anywhere in the repository - so this send is, today, work
-// done for nobody. It should be deleted along with the handler and the graph;
-// that is outside this change and is in the report.
+// reverse copy of the whole graph in package graph/ and renders it to a new
+// ./dag.graph.N.gv file on every commit transaction. That copy is read by
+// exactly one function, getLatestDagSlice in dag/traverse.go, which has no
+// caller anywhere in the repository - so the only thing the feed produces is the
+// visualisation, and the visualisation was never gated on the setting that
+// exists to ask for it. A node left running for a day wrote seventeen thousand
+// files and did seventeen thousand full-graph DOT renders that nobody asked for.
 //
-// Until then it must not be able to stop the ledger. The send is
-// non-blocking: a dropped notification costs a vertex in a structure nothing
-// reads, whereas a blocking send costs every insert, every slice, every gauge
-// sample and every commit behind dag.mux. Drops are counted and reported rather
-// than left silent, and a drop makes Notify log a missing-source-site error for
-// the sites that follow it, which is one more reason to remove the feed rather
-// than to tune it.
+// So the channel is now only created when peer.visualize is set (see
+// RunSynchronization), and this returns immediately when it is not - which is
+// the default. Gated rather than deleted: the visualisation is a real feature
+// for whoever wants to look at the graph, and it is the mirror's only purpose,
+// so switching it off is the fix and removing it is a decision for its users.
+//
+// When it is on, it must still not be able to stop the ledger. The send is
+// non-blocking: a dropped notification costs a vertex in a structure only the
+// picture reads, whereas a blocking send costs every insert, every slice, every
+// gauge sample and every commit behind dag.mux - chansend was 25% of a node's
+// blocking profile when this was a rendezvous. Drops are counted rather than
+// left silent, because a drop makes Notify log a missing-source-site error for
+// the sites that follow it.
 //
 // The TxVL is built by the caller under the lock, because it copies the site and
 // its neighbours by value out of slices that other goroutines mutate.
@@ -686,6 +746,7 @@ func Init() {
 	walletCacheConfirmed = newWalletCache()
 	if x != nil {
 		traceSites = x.Host.Verbose > 0
+		traceBalances = x.Host.Verbose > 0
 	}
 	dagWallet = initDagWallet(dagConfig)
 	confirmationCounter = newConfirmations(dagConfig)
@@ -717,6 +778,7 @@ func Init() {
 		}
 	}
 	logTipSelection()
+	logVersionCollision()
 	sliceArchive = newRamArchive()
 	_pins_ = newNodeTxPin()
 	// Note: genesis node is the only node that is authorized to create the genesis tx as the starting
@@ -763,6 +825,18 @@ func Init() {
 	}
 }
 
+// logVersionCollision - say at startup that dag.versioncollision does nothing.
+//
+// The setting used to select a branch in InsertTxDag that refused any received
+// site colliding on version and could never do anything else; see the note where
+// it was removed. An operator who has it set in a config file is expecting
+// behaviour that is not there, and silence would let them keep expecting it.
+func logVersionCollision() {
+	if dagConfig.Versioncollision {
+		logger.Warnf("[dag] dag.versioncollision is set but has no effect: the collision branch it selected refused every colliding site and never entered one into the graph, and it has been removed. Drop the setting.")
+	}
+}
+
 // adoptGenesis - take the genesis site from the recovered chain as the graph
 // root, in place of the one minted at start-up.
 func (d *Dag) adoptGenesis(genesis *Node) {
@@ -791,9 +865,19 @@ func (sm *DagSyncMngr) RunSynchronization(leader bool, wait_connect bool) {
 		}
 		// we set the sync channel for transactions here so that we can run
 		// it only when synchronization is enabled
-		// See txNotifyBuffer and notifyDagModified: this used to be a capacity
-		// of one, sent into with dag.mux held.
-		_dag_.txCh = make(chan TxVL, txNotifyBuffer)
+		//
+		// Only when peer.visualize asks for it. The channel feeds the graph
+		// mirror, whose only reader is the graphviz render, so with the setting
+		// off there is nothing downstream to receive a notification - and a nil
+		// channel is what makes notifyDagModified cost nothing at all rather than
+		// cost a select on every insert. See txNotifyBuffer and
+		// notifyDagModified: this used to be a capacity of one, sent into with
+		// dag.mux held.
+		if peerConfig.Visualize > 0 {
+			_dag_.txCh = make(chan TxVL, txNotifyBuffer)
+		} else {
+			logger.Info("[dag] Graph mirror and graphviz output are off (peer.visualize=0)")
+		}
 		_dag_.depthCh = make(chan Node, 1)
 		_dag_.pinCh = make(chan bool, 1)
 		wg := &sync.WaitGroup{}
@@ -908,29 +992,10 @@ func (dag *Dag) logLast(pref string, node *Node, depth int) {
 	}
 }
 
-// @Optimize Performance
-// getApprovers - get a slice of *Node(s) approvers for the passed in node
-// who approved this node?
-func getApprovers(links []Link, node *Node) []*Node {
-
-	if node.sources != nil && len(node.sources) > 0 {
-		return node.sources
-	}
-	// get all the links where the node (candidate) is a target
-	// approvee <<--[target]-- approver [source]
-	lnks := goterators.Filter(links, func(link Link) bool {
-		// we are looking for links where the given node is the target
-		//return link.target.Equal(node) - no need to do full node comparison (it's expensive)
-		// it would suffice to just compare uuids
-		return link.target.id.id == node.id.id
-
-	})
-	// get a slice of approvers for the node (candidate)
-	apprs := goterators.Map(lnks, func(link Link) *Node {
-		return link.source
-	})
-	return apprs
-}
+// getApprovers is gone with the version-collision branch in dag/insert.go, which
+// was its only caller. It answered "who approves this site" by scanning the whole
+// edge list whenever the site's own source list happened to be empty, which is a
+// pass over the live graph to recover something the site already records.
 
 func getTargetLists(nodes []*Node, links []Link) map[uint64][]*Node {
 	childrenLists := map[uint64][]*Node{}

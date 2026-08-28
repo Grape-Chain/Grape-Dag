@@ -277,6 +277,17 @@ func settledFee(n *Node) *big.Int {
 	if n == nil || n.tx == nil {
 		return big.NewInt(0)
 	}
+	// The height is only needed to decide whether fees have started, so the
+	// cheaper half of that decision is made first. CurrentHeight takes the pin
+	// lock, and this function is called from UpdateBalanceIfValid on the insert
+	// path with dag.mux already held - so asking for the height unconditionally
+	// nested the pin lock inside dag.mux on every single insert, to answer a
+	// question that Feestartpin below zero already answers on its own. With fees
+	// off, which is the shipped default, that was the last remaining pin-lock
+	// acquisition under the insert lock.
+	if txConfig.Feestartpin < 0 {
+		return big.NewInt(0)
+	}
 	height := int64(0)
 	if _pins_ != nil {
 		height = int64(_pins_.CurrentHeight())
