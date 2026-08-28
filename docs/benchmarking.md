@@ -137,6 +137,7 @@ and a summary at the end:
   accepted          : 145702 tx (4856.7 tx/s)
   failed            : 128 tx
   accepted/offered  : 0.9991
+  generator stalls  : 0 (0.00% of offered)
   publish latency   : p50 412µs  p95 1.1ms  p99 3.4ms  max 91.2ms  mean 615µs
   errors            :
       grpc/resourceexhausted       128
@@ -152,8 +153,58 @@ and a summary at the end:
   reported percentile is the upper bound of the bucket the true value falls in:
   it overstates by at most 15% and never understates. Accepted publishes only;
   failures appear in the error breakdown instead.
+- **generator stalls** — times a sender found its buffer empty and had to wait
+  for its own signer. Read this line before any of the others. While a sender is
+  waiting, the rate being measured is the generator's signing rate and not the
+  node's capacity, so past 1% of offered the report says so outright and the
+  throughput figure is not the node's ceiling. Zero is the expected reading.
 - **errors** — grouped by cause, `grpc/<code>` for a status error, ordered with
-  the dominant failure first.
+  the dominant failure first. Expect one `bench/shutdown` per worker at the end
+  of every run: that is the generator cancelling its own in-flight calls, not the
+  node refusing work.
+
+**Check `window` against what you asked for.** If the window is shorter than
+`-bench_duration`, the run ended early and every rate in the report is an
+average over a window that includes whatever the node was doing after the load
+stopped. See below.
+
+### The run that ended early, and how to tell
+
+Worth knowing about because it produced a number that looked completely
+plausible and was wrong.
+
+Bench mode used to sign its entire offered load before the window opened, which
+meant the size of that pool decided how long a run could last. A `-bench_max`
+run asking for five minutes spent its 200,000 transactions in 65 seconds and
+then went quiet:
+
+```
+[bench] offering as fast as the node accepts, for 5m0s
+  window            : 64.79 sec
+  offered           : 200016 tx (3087.3 tx/s)
+  accepted/offered  : 1.0000
+```
+
+Nothing in the report was untrue — it stated the real 64.79-second window. But
+65 seconds is not long enough for the node's queues to reach a steady state, so
+3,087/s was a transient, not a sustained rate; and anything reading `/metrics`
+afterwards was sampling an idle node and averaging the silence in.
+
+Each worker now keeps a bounded reserve of signed transactions with a signer
+goroutine behind it, so run length no longer depends on how much the generator
+can hold: the reserve is 2,000 per worker whatever the window, about 60 MB
+across a 48-worker run. The same request now yields the window it asked for:
+
+```
+  window            : 300.03 sec
+  offered           : 739785 tx (2465.7 tx/s)
+  accepted/offered  : 0.9999
+  generator stalls  : 0 (0.00% of offered)
+```
+
+Signing inside the window costs the generator CPU the node would otherwise have
+had. That cost is measured rather than assumed away, which is what the stall
+line is for.
 
 SIGINT cancels the window and still prints the report. A measurement that throws
 its numbers away when interrupted is one nobody dares interrupt, so bad runs get
@@ -226,10 +277,11 @@ Unpaced with the default 32 workers, then vary one thing at a time:
 
 ## What "accepted" does and does not mean
 
-`RoboTraderServer.PublishTx` puts the transaction on the publish queue and
-returns `Status: 0` without validating it. So **accepted means the node took the
-transaction in, not that it reached the DAG.** Two consequences worth keeping in
-mind:
+`RoboTraderServer.PublishTx` checks that the request carries a transaction with
+a twenty-byte sender, then puts it on the publish queue and returns `Status: 0`.
+The signature is checked by the diffusion subscriber and the balance by the DAG,
+both after that return. So **accepted means the node took the transaction in,
+not that it reached the DAG.** Three consequences worth keeping in mind:
 
 - The failures that do appear are transport-level: the publish queue's notify
   channel holds 32768 entries, and once the node's consumer falls that far behind,
@@ -245,6 +297,20 @@ mind:
 
   A DAG that grew by far less than the accepted count means the node took work it
   could not process, and the sustainable rate is the smaller of the two numbers.
+- The node's own view is on `/metrics`, and it is the one to trust for a
+  sustained figure: `grape_site_insert_seconds_count` and
+  `grape_sites_confirmed_total` are sites that actually entered the graph and
+  actually confirmed. At steady state all four numbers converge, because the
+  publish queue blocks rather than drops — a 300-second run measured 2,465 tx/s
+  offered, 2,465 accepted, and inserted and confirmed both within 1% of that,
+  with the live graph holding steady under 300 sites.
+
+  Those node-side counters were not always trustworthy either.
+  `grape_tx_accepted_total` read **zero** through a run that offered 739,785
+  transactions, because `TxIngress`, `TxAccepted` and `TxRejected` were wired
+  only into the REST entry point and never into the gRPC handler that every
+  benchmark uses. They are wired now. A metric that stays at zero under load is
+  worse than a missing one, because it reads as an answer.
 
 ## The pacing fix in `misc.go`
 
