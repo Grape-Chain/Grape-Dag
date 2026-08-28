@@ -44,12 +44,29 @@ const (
 	benchDefaultReport   = 5 * time.Second
 	benchDefaultSettle   = 30 * time.Second
 
-	// benchDefaultPrepare is the pre-signed pool size when there is no rate and
-	// no transaction cap to derive one from, which is the case for a -bench_max
-	// run. At roughly 0.6 KB per pre-signed transaction this is a few hundred
-	// megabytes of held load; raise it with -bench_prepare for a longer run and
-	// watch the generator's own memory when you do.
+	// benchDefaultPrepare is the nominal pool size for a run that has neither a
+	// rate nor a duration to derive one from. It no longer decides how much the
+	// generator holds - benchReserve does that - only how much the faucet funds.
 	benchDefaultPrepare = 200000
+
+	// benchReserve is how many signed transactions each worker holds ready before
+	// the window opens, and the depth of the buffer its signer keeps topped up
+	// afterwards. At roughly 0.6 KB per signed transaction this is about 1.2 MB
+	// per worker, 60 MB across a 48-worker saturation run, and it is what
+	// separates how long a run can last from how much memory the generator needs
+	// to last that long.
+	benchReserve = 2000
+
+	// benchMaxAssumedRate is the throughput a -bench_max run sizes its nominal
+	// pool - and so its wallet funding - for, when there is no offered rate to
+	// derive either from. Deliberately far above anything one node has been
+	// measured doing, so that running out of funded balance is never what ends
+	// the run; the duration is. Memory does not scale with it.
+	benchMaxAssumedRate = 20000
+
+	// benchFillPoll is how often the setup phase looks at whether the signers
+	// have filled their reserves. Only used before the window opens.
+	benchFillPoll = 20 * time.Millisecond
 
 	// benchRecipientCount is the number of receive-only addresses payments are
 	// spread over. A handful is enough to keep the transactions distinct without
@@ -172,6 +189,14 @@ func (o *BenchOptions) prepareCount() uint64 {
 		return o.Txmax
 	case o.offeredRate() > 0 && o.Duration > 0:
 		return uint64(o.offeredRate()*o.Duration.Seconds()*1.1) + uint64(o.Workers)
+	case o.Duration > 0:
+		// An unpaced run has no rate to derive from, so it assumes a ceiling far
+		// above the node's and funds for that. Before this, an unpaced run took a
+		// flat 200,000 and stopped when it had spent them: a five-minute request
+		// became a 65-second window, which is not long enough for the node's
+		// queues to settle, so the throughput it reported was not the sustained
+		// figure it looked like.
+		return uint64(benchMaxAssumedRate*o.Duration.Seconds()) + uint64(o.Workers)
 	default:
 		return benchDefaultPrepare
 	}
@@ -206,27 +231,54 @@ func (bw *benchWallet) canSpend(amount *big.Int) bool {
 }
 
 // benchWorker owns everything one sender goroutine touches: its own connection,
-// its own funded wallets and its own pre-signed transactions. Nothing here is
-// shared, so the timed window has no contention beyond the counters and the
+// its own funded wallets and its own buffer of signed transactions. Nothing here
+// is shared, so the timed window has no contention beyond the counters and the
 // token bucket.
 type benchWorker struct {
 	id      int
 	conn    *grpc.ClientConn
 	client  pb.RoboTraderClient
 	senders []*benchWallet
-	load    []*pb.Txv1
-	next    int
+	// ready holds transactions that are signed and waiting to be sent. Filled to
+	// capacity before the window opens and kept topped up by this worker's own
+	// signer goroutine while the window runs; closed by that signer when there is
+	// nothing left to sign.
+	ready chan *pb.Txv1
+	// reserved is closed once the signer has either filled the reserve or found
+	// it has nothing more to sign, whichever comes first. It is how the setup
+	// phase knows the window can open.
+	reserved chan struct{}
 }
 
-// take hands out the next pre-signed transaction, or nil when the pool is spent.
-// Called from one goroutine only, so no synchronisation.
-func (w *benchWorker) take() *pb.Txv1 {
-	if w.next >= len(w.load) {
+// take hands out the next signed transaction, or nil when the run has ended or
+// the signer has nothing left to give.
+//
+// The non-blocking receive comes first because that is the case that has to stay
+// cheap: taking from a buffered channel that has something in it costs tens of
+// nanoseconds against a publish round trip measured in milliseconds. Falling
+// through to the blocking receive means the sender has caught up with its
+// signer, so from that moment the rate being measured is the generator's signing
+// rate rather than the node's capacity. That is counted, so the report can say
+// so rather than quietly presenting the wrong ceiling.
+func (w *benchWorker) take(ctx context.Context, stats *benchStats) *pb.Txv1 {
+	select {
+	case txv, ok := <-w.ready:
+		if !ok {
+			return nil
+		}
+		return txv
+	default:
+	}
+	stats.stalled.Add(1)
+	select {
+	case txv, ok := <-w.ready:
+		if !ok {
+			return nil
+		}
+		return txv
+	case <-ctx.Done():
 		return nil
 	}
-	t := w.load[w.next]
-	w.next++
-	return t
 }
 
 // benchPlan is everything the setup phase produced for the timed window.
@@ -262,8 +314,8 @@ func (g *TxGenerator) Bench(cltService *pb.RoboTraderClient, opts *BenchOptions)
 	defer stop()
 
 	plan := g.newBenchPlan(opts)
-	fmt.Printf("[bench] %d workers, %d sender wallets, %s per transaction, pre-signing %d transactions\n",
-		opts.Workers, len(plan.wallets), plan.amount.String(), opts.prepareCount())
+	fmt.Printf("[bench] %d workers, %d sender wallets, %s per transaction, up to %d transactions funded, %d buffered per worker\n",
+		opts.Workers, len(plan.wallets), plan.amount.String(), opts.prepareCount(), benchReserve)
 
 	if err := g.fundBenchWallets(ctx, cltService, plan); err != nil {
 		return err
@@ -278,7 +330,7 @@ func (g *TxGenerator) Bench(cltService *pb.RoboTraderClient, opts *BenchOptions)
 	}
 	defer closeBenchWorkers(workers)
 
-	presignBenchLoad(plan, workers)
+	startBenchSigners(ctx, plan, workers)
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("bench: interrupted during setup")
 	}
@@ -454,13 +506,15 @@ func dialBenchWorkers(ctx context.Context, plan *benchPlan) ([]*benchWorker, err
 			return nil, err
 		}
 		w := &benchWorker{
-			id:     i,
-			conn:   conn,
-			client: pb.NewRoboTraderClient(conn),
+			id:       i,
+			conn:     conn,
+			client:   pb.NewRoboTraderClient(conn),
+			ready:    make(chan *pb.Txv1, benchWorkerReserve(plan)),
+			reserved: make(chan struct{}),
 		}
 		// Wallets are dealt out in strides so that each worker owns a disjoint
-		// set. Sharing one would mean two goroutines pre-signing against the same
-		// tracked balance.
+		// set. Sharing one would mean two signer goroutines working against the
+		// same tracked balance and nonce.
 		for j := i; j < len(plan.wallets); j += plan.opts.Workers {
 			w.senders = append(w.senders, plan.wallets[j])
 		}
@@ -468,6 +522,21 @@ func dialBenchWorkers(ctx context.Context, plan *benchPlan) ([]*benchWorker, err
 	}
 	fmt.Printf("[bench] %d connections to %s ready\n", len(workers), plan.target)
 	return workers, nil
+}
+
+// benchWorkerReserve - the buffer depth for one worker. Never larger than what
+// that worker will sign in total, because a channel that can never fill would
+// leave the setup phase waiting for a reserve that is not coming; and never
+// zero, because an unbuffered channel would put every take on the blocking path
+// and turn the whole run into a measurement of the signer.
+func benchWorkerReserve(plan *benchPlan) int {
+	if plan.perWorker < benchReserve {
+		if plan.perWorker < 1 {
+			return 1
+		}
+		return plan.perWorker
+	}
+	return benchReserve
 }
 
 func closeBenchWorkers(workers []*benchWorker) {
@@ -478,53 +547,93 @@ func closeBenchWorkers(workers []*benchWorker) {
 	}
 }
 
-// presignBenchLoad generates and signs the whole offered load before the window
-// opens, in parallel across workers because each one only touches its own
-// wallets. This is the step that keeps ed25519 out of the measurement.
-func presignBenchLoad(plan *benchPlan, workers []*benchWorker) {
+// startBenchSigners fills every worker's buffer and leaves a signer goroutine
+// behind each one to keep it filled for the rest of the run. It returns once
+// every reserve is full, so the opening seconds of the window are served purely
+// from memory, exactly as they were when the whole load was signed up front.
+//
+// It used to sign the entire offered load before the window opened, which made
+// the pool size decide how long a run could last. A -bench_max run asking for
+// five minutes spent its 200,000 transactions in 65 seconds and then went quiet.
+// Nothing was wrong with the report - it showed the true 65-second window - but
+// 65 seconds is not long enough for the node's queues to reach a steady state,
+// so the throughput in it was not the sustained number it read as.
+//
+// Signing inside the window costs the generator CPU the node would otherwise
+// have had. That is the price of a run that lasts as long as it was asked to, and
+// it is a bounded and visible price: a signer only works when its buffer has
+// drained, and the report counts every time a sender had to wait for one.
+func startBenchSigners(ctx context.Context, plan *benchPlan, workers []*benchWorker) {
 	started := time.Now()
-	var wg sync.WaitGroup
 	for _, w := range workers {
-		wg.Add(1)
-		go func(w *benchWorker) {
-			defer wg.Done()
-			presignWorkerLoad(plan, w)
-		}(w)
+		go signBenchLoad(ctx, plan, w)
 	}
-	wg.Wait()
-
-	total := 0
 	for _, w := range workers {
-		total += len(w.load)
-	}
-	fmt.Printf("[bench] pre-signed %d transactions in %s\n", total, time.Since(started).Round(time.Millisecond))
-}
-
-func presignWorkerLoad(plan *benchPlan, w *benchWorker) {
-	w.load = make([]*pb.Txv1, 0, plan.perWorker)
-	for i := 0; i < plan.perWorker; i++ {
-		sender := pickBenchSender(w.senders, plan.amount)
-		if sender == nil {
-			// Every wallet this worker owns is spent. Funding more would need
-			// another faucet round and a second settle wait, so the worker takes
-			// the shorter pool and the report shows the shorter window.
+		select {
+		case <-w.reserved:
+		case <-ctx.Done():
 			return
 		}
-		recipient := plan.recipients[(i+w.id)%len(plan.recipients)]
-
-		txv := tx.NewTxv1(tx.ChainType(plan.network))
-		txv.GeneratePayment(wallet.GenPaymentEx(sender.w, recipient, plan.amount), plan.network)
-		// A nonce of our own, in place of the random one GeneratePayment picks, so
-		// that no two pre-signed transactions can hash alike. Duplicates would be
-		// counted as offered here and then deduplicated by the node, which reads
-		// as throughput the node never had.
-		txv.Nonce = sender.nonce
-		sender.nonce++
-		txv.Sign(sender.w.PrivateKey())
-
-		sender.balance.Sub(sender.balance, plan.amount)
-		w.load = append(w.load, txv.MarshalBinary())
 	}
+	total := 0
+	for _, w := range workers {
+		total += len(w.ready)
+	}
+	fmt.Printf("[bench] %d transactions signed and buffered in %s; signing continues during the window\n",
+		total, time.Since(started).Round(time.Millisecond))
+}
+
+// signBenchLoad is one worker's signer. It touches only that worker's wallets, so
+// it needs no synchronisation with the other signers, and it is the only writer
+// of those wallets' nonces and tracked balances.
+func signBenchLoad(ctx context.Context, plan *benchPlan, w *benchWorker) {
+	defer close(w.ready)
+	reserve := cap(w.ready)
+	produced := 0
+	for produced < plan.perWorker {
+		txv := signBenchTx(plan, w, produced)
+		if txv == nil {
+			// Every wallet this worker owns is spent. Funding more would need
+			// another faucet round and a second settle wait, so this worker stops
+			// offering and the others carry on.
+			break
+		}
+		select {
+		case w.ready <- txv:
+		case <-ctx.Done():
+			return
+		}
+		produced++
+		if produced == reserve {
+			close(w.reserved)
+		}
+	}
+	if produced < reserve {
+		close(w.reserved)
+	}
+}
+
+// signBenchTx builds and signs one payment, or returns nil when none of the
+// worker's wallets can cover another one.
+func signBenchTx(plan *benchPlan, w *benchWorker, seq int) *pb.Txv1 {
+	sender := pickBenchSender(w.senders, plan.amount)
+	if sender == nil {
+		return nil
+	}
+	recipient := plan.recipients[(seq+w.id)%len(plan.recipients)]
+
+	txv := tx.NewTxv1(tx.ChainType(plan.network))
+	txv.GeneratePayment(wallet.GenPaymentEx(sender.w, recipient, plan.amount), plan.network)
+	// A nonce of our own, in place of the random one GeneratePayment picks, so
+	// that no two signed transactions can hash alike. Duplicates would be counted
+	// as offered here and then deduplicated by the node, which reads as
+	// throughput the node never had.
+	txv.Nonce = sender.nonce
+	sender.nonce++
+	txv.Sign(sender.w.PrivateKey())
+
+	sender.balance.Sub(sender.balance, plan.amount)
+	return txv.MarshalBinary()
 }
 
 // pickBenchSender returns the first wallet that can still cover amount, or nil
@@ -607,9 +716,9 @@ func benchSend(ctx context.Context, w *benchWorker, bucket *tokenBucket, batch i
 			return // -bench_txmax reached
 		}
 		for i := 0; i < granted; i++ {
-			txv := w.take()
+			txv := w.take(ctx, stats)
 			if txv == nil {
-				return // pre-signed pool spent
+				return // run over, or this worker has nothing left to offer
 			}
 			publishBenchTx(ctx, w, txv, stats, timeout)
 		}

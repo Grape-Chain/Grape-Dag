@@ -119,7 +119,13 @@ type benchStats struct {
 	offered  atomic.Uint64
 	accepted atomic.Uint64
 	failed   atomic.Uint64
-	latency  latencyHistogram
+	// stalled counts the times a sender had nothing signed to send and had to
+	// wait for its own signer. It is the generator's confession: while a sender
+	// is waiting, the rate being measured is the generator's signing rate rather
+	// than the node's capacity, so a run with a meaningful stall count has not
+	// measured what it claims to.
+	stalled atomic.Uint64
+	latency latencyHistogram
 
 	mu     sync.Mutex
 	errors map[string]uint64
@@ -172,6 +178,7 @@ type benchReport struct {
 	Offered  uint64
 	Accepted uint64
 	Failed   uint64
+	Stalled  uint64
 	Mean     time.Duration
 	P50      time.Duration
 	P95      time.Duration
@@ -186,6 +193,7 @@ func (s *benchStats) snapshot(elapsed time.Duration) benchReport {
 		Offered:  s.offered.Load(),
 		Accepted: s.accepted.Load(),
 		Failed:   s.failed.Load(),
+		Stalled:  s.stalled.Load(),
 		Mean:     s.latency.mean(),
 		P50:      s.latency.quantile(0.50),
 		P95:      s.latency.quantile(0.95),
@@ -236,6 +244,33 @@ func (r benchReport) AcceptedRate() float64 { return perSecond(r.Accepted, r.Ela
 // AcceptedRatio - the share of offered transactions the node took. A ratio that
 // falls away from 1 while the offered rate keeps climbing is the node refusing
 // load, which is the signal that the ceiling has been found.
+// StalledPercent - stalls as a share of what was offered. The number that says
+// whether the run measured the node or the generator.
+func (r benchReport) StalledPercent() float64 {
+	if r.Offered == 0 {
+		return 0
+	}
+	return 100 * float64(r.Stalled) / float64(r.Offered)
+}
+
+// benchStallWarnPercent - above this share of offered transactions, the senders
+// spent enough time waiting on their own signers that the throughput figure is
+// the generator's and not the node's. One percent is deliberately strict: the
+// point of the reserve is that stalls should be rare, and a run that is only
+// just under the line is a run to repeat with more workers or a bigger reserve.
+const benchStallWarnPercent = 1.0
+
+func (r benchReport) stallVerdict() string {
+	switch {
+	case r.Stalled == 0:
+		return ""
+	case r.StalledPercent() >= benchStallWarnPercent:
+		return "  <- the generator could not keep up; this is not the node's ceiling"
+	default:
+		return "  (negligible)"
+	}
+}
+
 func (r benchReport) AcceptedRatio() float64 {
 	if r.Offered == 0 {
 		return 0
@@ -269,6 +304,8 @@ func (r benchReport) String() string {
 	fmt.Fprintf(&b, "  accepted          : %d tx (%.1f tx/s)\n", r.Accepted, r.AcceptedRate())
 	fmt.Fprintf(&b, "  failed            : %d tx\n", r.Failed)
 	fmt.Fprintf(&b, "  accepted/offered  : %.4f\n", r.AcceptedRatio())
+	fmt.Fprintf(&b, "  generator stalls  : %d (%.2f%% of offered)%s\n",
+		r.Stalled, r.StalledPercent(), r.stallVerdict())
 	fmt.Fprintf(&b, "  publish latency   : p50 %s  p95 %s  p99 %s  max %s  mean %s\n",
 		formatLatency(r.P50),
 		formatLatency(r.P95),

@@ -33,18 +33,37 @@ func (s *stubTrader) PublishTx(_ context.Context, _ *pb.TxPublishRequest, _ ...g
 	return &pb.TxPublishResponse{Status: 0, Msg: "success"}, nil
 }
 
-// stubWorkers builds workers whose pre-signed pool is filler: runBench never
-// looks inside a transaction, so an empty one exercises the same path.
+// stubWorkers builds workers whose signed buffer is filler: runBench never looks
+// inside a transaction, so an empty one exercises the same path. The buffer is
+// filled and closed here rather than fed by a signer, so a worker in these tests
+// never stalls and the run ends when the buffer is spent.
 func stubWorkers(count, load int, stub *stubTrader) []*benchWorker {
 	workers := make([]*benchWorker, count)
 	for i := range workers {
-		w := &benchWorker{id: i, client: stub, load: make([]*pb.Txv1, load)}
-		for j := range w.load {
-			w.load[j] = &pb.Txv1{}
+		w := &benchWorker{id: i, client: stub, ready: make(chan *pb.Txv1, load), reserved: make(chan struct{})}
+		for j := 0; j < load; j++ {
+			w.ready <- &pb.Txv1{}
 		}
+		close(w.ready)
+		close(w.reserved)
 		workers[i] = w
 	}
 	return workers
+}
+
+// signAllForTest runs one worker's signer to completion into a buffer big enough
+// to hold everything it will produce, and returns what it signed. The signer
+// blocks on a full channel by design, so a test that wants the whole batch has
+// to give it room for the whole batch.
+func signAllForTest(plan *benchPlan, w *benchWorker) []*pb.Txv1 {
+	w.ready = make(chan *pb.Txv1, plan.perWorker+1)
+	w.reserved = make(chan struct{})
+	signBenchLoad(context.Background(), plan, w)
+	signed := make([]*pb.Txv1, 0, len(w.ready))
+	for txv := range w.ready {
+		signed = append(signed, txv)
+	}
+	return signed
 }
 
 func TestBenchFlagsHaveTheDocumentedDefaults(t *testing.T) {
@@ -135,15 +154,35 @@ func TestPrepareCountFollowsTheRateAndDuration(t *testing.T) {
 		{"a capped run pre-signs exactly its cap", BenchOptions{Txmax: 5000, Workers: 4}, 5000},
 		{"a paced run pre-signs the rate times the window plus a tenth",
 			BenchOptions{Rate: 1000, Duration: 10 * time.Second, Workers: 8}, 11008},
-		{"an unpaced run has nothing to derive from",
-			BenchOptions{Duration: 30 * time.Second, Max: true, Workers: 32}, benchDefaultPrepare},
+		// An unpaced run has no rate to derive from, so it funds for a ceiling far
+		// above the node's and lets the duration end the run. It used to take a
+		// flat 200,000 regardless of the window asked for, which is what turned a
+		// five-minute request into a 65-second one.
+		{"an unpaced run funds for an assumed ceiling over its window",
+			BenchOptions{Duration: 30 * time.Second, Max: true, Workers: 32},
+			uint64(benchMaxAssumedRate*30) + 32},
 		{"a rate of zero is unpaced too",
-			BenchOptions{Rate: 0, Duration: 30 * time.Second, Workers: 32}, benchDefaultPrepare},
+			BenchOptions{Rate: 0, Duration: 30 * time.Second, Workers: 32},
+			uint64(benchMaxAssumedRate*30) + 32},
+		// Only a run with no bound at all falls back to the flat default, and
+		// validate() refuses that combination, so this is the unreachable arm.
+		{"nothing to derive from at all takes the default",
+			BenchOptions{Workers: 32}, benchDefaultPrepare},
 	}
 	for _, c := range cases {
 		if got := c.opts.prepareCount(); got != c.want {
 			t.Errorf("%s: prepareCount() = %d, want %d", c.name, got, c.want)
 		}
+	}
+}
+
+// The funded pool must scale with the window, because that is the property whose
+// absence truncated the run: a longer request has to fund a longer run.
+func TestALongerUnpacedWindowFundsMore(t *testing.T) {
+	short := BenchOptions{Duration: time.Minute, Max: true, Workers: 8}
+	long := BenchOptions{Duration: 10 * time.Minute, Max: true, Workers: 8}
+	if s, l := short.prepareCount(), long.prepareCount(); l <= s {
+		t.Errorf("a 10-minute unpaced run funds %d transactions and a 1-minute one funds %d - the window must decide the pool, not a constant", l, s)
 	}
 }
 
@@ -194,14 +233,14 @@ func TestPreSignedTransactionsAreDistinctAndVerify(t *testing.T) {
 	}
 	w := &benchWorker{id: 0, senders: []*benchWallet{sender}}
 
-	presignWorkerLoad(plan, w)
+	signed := signAllForTest(plan, w)
 
-	if len(w.load) != count {
-		t.Fatalf("pre-signed %d transactions, want %d", len(w.load), count)
+	if len(signed) != count {
+		t.Fatalf("signed %d transactions, want %d", len(signed), count)
 	}
 	hashes := make(map[string]bool, count)
 	nonces := make(map[uint64]bool, count)
-	for i, pbtx := range w.load {
+	for i, pbtx := range signed {
 		var txv tx.Txv1
 		txv.UnmarshalBinary(pbtx)
 		if err := txv.Verify(); err != nil {
@@ -230,9 +269,83 @@ func TestPreSigningStopsWhenTheFundedBalanceIsSpent(t *testing.T) {
 		perWorker:  10,
 	}
 	w := &benchWorker{senders: []*benchWallet{sender}}
-	presignWorkerLoad(plan, w)
-	if len(w.load) != 3 {
-		t.Errorf("pre-signed %d transactions from a balance of 3, want 3 - the generator must not offer what the sender cannot pay", len(w.load))
+	signed := signAllForTest(plan, w)
+	if len(signed) != 3 {
+		t.Errorf("signed %d transactions from a balance of 3, want 3 - the generator must not offer what the sender cannot pay", len(signed))
+	}
+}
+
+// The regression this whole change exists for. Before it, a worker signed
+// perWorker transactions up front and then handed out nothing more, so a run
+// asking for five minutes ended after however long the pool lasted - 65 seconds,
+// in the run that exposed it. The signer must keep going past the reserve, which
+// means it must still be producing after the buffer has been filled once.
+func TestTheSignerKeepsGoingPastTheReserve(t *testing.T) {
+	const reserve, total = 4, 20
+	sender := &benchWallet{w: grape1crypto.NewWallet(), balance: big.NewInt(1000)}
+	plan := &benchPlan{
+		opts:       &BenchOptions{Workers: 1, Amount: 1},
+		amount:     big.NewInt(1),
+		recipients: []string{grape1crypto.NewWallet().WalletAddress()},
+		perWorker:  total,
+	}
+	w := &benchWorker{
+		senders:  []*benchWallet{sender},
+		ready:    make(chan *pb.Txv1, reserve),
+		reserved: make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); signBenchLoad(ctx, plan, w) }()
+
+	// The reserve is announced as soon as it is full, and at that point the signer
+	// is blocked on a full channel rather than finished.
+	select {
+	case <-w.reserved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the signer never announced its reserve was full")
+	}
+	if got := len(w.ready); got != reserve {
+		t.Fatalf("buffer held %d transactions when the reserve was announced, want %d", got, reserve)
+	}
+
+	stats := newBenchStats()
+	seen := 0
+	for {
+		txv := w.take(ctx, stats)
+		if txv == nil {
+			break
+		}
+		seen++
+	}
+	<-done
+
+	if seen != total {
+		t.Errorf("a worker with a reserve of %d handed out %d transactions, want %d - the signer stopped at the reserve instead of refilling it",
+			reserve, seen, total)
+	}
+	// Draining faster than one signature at a time is exactly what a stall is, so
+	// this run must have recorded some. A run that records none here would mean
+	// take is not noticing that it waited.
+	if stats.stalled.Load() == 0 {
+		t.Error("no stalls recorded while draining a 4-deep buffer of 20 transactions - take is not counting the waits")
+	}
+}
+
+// The stall counter is what tells a reader that a number is the generator's
+// ceiling rather than the node's, so it has to stay quiet when it should.
+func TestTakingFromAFullBufferRecordsNoStall(t *testing.T) {
+	w := stubWorkers(1, 5, &stubTrader{})[0]
+	stats := newBenchStats()
+	for i := 0; i < 5; i++ {
+		if w.take(context.Background(), stats) == nil {
+			t.Fatalf("take %d of 5 came back empty from a full buffer", i)
+		}
+	}
+	if got := stats.stalled.Load(); got != 0 {
+		t.Errorf("recorded %d stalls while taking 5 transactions from a buffer holding 5", got)
 	}
 }
 
@@ -240,7 +353,7 @@ func TestAWorkerHandsOutEachPreSignedTransactionExactlyOnce(t *testing.T) {
 	w := stubWorkers(1, 5, &stubTrader{})[0]
 	seen := 0
 	for {
-		txv := w.take()
+		txv := w.take(context.Background(), newBenchStats())
 		if txv == nil {
 			break
 		}
@@ -249,7 +362,7 @@ func TestAWorkerHandsOutEachPreSignedTransactionExactlyOnce(t *testing.T) {
 	if seen != 5 {
 		t.Errorf("a worker handed out %d of its 5 pre-signed transactions", seen)
 	}
-	if w.take() != nil {
+	if w.take(context.Background(), newBenchStats()) != nil {
 		t.Error("a spent pool should keep reporting nothing")
 	}
 }
@@ -373,6 +486,43 @@ func TestRunBenchStopsOnACancelledContext(t *testing.T) {
 	for kind := range report.Errors {
 		if kind != benchShutdownFailure {
 			t.Errorf("an interrupted run blamed the node with %q (%v)", kind, report.Errors)
+		}
+	}
+}
+
+// startBenchSigners waits on w.reserved before opening the window, so a signer
+// that can finish without ever closing it hangs the whole run. That is exactly
+// what an unbuffered channel would do: reserve is cap(ready), so with a
+// zero-capacity buffer neither the "reserve is full" close nor the "finished
+// short of the reserve" close can fire, and setup waits forever. The guard in
+// benchWorkerReserve is what prevents it, and this is the test that keeps the
+// guard honest.
+func TestTheSignerAlwaysAnnouncesItsReserve(t *testing.T) {
+	for _, perWorker := range []int{0, 1, 3, benchReserve + 1} {
+		plan := &benchPlan{
+			opts:       &BenchOptions{Workers: 1, Amount: 1},
+			amount:     big.NewInt(1),
+			recipients: []string{grape1crypto.NewWallet().WalletAddress()},
+			perWorker:  perWorker,
+		}
+		if got := benchWorkerReserve(plan); got < 1 {
+			t.Fatalf("perWorker=%d: benchWorkerReserve() = %d, want at least 1 - an unbuffered channel cannot announce a reserve", perWorker, got)
+		}
+		w := &benchWorker{
+			senders:  []*benchWallet{{w: grape1crypto.NewWallet(), balance: big.NewInt(1000000)}},
+			ready:    make(chan *pb.Txv1, benchWorkerReserve(plan)),
+			reserved: make(chan struct{}),
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		go signBenchLoad(ctx, plan, w)
+		select {
+		case <-w.reserved:
+		case <-time.After(10 * time.Second):
+			cancel()
+			t.Fatalf("perWorker=%d: the signer never announced its reserve, so setup would wait forever", perWorker)
+		}
+		cancel()
+		for range w.ready { //nolint:revive // draining so the signer can exit
 		}
 	}
 }
