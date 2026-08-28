@@ -262,3 +262,84 @@ func TestTheEarningsCreditListIsCappedButTheTotalIsNot(t *testing.T) {
 		t.Fatalf("the newest credit is pin %d, want 19", credits[0].Pin)
 	}
 }
+
+// The fee has to be the fuel price, which means the limit has to be exactly
+// one. Ingress refuses anything else; this is the recomputed-rather-than-
+// trusted path, so a site that slipped past carrying a limit of two must not
+// contribute twice its price to the pool that gets paid out.
+func TestASiteWhoseFuelLimitIsNotOnePaysNothingIntoThePool(t *testing.T) {
+	cases := []struct {
+		name  string
+		limit int64
+		price int64
+		want  int64
+	}{
+		{"the only valid shape", 1, 1000, 1000},
+		{"a limit of two", 2, 1000, 0},
+		{"a limit of 21000, as Ethereum tooling sends", 21000, 1, 0},
+		{"no fuel at all", 0, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			site := feeSite(t, 1, addr(0x41), c.limit, c.price)
+			if got := paymentFee(site); got.Cmp(big.NewInt(c.want)) != 0 {
+				t.Fatalf("fee is %s, want %d", got.String(), c.want)
+			}
+		})
+	}
+}
+
+// Escrow: the sender pays the amount and the fee, the recipient receives the
+// amount. Debiting only the amount would pay rewards out of money nobody had
+// paid in, so the supply would grow by the fee on every payment.
+func TestTheFeeIsNoughtWhileFeesAreOffSoEscrowIsUnchanged(t *testing.T) {
+	recoveryFixture(t, t.TempDir())
+	// The fixture's config has no fee settings, so fees are off.
+	site := feeSite(t, 1, addr(0x41), 1, 1000)
+	if got := settledFee(site); got.Sign() != 0 {
+		t.Fatalf("a fee of %s is charged while fees are off", got.String())
+	}
+}
+
+// Once fees are active the settled fee is what the site's transaction paid, and
+// it is the same figure the commit transaction divides out - one function, so
+// the balances and the rewards cannot disagree.
+func TestTheSettledFeeMatchesWhatTheCommitTransactionDividesOut(t *testing.T) {
+	recoveryFixture(t, t.TempDir())
+	prev := txConfig
+	txConfig.Feestartpin = 0
+	txConfig.Minpaymentfee = 1000
+	t.Cleanup(func() { txConfig = prev })
+
+	site := feeSite(t, 1, addr(0x41), 1, 2500)
+	charged := settledFee(site)
+	if charged.Cmp(big.NewInt(2500)) != 0 {
+		t.Fatalf("the sender is charged %s, want 2500", charged.String())
+	}
+	pooled := feePoolFor([]*Node{site}, nil)
+	if pooled.Cmp(charged) != 0 {
+		t.Fatalf("the pool collects %s but the sender was charged %s: the two must agree",
+			pooled.String(), charged.String())
+	}
+}
+
+// The hazard the feesOff constant exists for: TxConfiguration's zero value has
+// Feestartpin 0, which means "charge from the genesis commit transaction". A
+// node built without going through configuration would therefore charge fees
+// that no payment builder in the tree pays, and refuse every payment on the
+// network - the chain would stop, on a default.
+func TestAnUnconfiguredNodeDoesNotChargeFees(t *testing.T) {
+	prev := txConfig
+	t.Cleanup(func() { txConfig = prev })
+
+	// Exactly what dag.Init falls back to when there is no configuration.
+	txConfig = configTxFallback()
+	if txConfig.FeesActive(0) {
+		t.Fatal("a node with no configuration charges fees from the genesis commit transaction")
+	}
+	for _, h := range []int64{0, 1, 1000, 1 << 40} {
+		if txConfig.FeesActive(h) {
+			t.Fatalf("a node with no configuration charges fees at pin %d", h)
+		}
+	}
+}

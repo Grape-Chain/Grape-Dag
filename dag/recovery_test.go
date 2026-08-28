@@ -23,7 +23,7 @@ var testPinWallet = grape_wallet.NewWallet()
 // recoveryFixture - the globals recovery touches, restored on cleanup.
 func recoveryFixture(t testing.TB, dir string) store.Store {
 	t.Helper()
-	prevCfg, prevPeer := dagConfig, peerConfig
+	prevCfg, prevPeer, prevTx := dagConfig, peerConfig, txConfig
 	prevArchive, prevCounter, prevPins := sliceArchive, confirmationCounter, _pins_
 	prevCache, prevConfirmed, prevStore := walletCache, walletCacheConfirmed, ledgerStore
 	prevSettled := settled
@@ -35,6 +35,8 @@ func recoveryFixture(t testing.TB, dir string) store.Store {
 	}
 
 	dagConfig = config.DagConfiguration{Slicing: true, Approvetx: 2}
+	// Fees off, stated rather than left to the zero value - see feesOff.
+	txConfig = config.TxConfiguration{Feestartpin: feesOff}
 	peerConfig = config.PeerConfiguration{Network: 2}
 	sliceArchive = newRamArchive()
 	confirmationCounter = newConfirmTracker(0, 1000)
@@ -53,7 +55,7 @@ func recoveryFixture(t testing.TB, dir string) store.Store {
 
 	t.Cleanup(func() {
 		s.Close()
-		dagConfig, peerConfig = prevCfg, prevPeer
+		dagConfig, peerConfig, txConfig = prevCfg, prevPeer, prevTx
 		sliceArchive, confirmationCounter, _pins_ = prevArchive, prevCounter, prevPins
 		walletCache, walletCacheConfirmed, ledgerStore = prevCache, prevConfirmed, prevStore
 		settled = prevSettled

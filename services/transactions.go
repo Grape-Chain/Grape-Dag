@@ -197,8 +197,12 @@ func (ts *TransactionServiceImpl) sendRawTransaction(pbTx string) (ExecutionResu
 		if senderBalance.Cmp(txTotal) < 0 {
 			return execResult, fmt.Errorf("not enough funds: required %d, got %s", txTotal, senderBalance.Text(10))
 		}
-		if transaction.GetFuelLimit().String() != "0" || transaction.GetFuelPrice().String() != "0" {
-			return execResult, fmt.Errorf("payment transaction must have zero fuelLimit and fuelPrice, got %s and %s correspondingly", transaction.GetFuelLimit().String(), transaction.GetFuelPrice().String())
+		// What the payment owes, judged at the height the node is at. Before
+		// tx.feestartpin this is the pre-fee rule - no fuel on a payment - and
+		// once fees start it is fuel_limit of 1 at no less than the minimum
+		// price. See services/fees.go and docs/economics.md.
+		if feeErr := validatePaymentFuel(transaction, currentPinNumber()); feeErr != nil {
+			return execResult, feeErr
 		}
 		execResult, txExecErr = executePaymentTx(transaction)
 	}
@@ -212,9 +216,20 @@ func (ts *TransactionServiceImpl) sendRawTransaction(pbTx string) (ExecutionResu
 func executePaymentTx(transaction tx.Transaction) (ExecutionResult, error) {
 	hash := transaction.GetHash()
 	execResult := ExecutionResult{}
+	pinNumber := currentPinNumber()
+	// Checked here as well as in sendRawTransaction, not instead of it. This is
+	// the last point before the transaction is queued for diffusion, so a caller
+	// arriving by another route - a future ingress path, a replay of a queued
+	// transaction - cannot put an underpaying payment on the wire that every
+	// peer then has to refuse. Only the fee floor is applied, not the fees-off
+	// "no fuel at all" rule, which belongs to the API edge: internal producers
+	// that build their own payments are not the ones being policed here.
+	if feeErr := validatePaymentFee(transaction, pinNumber); feeErr != nil {
+		return execResult, feeErr
+	}
 	txqueue.GetPublishQueue().Enqueue(transaction)
-	// set zero fee here
-	execResult.GasUsed = 0
+	// The fee this payment actually pays, which is nought until fees start.
+	execResult.GasUsed = paymentFeeCharged(transaction, pinNumber)
 	execResult.Successful = true
 	logger.Infof("Added tx %s to publish queue", hash.String())
 	return execResult, nil

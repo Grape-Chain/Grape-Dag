@@ -233,8 +233,15 @@ func (n *Node) GetID() uuid.UUID {
 // it will also update the wallet cache which keeps track of the balances for all wallets
 // in the current dag slice
 func (n *Node) UpdateBalanceIfValid() bool {
-	// add to wallet cache
-	subInt := big.NewInt(0).SetBytes(n.tx.GetAmount().Bytes())
+	// Escrow: the sender pays the amount and the fee, the recipient receives the
+	// amount, and the difference is what the commit transaction divides between
+	// the processors that settled it (see dag/rewardbuild.go).
+	//
+	// Debiting only the amount would pay rewards out of money nobody had paid
+	// in, so the supply would grow by the fee on every payment. The fee is
+	// nought until fees are switched on, so this is the same arithmetic it has
+	// always been until then.
+	subInt := new(big.Int).Add(n.tx.GetAmount(), settledFee(n))
 	if bytes.Compare(n.tx.GetSender(), n.tx.GetRecipient()) != 0 {
 		err := walletCache.sub(grape1crypto.BytesToAddress(n.tx.GetSender()), n.id.id.String(), subInt)
 		if err != nil {
@@ -248,6 +255,8 @@ func (n *Node) UpdateBalanceIfValid() bool {
 			}
 			return false
 		}
+		// The amount only: the recipient does not receive the fee, and does not
+		// pay it either.
 		addInt := big.NewInt(0).SetBytes(n.tx.GetAmount().Bytes())
 		err = walletCache.add(grape1crypto.BytesToAddress(n.tx.GetRecipient()), n.id.id.String(), addInt)
 		if err != nil {

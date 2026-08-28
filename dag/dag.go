@@ -464,11 +464,7 @@ func Init() {
 			Totaltx:      DAG_TOTAL_TX,
 		}
 		logger.Warnf("Using default DAG config\n%s", &dagConfig)
-		txConfig = config.TxConfiguration{
-			Maxfuellimit: TX_MAXFUEL,
-			Maxfuelprice: TX_MAXPRICE,
-			Neutrino:     TX_NEUTRINO,
-		}
+		txConfig = configTxFallback()
 	}
 	walletCache = newWalletCache()
 	walletCacheConfirmed = newWalletCache()

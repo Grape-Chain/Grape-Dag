@@ -4,6 +4,8 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/Grape-Chain/Grape-Dag/config"
+
 	grape1crypto "github.com/Grape-Chain/Grape-Dag/crypto"
 	"github.com/Grape-Chain/Grape-Dag/tx/pb"
 )
@@ -42,6 +44,15 @@ func paymentFee(n *Node) *big.Int {
 	}
 	limit, price := n.tx.GetFuelLimit(), n.tx.GetFuelPrice()
 	if limit == nil || price == nil || limit.Sign() <= 0 || price.Sign() <= 0 {
+		return big.NewInt(0)
+	}
+	// The limit has to be exactly one, so the fee is the price. Ingress refuses
+	// anything else, and this is the recomputed-rather-than-trusted path: a site
+	// that slipped past ingress carrying a limit of two would otherwise
+	// contribute twice its price to the pool, and the pool is what gets paid
+	// out. Counting it as nought means such a site earns nobody anything rather
+	// than earning everybody too much.
+	if limit.Cmp(big.NewInt(1)) != 0 {
 		return big.NewInt(0)
 	}
 	return new(big.Int).Mul(limit, price)
@@ -232,4 +243,46 @@ func EarningsFor(account string, limit int) (lifetime, pending *big.Int, credits
 		credits = credits[:limit]
 	}
 	return lifetime, pending, credits
+}
+
+// feesOff - the Feestartpin value that means "never charge".
+//
+// Named because the number matters: the zero value of the field is 0, which
+// means "charge from the genesis commit transaction". Anything that builds a
+// TxConfiguration without going through configuration has to say this
+// explicitly or it silently switches fees on.
+const feesOff = -1
+
+// configTxFallback - the transaction settings a node uses when it starts with no
+// configuration at all.
+//
+// Fees explicitly off. Stated in one place, and read by both dag.Init and the
+// test that holds it to it, so the two cannot drift apart.
+func configTxFallback() config.TxConfiguration {
+	return config.TxConfiguration{
+		Maxfuellimit: TX_MAXFUEL,
+		Maxfuelprice: TX_MAXPRICE,
+		Neutrino:     TX_NEUTRINO,
+		Feestartpin:  feesOff,
+	}
+}
+
+// settledFee - the fee a site's transaction owes at the ledger's current height.
+//
+// Nought while fees are off, which keeps the escrow arithmetic identical to what
+// it was before fees existed. Read here rather than at ingress because this is
+// the figure the balances move by, and it has to agree with the figure the
+// commit transaction divides out: one function, so the two cannot drift.
+func settledFee(n *Node) *big.Int {
+	if n == nil || n.tx == nil {
+		return big.NewInt(0)
+	}
+	height := int64(0)
+	if _pins_ != nil {
+		height = int64(_pins_.CurrentHeight())
+	}
+	if !txConfig.FeesActive(height) {
+		return big.NewInt(0)
+	}
+	return paymentFee(n)
 }

@@ -168,6 +168,39 @@ Two questions I cannot answer for you:
    per commit transaction — about 17 Grape a year at 1000 TPS — so it matters
    for supply policy, not for anyone's balance.
 
+## Before `tx.feestartpin` can be set
+
+Fees are enforced and rewards are computed, but **switching them on today would
+stop the network**, because nothing in the tree builds a payment that pays. This
+is the list that has to be cleared first. It is here rather than in a ticket
+because setting one configuration value is all it takes to break a live chain.
+
+1. **Every payment builder hard-codes zero fuel.** `(*Txv1).GeneratePayment`
+   (`tx/txvX.go`) sets `Fuel_Limit` and `Fuel_Price` to zero explicitly, and
+   every caller inherits it: the faucet (`services/rest/handlers.go`),
+   `services/grpcpublish.go`, the WASM wallet (`cmd/walletwasm/main.go`), and the
+   load generator (`tools/txgen/`). The moment fees activate, all of them are
+   refused.
+2. **`SetFuelLimit`/`SetFuelPrice` do not work.** They `copy()` into the existing
+   slice, which `GeneratePayment` has left empty, so the write is silently a
+   no-op. A payment will look priced in code and go out at zero. Either fix the
+   setters or assign the fields directly.
+3. **The peer path does not check the fee.** `dag.NewDagNode` drops a transaction
+   from the wrong network or with a bad signature, but not one that underpays, so
+   a peer can diffuse an underpaying payment straight past the API.
+4. **Three direct queue writes bypass validation** in
+   `services/grpcpublish.go`: `TxGeneration.Trade`, `RoboTraderServer.PublishTx`,
+   and the service-stop transaction. The second is a gRPC ingress path and needs
+   the same check the REST path has.
+5. **Ethereum-style payments have no representation.** `fuel_limit == 1` is not
+   expressible by standard Ethereum tooling, which sends 21000. Such payments are
+   already refused today by the zero-fuel rule, so this is not a regression, but
+   the fee design has no answer for them and needs one before the eth-RPC path
+   can carry paid transactions.
+
+Items 1, 3 and 4 are the ones that stop the chain. Item 2 is the trap that makes
+item 1 look fixed when it is not.
+
 ## What this does not do
 
 - **No fee market.** The fee is a fixed minimum, not a bid. Under congestion
