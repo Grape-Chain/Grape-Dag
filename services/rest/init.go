@@ -11,6 +11,7 @@ import (
 	"github.com/Grape-Chain/Grape-Dag/config"
 	"github.com/Grape-Chain/Grape-Dag/services"
 	"github.com/Grape-Chain/Grape-Dag/services/eth/rpc"
+	"github.com/Grape-Chain/Grape-Dag/services/node"
 	"github.com/Grape-Chain/Grape-Dag/services/rest/api"
 	"github.com/Grape-Chain/Grape-Dag/services/ws"
 
@@ -147,6 +148,18 @@ func (app *RestAPIConfig) routes() http.Handler {
 	mux.HandleFunc("/faucet", Faucet)
 	mux.HandleFunc("/events", ws.EventsEndpoint)
 	mux.HandleFunc("/eth/rpc", rpc.RpcHandler())
+
+	// What a wallet application drives to run this machine as a processing
+	// node: its state, what it has earned, the start/stop switch, and the
+	// bundled page that uses them. Mounted here so they inherit the
+	// authentication and error handling above - the switch changes what the node
+	// does, so it must not be reachable without credentials.
+	// Registered as a catch-all rather than mounted: Routes() registers the
+	// absolute /node/... patterns, so stripping the prefix would leave its mux
+	// looking for /status and finding nothing.
+	nodeRoutes := node.NewService(services.NewNodeLedger()).Routes()
+	mux.Handle("/node", nodeRoutes)
+	mux.Handle("/node/*", nodeRoutes)
 
 	// the bundled testnet wallet, when its assets have been built
 	if dir := walletDir(); dir != "" {

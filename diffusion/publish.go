@@ -11,6 +11,7 @@ import (
 	"github.com/Grape-Chain/Grape-Dag/discovery"
 	grapepeer "github.com/Grape-Chain/Grape-Dag/peer"
 	txqueue "github.com/Grape-Chain/Grape-Dag/queues"
+	"github.com/Grape-Chain/Grape-Dag/services/node"
 	"github.com/Grape-Chain/Grape-Dag/stats"
 	"github.com/Grape-Chain/Grape-Dag/tx"
 	utils "github.com/Grape-Chain/Grape-Dag/utils"
@@ -20,6 +21,11 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
+// processingPausedPoll - how long the publisher waits before looking at the
+// processing switch again. Long enough that a stopped node costs nothing, short
+// enough that starting it feels immediate to whoever pressed the button.
+const processingPausedPoll = 100 * time.Millisecond
+
 func publish(ctx context.Context, topic *pubsub.Topic, statsId uuid.UUID, leader bool) {
 	//runtime.LockOSThread()
 	//defer runtime.UnlockOSThread()
@@ -27,6 +33,16 @@ func publish(ctx context.Context, topic *pubsub.Topic, statsId uuid.UUID, leader
 	// var yield_time int64 = config.PUBSUB_QUEUE_YIELD_MIN
 	pubopt := []pubsub.PubOpt{}
 	for {
+		// The NXT-forging switch. Checked before the dequeue, not after: a
+		// stopped node that dequeued first would take transactions off the
+		// queue and drop them, which is losing work rather than pausing it.
+		// Sleeps rather than yielding, because a stopped node would otherwise
+		// spin a core for as long as it stays stopped. The gate starts enabled,
+		// so this changes nothing until somebody stops the node.
+		if !node.ProcessingEnabled() {
+			time.Sleep(processingPausedPoll)
+			continue
+		}
 		deq, sz := txqueue.GetPublishQueue().Dequeue()
 		if deq != nil {
 			rec = tx.NewGrapeTx(grapepeer.GetHost())

@@ -1,0 +1,77 @@
+# Written by 'grapepeer join'. Edit it freely; join will not overwrite it again
+# without --force.
+#
+# This is a processing node: it syncs the ledger, validates what arrives, and
+# encapsulates transactions into sites. Whether it is encapsulating at any given
+# moment is a runtime decision made through POST /node/processing, not a setting
+# in this file - stopping processing does not stop syncing.
+
+peer:
+  host: "0.0.0.0"
+  # 0 - let the operating system choose the libp2p port.
+  port: 0
+  # 0 - MAINNET, 1 - PUBLIC_TESTNET, 2 - PRIVATE_TESTNET
+  network: {{.Network}}
+  # 0 - a full node: it processes as well as serving.
+  nodetype: 0
+  console: 1
+  bandwidth: 0
+  visualize: 0
+  purge: 0
+  mdns: 0
+  grpc: false
+  grpcport: 50333
+  apiport: {{.ApiPort}}
+  apitlsenabled: false
+  apikey: "ca/grapepeerapi.key"
+  apicert: "ca/grapepeerapi.crt"
+  # Credentials come from GRAPE_REST_API_USERNAME and GRAPE_REST_API_PASSWORD,
+  # written by join to {{.CredentialsFile}}. Leaving this false is what keeps
+  # this node's own control endpoints - including the processing switch - shut to
+  # anyone who cannot read that file.
+  apiauthdisabled: false
+  logging: 0
+
+dag:
+  algorithm: "mcmc+"
+  alpha: 0.5
+  approvetx: 2
+  delay: 0
+  initialwidth: 5
+  lambda: 1
+  # 0 - no limit; this node is not a generator.
+  totaltx: 0
+  cummstep: 0.1
+  pinthreshold: 30
+  # Share of the live tips that must confirm a site before it is irrevocable, in
+  # permille. See docs/confirmation.md.
+  confirmshare: 667
+  walkdepth: 10
+  tiptimeout: 30
+  slicing: true
+  # Empty means the signer is adopted from the chain-opening statement, which
+  # trusts whichever peer supplied the chain. See docs/pin-authority.md: set this
+  # before running against anything that matters.
+  pinsigners: ""
+  consensus: "leader"
+  validators: ""
+  # This node's own keys. The private key is here because the node signs with it;
+  # the file is written 0600 and belongs to nobody else.
+  publickey: {{.PublicKey}}
+  privatekey: {{.PrivateKey}}
+  wallet: {{.WalletAddress}}
+  # Fees collected while this node processes are paid here. It is the same
+  # account as the wallet above, which is what makes the earnings endpoint
+  # meaningful.
+  coinbaseaccount: {{.WalletAddress}}
+
+store:
+  enabled: true
+  # Absolute, so that a node run with a data directory of its own keeps its
+  # ledger there rather than in the default one.
+  path: "{{.StorePath}}"
+
+tx:
+  maxfuellimit: 10000000
+  maxfuelprice: 10000000
+  neutrino: 0.00000001
