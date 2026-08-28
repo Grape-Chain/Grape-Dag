@@ -565,15 +565,19 @@ func (c *ConfirmTracker) sweep() {
 				// itself into a commit transaction.
 				continue
 			}
-			// untrack rather than an unbucket and a delete, so the tip ring
-			// cannot be left holding a site the region no longer has. Nothing
-			// reaching here is in the ring: a ring member is approved by
-			// nothing, so nothing has a path to it and its coverage is zero,
-			// which is short of any threshold. That is an invariant rather than
-			// an accident, so it is asserted -
-			// see assertTipIndexIsConsistent - and the removal stays because a
-			// removal path with a hole in it is the kind of thing that is
-			// discovered by a site being approved after it was settled.
+			// untrack, not an unbucket and a delete: a site reaching here can
+			// still be in the tip ring, and leaving it there means selection
+			// offering a site that has just been settled.
+			//
+			// It looks as though it cannot be. A site is either a tip, and
+			// excluded above, or approved, and out of the ring. Both are false
+			// at once for an expired tip whose only approver is detached: the
+			// timeout took its slot, so the exclusion above does not apply,
+			// while a detached site's approvals are not counted, so nothing
+			// approves it as far as the ring is concerned - and coverage still
+			// travels through that detached approver, so its share climbs.
+			// TestASiteConfirmedWhileStillSelectableLeavesTheTipSet is that
+			// shape.
 			c.untrack(id, tr)
 			if c.isHarvested(id) {
 				continue
@@ -1089,7 +1093,7 @@ func (c *ConfirmTracker) stepBack(from *Node) *Node {
 	if inRegion == 0 {
 		return nil
 	}
-	wanted := 0
+	wanted := dagRand.Intn(inRegion)
 	for _, t := range from.targets {
 		if t == nil {
 			continue

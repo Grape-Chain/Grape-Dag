@@ -108,14 +108,6 @@ func assertTipIndexIsConsistent(t *testing.T, tr *ConfirmTracker, when string) {
 		if held, ok := tr.sites[id]; !ok || held != track {
 			t.Fatalf("%s: the tip ring holds a site the active region does not: %s", when, id.String())
 		}
-		// A site nothing approves has no descendants, so no other tip has a
-		// path to it and nothing can confirm it. That is the definition read
-		// backwards, and it is why the sweep can leave the tip set alone: a
-		// member of it can never reach the threshold to begin with.
-		if track.count != 0 {
-			t.Fatalf("%s: %s is approved by nothing yet %d tips confirm it",
-				when, id.String(), track.count)
-		}
 	}
 }
 
@@ -843,6 +835,113 @@ func TestASettledSiteStaysRefusedAfterTheHarvestRecordIsPruned(t *testing.T) {
 			t.Fatalf("a settled site was confirmed a second time after its harvest record was pruned")
 		}
 	}
+}
+
+// A detached site is still part of the path between the sites that approve it
+// and the sites it approves, and coverage has to travel through it.
+//
+// This is the reason a site whose approval targets never arrive cannot simply be
+// evicted from the active region to bound it. Marking stops at a site the
+// tracker does not hold, on the grounds that such a site is confirmed and so are
+// its ancestors; a detached site is the opposite case, and stopping there would
+// leave its ancestors short of the coverage they have genuinely been given. They
+// would confirm later than the definition says, or not at all.
+func TestCoverageTravelsThroughADetachedSite(t *testing.T) {
+	tr := newConfirmTracker(0, 1000)
+	rootA, rootB := tnode(0), tnode(1)
+	tr.add(rootA)
+	// A second root, which never has a path to anything on the first one. It
+	// keeps the denominator above one, so the site being measured is not
+	// confirmed and gone before there is anything to measure.
+	tr.add(rootB)
+
+	target := tnode(2)
+	tlink(target, rootA)
+	tr.add(target)
+
+	// A site that approves the target but is waiting on a target of its own that
+	// it has never seen.
+	detached := tnode(3)
+	tlink(detached, target)
+	detached.missingTargets = map[string]bool{uuid.New().String(): true}
+	tr.add(detached)
+
+	before, ok := tr.shareOf(target.id.id)
+	if !ok {
+		t.Fatalf("the target left the active region before the measurement")
+	}
+
+	// And a site that approves the detached one. Its coverage has to reach the
+	// target, two edges away, through a site that confirms nothing itself.
+	approver := tnode(4)
+	tlink(approver, detached)
+	tr.add(approver)
+
+	after, ok := tr.shareOf(target.id.id)
+	if !ok {
+		t.Fatalf("the target left the active region: no tip confirms it yet")
+	}
+	if after <= before {
+		t.Fatalf("the share of the target is %v after a site approved the detached site that approves it, was %v: coverage did not travel through the detached site",
+			after, before)
+	}
+}
+
+// A site can be confirmed while it is still selectable, and it has to leave the
+// tip set when it is. Selection would otherwise keep offering a site that has
+// been settled, and a new site approving one names an approval that no peer can
+// resolve once the site has been sliced out of the live graph.
+//
+// The shape needed to get there is narrow and it is worth writing down. A site
+// is normally either a tip, and excluded from confirmation outright, or approved,
+// and out of the tip set. Both have to be false at once: the site has to be out
+// of the denominator, which only the unapproved-tip timeout does, while the
+// tracker still counts nothing as approving it - which is what a detached
+// approver is, since a detached site's approvals are not counted until it
+// relinks. Coverage still travels through that detached site, so the site's
+// share climbs while it is still being offered for approval.
+func TestASiteConfirmedWhileStillSelectableLeavesTheTipSet(t *testing.T) {
+	tr := newConfirmTracker(30*time.Millisecond, 1000)
+	genesis := tnode(0)
+	tr.add(genesis)
+
+	stranded := tnode(1)
+	tlink(stranded, genesis)
+	tr.add(stranded)
+
+	// Nothing approves it for longer than the timeout, so it stops counting
+	// towards the denominator while staying selectable.
+	time.Sleep(80 * time.Millisecond)
+	detached := tnode(2)
+	tlink(detached, stranded)
+	detached.missingTargets = map[string]bool{uuid.New().String(): true}
+	tr.add(detached)
+	if tr.holdsSlot(stranded.id.id) {
+		t.Fatalf("the unapproved tip should have left the denominator")
+	}
+	if !tr.isTip(stranded.id.id) {
+		t.Fatalf("an expired tip must stay selectable; a detached approver does not count")
+	}
+
+	// Coverage now reaches it through the detached site, and there is no live
+	// tip that does not confirm it.
+	approver := tnode(3)
+	tlink(approver, detached)
+	tr.add(approver)
+
+	confirmed := map[uuid.UUID]bool{}
+	for _, n := range tr.pop() {
+		confirmed[n.id.id] = true
+	}
+	if !confirmed[stranded.id.id] {
+		t.Fatalf("the site was not confirmed, so this test is no longer exercising the case it was written for")
+	}
+	for _, n := range tr.getTips() {
+		if n.id.id == stranded.id.id {
+			t.Fatalf("a site that has been handed to a commit transaction is still offered as an approval target")
+		}
+	}
+	assertTipIndexIsConsistent(t, tr, "after a selectable site was confirmed")
 }
 
 // A site that was approved while it was detached is given a slot again when it

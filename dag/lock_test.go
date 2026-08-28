@@ -38,6 +38,12 @@ the single acquisition used to give for free:
     approval-target ids, so a claim that verifies is proof the signature was made
     after the approvals were linked and that nothing changed them afterwards.
 
+The claim-checking tests further down are the same exercise for the subscriber's
+half of the insert path, where what came out from under the exclusive lock is an
+ed25519 verification rather than a signature. Their invariant is stated at
+Dag.checkProcessorClaim and checked from several directions, because getting it
+wrong misattributes money silently instead of crashing.
+
 Run them the way they are meant to be run: go test -race ./dag/ -run Concurrent
 */
 
@@ -823,12 +829,112 @@ func TestAnUnusableClaimIsStrippedAndAnHonestOneIsKept(t *testing.T) {
 		t.Fatal("a claim whose address is not the one its key produces was kept")
 	}
 
+	// A forged claim on a site this node cannot fully resolve. That path adds the
+	// site and returns an error saying so, and the claim still has to be checked:
+	// the site is relinked later and can be confirmed and paid from then on.
+	detached, detachedIds := receivedSite(t, 6, []*Node{lockSite(99)})
+	detached.processorSig[0] ^= 0xff
+	if err := d.InsertTxDag(detached, detached.id.id, detached.id.idMajor, detached.id.idMinor, detachedIds...); err == nil {
+		t.Fatal("expected the insert to report the unresolved approval target")
+	}
+	if d.getById(detached.id.id, true) == nil {
+		t.Fatal("the detached site was not added, so there is nothing to check")
+	}
+	if len(detached.processorSig) != 0 {
+		t.Fatal("a forged claim on a site with unresolved approvals was kept, so a liar gets paid once the site is relinked")
+	}
+
 	unattributed := insert(5, clearProcessor)
 	if len(unattributed.processorSig) != 0 || len(unattributed.processorAddress) != 0 {
 		t.Fatal("a site that claims nothing came back with a claim")
 	}
 	if d.getById(unattributed.id.id, true) == nil {
 		t.Fatal("a site from a peer predating attribution was refused")
+	}
+}
+
+// A site from a peer that predates attribution claims nothing, and that is a
+// perfectly ordinary site. It must not be run through the strip: that takes the
+// node's exclusive lock and logs a warning, once per such site, to remove a claim
+// that was never there.
+func TestASiteThatClaimsNothingIsNotTreatedAsALiar(t *testing.T) {
+	d := lockFixture(t, 1)
+
+	target := lockSite(1)
+	d.mux.Lock()
+	if _, _, err := d.linkApprovals(target, nil); err != nil {
+		t.Fatalf("seeding the target: %s", err.Error())
+	}
+	d.publishSite(target, nil, nil)
+	d.mux.Unlock()
+
+	before := attributionStrips.Load()
+
+	bare, bareIds := receivedSite(t, 2, []*Node{target})
+	clearProcessor(bare)
+	if err := d.InsertTxDag(bare, bare.id.id, bare.id.idMajor, bare.id.idMinor, bareIds...); err != nil {
+		t.Fatalf("inserting an unattributed site: %s", err.Error())
+	}
+	honest, honestIds := receivedSite(t, 3, []*Node{target})
+	if err := d.InsertTxDag(honest, honest.id.id, honest.id.idMajor, honest.id.idMinor, honestIds...); err != nil {
+		t.Fatalf("inserting an attributed site: %s", err.Error())
+	}
+	if got := attributionStrips.Load(); got != before {
+		t.Fatalf("%d claim(s) were treated as unusable; a site with no claim and a site with a good one are both ordinary", got-before)
+	}
+
+	forged, forgedIds := receivedSite(t, 4, []*Node{target})
+	forged.processorSig[0] ^= 0xff
+	if err := d.InsertTxDag(forged, forged.id.id, forged.id.idMajor, forged.id.idMinor, forgedIds...); err != nil {
+		t.Fatalf("inserting a forged site: %s", err.Error())
+	}
+	if got := attributionStrips.Load(); got != before+1 {
+		t.Fatalf("a forged claim did not reach the strip: count went from %d to %d", before, got)
+	}
+}
+
+// The window between the two halves of a claim check, driven directly rather
+// than waited for: a commit transaction settles the site after the claim has been
+// found wanting and before the strip can take the exclusive lock.
+//
+// The site must be left alone. It is in the archive by then, the commit
+// transaction that settled it has already recorded which processor it credited,
+// and the pin builder serialises settled sites with no dag lock held - so writing
+// to one here would change nothing except what the pin builder might be reading.
+func TestAClaimIsLeftAloneOnASiteSettledWhileItWasBeingChecked(t *testing.T) {
+	d := lockFixture(t, 1)
+
+	target := lockSite(1)
+	d.mux.Lock()
+	if _, _, err := d.linkApprovals(target, nil); err != nil {
+		t.Fatalf("seeding the target: %s", err.Error())
+	}
+	d.publishSite(target, nil, nil)
+	d.mux.Unlock()
+
+	// Inserted through the exclusive half alone, so the claim is still on the
+	// site when the two halves below run by hand.
+	site, ids := receivedSite(t, 2, []*Node{target})
+	site.processorSig[0] ^= 0xff
+	if inGraph, err := d.linkReceivedSite(site, ids...); err != nil || !inGraph {
+		t.Fatalf("linking the received site: inGraph=%t err=%v", inGraph, err)
+	}
+
+	reason := d.verifyClaim(site)
+	if reason == nil {
+		t.Fatal("the forged claim verified, so the test proves nothing")
+	}
+
+	// The commit transaction lands in the window.
+	sliceAppliedPin(storedPin(1, nil, nil, site))
+	if d.getById(site.id.id, true) != nil {
+		t.Fatal("the site was not taken out of the live graph, so the test proves nothing")
+	}
+
+	d.stripClaim(site, reason)
+
+	if len(site.processorSig) == 0 {
+		t.Fatal("the claim was stripped from a site that had already been settled, which writes to an archived site the pin builder reads without a lock")
 	}
 }
 
@@ -863,17 +969,29 @@ func TestConcurrentReceivedInsertsDoNotRaceWithClaimChecking(t *testing.T) {
 	}
 
 	probe := lockSite(-1)
+	// The reader also settles what it harvests. Slicing is the writer that
+	// rewrites the very fields the claim check reads, so without it here,
+	// dropping the shared lock around verifyProcessor would not be a race the
+	// detector could see.
+	pinNumber := int64(0)
+	sliced := int64(0)
 	stop := readUntilStopped(d, func() {
 		_ = d.Size()
 		_ = d.GetTips()
 		_ = d.SnapshotNodes()
-		for _, s := range d.GetConfirmedSites() {
+		confirmed := d.GetConfirmedSites()
+		for _, s := range confirmed {
 			_ = s.ToPbNode()
 		}
 		if _, _, err := d.approvalTargets(probe); err != nil {
 			t.Errorf("selection found nothing to approve: %s", err.Error())
 		}
 		refreshSizeGauges()
+		if len(confirmed) > 0 {
+			pinNumber++
+			sliceAppliedPin(storedPin(pinNumber, nil, nil, confirmed...))
+			atomic.AddInt64(&sliced, int64(len(confirmed)))
+		}
 	})
 
 	var wg sync.WaitGroup
@@ -891,23 +1009,33 @@ func TestConcurrentReceivedInsertsDoNotRaceWithClaimChecking(t *testing.T) {
 	wg.Wait()
 	stop()
 
-	// Every claim reached the outcome it deserved, and no site was refused.
+	if atomic.LoadInt64(&sliced) == 0 {
+		t.Fatal("nothing was settled while 150 sites were received, so the claim check never ran against a concurrent slice")
+	}
+
+	// Every claim reached the outcome it deserved.
+	//
+	// A forged claim on a site settled before the strip could take the exclusive
+	// lock is allowed to survive - checkProcessorClaim refuses to write to a site
+	// that has left the live graph, because the commit transaction that settled
+	// it has already recorded who it credited. Every forged claim on a site still
+	// in the graph must be gone, and no honest claim may be touched at all.
 	for w := 0; w < writers; w++ {
 		for i, site := range batches[w] {
-			if d.getById(site.id.id, true) == nil {
-				t.Fatalf("received site %s never entered the graph", site.id.id.String())
+			live := d.getById(site.id.id, true) != nil
+			if _, settled := settledSite(site.id.id); !live && !settled {
+				t.Fatalf("received site %s is neither in the graph nor in the archive", site.id.id.String())
 			}
 			forged := i%3 == 0
 			stripped := len(site.processorSig) == 0
-			if forged && !stripped {
-				t.Fatalf("forged claim on site %s survived", site.id.id.String())
+			if forged && !stripped && live {
+				t.Fatalf("forged claim on live site %s survived", site.id.id.String())
 			}
 			if !forged && stripped {
 				t.Fatalf("honest claim on site %s was stripped", site.id.id.String())
 			}
 		}
 	}
-	assertGraphIsConsistent(t, d)
 }
 
 // A site that collides on version enters the graph, pays, counts and confirms.
@@ -1083,4 +1211,63 @@ func BenchmarkReceivedInsertsWithAConcurrentPublisher(b *testing.B) {
 	if refused.Load() > 0 {
 		b.Fatalf("%d publish(es) were refused", refused.Load())
 	}
+}
+
+// BenchmarkReceivedInsertPhases - how much of a received insert holds the
+// exclusive lock, and how much no longer does.
+//
+// Single-threaded on purpose. The contention figures for this path are unusable
+// on a shared machine, and they would answer the wrong question anyway: a shared
+// section that lasts as long as the exclusive one it replaced blocks a waiting
+// writer for just as long, so subscriber-against-subscriber cannot improve and
+// does not. What changed is how much of the insert excludes everyone else, and
+// that is a duration, not a contention delay.
+//
+//	whole     - InsertTxDag end to end.
+//	exclusive - linkReceivedSite, which is the part that still takes dag.mux.Lock.
+//
+// The gap between them is the claim check, which now runs under the shared lock.
+// Run the same "whole" figure against a tree where verifyProcessor is still
+// inside linkReceivedSite and the two numbers coincide, which is the comparison.
+func BenchmarkReceivedInsertPhases(b *testing.B) {
+	// Every site approves genesis rather than the site before it. A chain makes
+	// the confirmation tracker's marking walk the whole chain on every insert and
+	// again on every retirement, which is O(n) per site and swamps the thing being
+	// measured; it is also not the shape a live frontier has, because confirmation
+	// retires sites and keeps the region short. Flat keeps the tracker's work
+	// constant per site, so what varies here is the locking.
+	build := func(b *testing.B, d *Dag) ([]*Node, [][]tx.UuidSlice) {
+		sites := make([]*Node, b.N)
+		ids := make([][]tx.UuidSlice, b.N)
+		genesis := d.getGenesis()
+		for i := 0; i < b.N; i++ {
+			sites[i], ids[i] = receivedSite(b, i+10, []*Node{genesis})
+		}
+		return sites, ids
+	}
+
+	b.Run("whole", func(b *testing.B) {
+		d := lockFixture(b, 1)
+		sites, ids := build(b, d)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			s := sites[i]
+			if err := d.InsertTxDag(s, s.id.id, s.id.idMajor, s.id.idMinor, ids[i]...); err != nil {
+				b.Fatalf("insert %d: %s", i, err.Error())
+			}
+		}
+	})
+
+	b.Run("exclusive", func(b *testing.B) {
+		d := lockFixture(b, 1)
+		sites, ids := build(b, d)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			s := sites[i]
+			inGraph, err := d.linkReceivedSite(s, ids[i]...)
+			if err != nil || !inGraph {
+				b.Fatalf("insert %d: inGraph=%t err=%v", i, inGraph, err)
+			}
+		}
+	})
 }

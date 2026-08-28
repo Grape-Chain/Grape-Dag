@@ -308,10 +308,31 @@ func (dag *Dag) walkToTipWith(ts tipReader, w *walker, start *Node, alpha float6
 		}
 		particle = step
 	}
+	// Abandoned, not approved where it stands.
+	//
+	// A forward step moves to a site that approves the particle, and an approval
+	// is always made by a site newer than the one it approves, so the walk moves
+	// strictly towards the tips and cannot come back to a site it has already
+	// been to. Reaching this line therefore means the graph is not the graph
+	// this assumes - a cycle a peer managed to introduce, or a walk stepping on
+	// candidates that are not the current site's approvers - and the site the
+	// particle happens to be standing on has no claim to an approval: it is a
+	// site the walk passed through precisely because it was already at the
+	// approval threshold. Approving it, which is what this did, spends one of a
+	// new site's approvals on a site that did not need one while the tip that
+	// did goes unapproved, and that is the shape of the failure in walkStart's
+	// measurements. Returning nothing instead makes selection walk again and
+	// then fall back to a uniform tip, which is a worse approval than a good
+	// walk would make and a much better one than this.
+	//
+	// Both outcomes are counted: WalksAbandoned{budget} here and
+	// SelectionFallbacks when the fallback is what supplies the approval, so a
+	// walk that has stopped working shows up as a rate rather than as a node
+	// quietly approving the wrong sites.
 	stats.WalksAbandoned.WithLabelValues("budget").Inc()
-	logger.Warnf("[tipselect] A walk used its whole %d-step budget without reaching a tip; approving %s where it stands",
+	logger.Warnf("[tipselect] A walk used its whole %d-step budget without reaching a site with room for an approval; abandoning it at %s. This should not be reachable: approvals point backwards in time, so a forward walk cannot revisit a site.",
 		walkStepBudget, particle.id.id.String())
-	return particle
+	return nil
 }
 
 // approvalsWanted - how many sites a new site approves, from dag.approvetx.

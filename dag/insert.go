@@ -1,6 +1,7 @@
 package dag
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/Grape-Chain/Grape-Dag/tx"
@@ -236,6 +237,15 @@ func (dag *Dag) linkReceivedSite(inVertex *Node, ids ...tx.UuidSlice) (bool, err
 	return true, nil
 }
 
+// attributionStrips - how many received claims this node has found unusable.
+//
+// A running count of peers presenting claims that do not check out, which is
+// either corruption on the wire or somebody trying to be paid for work they did
+// not do; either way it is worth being able to see. Unexported and read by the
+// tests for now because dag/stats is another agent's file this round - it wants
+// to be a counter there.
+var attributionStrips atomic.Uint64
+
 // checkProcessorClaim - verify the claim a received site arrived with, and strip
 // it if it does not hold up.
 //
@@ -301,20 +311,46 @@ func (dag *Dag) linkReceivedSite(inVertex *Node, ids ...tx.UuidSlice) (bool, err
 // somebody who did nothing. TestTheApprovalIdSetIsInvariantUnderSlicingAndRelinking
 // is that invariant, checked.
 func (dag *Dag) checkProcessorClaim(site *Node) {
-	dag.rlock()
-	err := verifyProcessor(site)
-	dag.runlock()
-	if err == nil || errors.Is(err, ErrNoProcessorAttribution) {
-		return
+	if err := dag.verifyClaim(site); err != nil {
+		dag.stripClaim(site, err)
 	}
+}
 
-	// Stripping is a write, so it needs the exclusive lock, and Go has no lock
-	// upgrade: the shared lock has to be released first, which reopens the
-	// window. Hence the re-check on the other side. A site that has left the live
-	// graph in the meantime must not be written to - it is in the archive by
-	// then, and the commit transaction that settled it has already recorded which
-	// processor it credited, so clearing the field afterwards would change
-	// nothing except the object a late arrival is resolved from.
+// verifyClaim - the reading half. Reports nil for a claim that holds up and for
+// a site that makes none, and the reason otherwise.
+//
+// Split from the strip so that the two are separately reachable from a test: Go
+// has no lock upgrade, so there is a window between them, and a window nothing
+// can drive is a window nothing checks. See
+// TestAClaimIsLeftAloneOnASiteSettledWhileItWasBeingChecked.
+func (dag *Dag) verifyClaim(site *Node) error {
+	dag.rlock()
+	defer dag.runlock()
+	if err := verifyProcessor(site); err != nil && !errors.Is(err, ErrNoProcessorAttribution) {
+		return err
+	}
+	return nil
+}
+
+// stripClaim - the writing half: take the unusable claim off the site, so that
+// nothing pays the account it names.
+//
+// A write, so it needs the exclusive lock, which means the shared one has to
+// have been released - and that reopens the window. Hence the re-check here. A
+// site that has left the live graph in the meantime is not written to: it is in
+// the archive by then, the commit transaction that settled it has already
+// recorded which processor it credited, and clearing the field afterwards would
+// change nothing except an object the pin builder may be serialising at that
+// moment. The claim on a settled site is the commit transaction's business, not
+// this node's.
+func (dag *Dag) stripClaim(site *Node, reason error) {
+	// Counted before the lock, because the count is of claims found wanting and
+	// not of claims successfully removed. A site whose claim is absent must never
+	// arrive here: it is the ordinary state of a site from a peer predating
+	// attribution, and taking the node's exclusive lock and logging a warning
+	// once per such site would be a self-inflicted load. See
+	// TestASiteThatClaimsNothingIsNotTreatedAsALiar.
+	attributionStrips.Add(1)
 	dag.mux.Lock()
 	stillLive := dag.getById(site.id.id, true) != nil
 	if stillLive {
@@ -324,9 +360,9 @@ func (dag *Dag) checkProcessorClaim(site *Node) {
 
 	if stillLive {
 		logger.Warnf("[attribution] Site %s carries an unusable claim, dropping it: %s",
-			site.id.id.String(), err.Error())
+			site.id.id.String(), reason.Error())
 		return
 	}
 	logger.Warnf("[attribution] Site %s carries an unusable claim, but it was settled before the claim could be dropped: %s",
-		site.id.id.String(), err.Error())
+		site.id.id.String(), reason.Error())
 }
