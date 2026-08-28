@@ -310,6 +310,23 @@ func (dag *Dag) lookupCacheUpdate(vertex *Node, targetIds []uuid.UUID) {
 // clearProcessor or signProcessor. Those write Node fields, and clearProcessor is
 // why checkProcessorClaim releases the shared lock and re-checks rather than
 // pretending Go has a lock upgrade.
+//
+// One hazard the conversion to a shared lock created that did not exist before
+// it: sync.RWMutex deadlocks on a recursive RLock as soon as a writer is queued.
+// The writer blocks new readers, and a second RLock taken by a goroutine that
+// already holds one then waits behind that writer, which is waiting for the
+// first RLock to be released. A plain Mutex has no such shape, so a nested
+// acquisition inside a read section is new surface and has to be checked for
+// rather than assumed away.
+//
+// All six read sections were audited and none reaches dag.mux again:
+// approvalTargets calls getGenesis and selectApprovalTargets, checkProcessorClaim
+// calls verifyClaim, logLast walks dag._links_, prepareSites calls
+// serialiseSites, and handleSiteRequest in dag/sync.go calls Node.ToPbNode. The
+// confirmation tracker is taken beneath dag.mux by readers and writers alike and
+// never reaches back - its one outward call, resolveSite, takes the lookup map's
+// mutex - so that order is uniform in one direction too. A new read section
+// needs the same check.
 func (d *Dag) rlock()   { d.mux.RLock() }
 func (d *Dag) runlock() { d.mux.RUnlock() }
 
